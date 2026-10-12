@@ -61,7 +61,7 @@ header.top p { margin: 4px 0 0; color: var(--muted); max-width: 64ch; }
 .card h2 { font-size: 16px; margin: 0 0 4px; }
 .card > p.sub { margin: 0 0 14px; color: var(--muted); }
 
-.drop { border: 2px dashed var(--line); border-radius: 12px; padding: 48px 16px; text-align: center; background: var(--surface); transition: border-color 0.15s, background 0.15s; }
+.drop { display: block; cursor: pointer; border: 2px dashed var(--line); border-radius: 12px; padding: 48px 16px; text-align: center; background: var(--surface); transition: border-color 0.15s, background 0.15s; }
 .drop.over { border-color: var(--accent); background: var(--pass-bg); }
 .drop strong { display: block; font-size: 17px; margin-bottom: 6px; }
 .drop p { margin: 0 0 16px; color: var(--muted); }
