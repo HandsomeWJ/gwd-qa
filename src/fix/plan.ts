@@ -12,6 +12,8 @@ export interface PlannedFix {
   title: string;
   detail: string;
   edits: Edit[];
+  /** Set when the fix will visibly move something; the page offers it unticked. */
+  moves?: string;
 }
 
 export interface FixPlan {
@@ -96,14 +98,16 @@ class Planner {
     return edits;
   }
 
-  add(check: CheckId, title: string, detail: string, edits: Edit[]) {
-    if (edits.length) this.fixes.push({ check, title, detail, edits });
+  add(check: CheckId, title: string, detail: string, edits: Edit[], moves?: string) {
+    if (edits.length) this.fixes.push({ check, title, detail, edits, ...(moves ? { moves } : {}) });
   }
 
   buttonPadding() {
     const edits: Edit[] = [];
     const done: string[] = [];
+    const moving: string[] = [];
     const adds = new Map<string, string[]>();
+    const movingAdds = new Map<string, string[]>();
     for (const [cls, seen] of this.byClass('button')) {
       const padded = seen.filter(({ el, frame }) => {
         const c = frameParts(frame).win.getComputedStyle(el);
@@ -137,12 +141,29 @@ class Planner {
         }
         this.deleted.add(first);
       } else {
-        adds.set(cls, ['padding: 0px;']);
+        // The browser's default padding: zeroing it keeps centred text in place only in a fixed-size button.
+        const fixedSize = padded.every(({ el: b, frame: fr }) => {
+          const { win } = frameParts(fr);
+          return declared(win, b, 'width') && declared(win, b, 'height');
+        });
+        if (fixedSize) adds.set(cls, ['padding: 0px;']);
+        else movingAdds.set(cls, ['padding: 0px;']);
+        if (!fixedSize) {
+          moving.push(`.${cls}`);
+          continue;
+        }
       }
       done.push(insetOnly ? `.${cls} (its ${left}px left inset becomes text-indent)` : `.${cls}`);
     }
     edits.push(...this.addToBase(adds));
     this.add('buttonPadding', 'Set button padding to 0px', done.join(', '), edits);
+    this.add(
+      'buttonPadding',
+      'Set button padding to 0px where it resizes the button',
+      moving.join(', '),
+      this.addToBase(movingAdds),
+      'These buttons size to their content, so removing the browser default padding (1px 6px) makes them smaller. Check the result in the preview.',
+    );
   }
 
   buttonColor() {
@@ -159,7 +180,9 @@ class Planner {
   }
 
   marginBlock() {
-    const adds = new Map<string, string[]>();
+    const safe = new Map<string, string[]>();
+    const moving = new Map<string, string[]>();
+    const why: string[] = [];
     for (const [cls, seen] of this.byClass('p, span')) {
       const missing = seen.some(({ el, frame }) => {
         const { win } = frameParts(frame);
@@ -170,9 +193,29 @@ class Planner {
         this.manual.push({ check: 'marginBlock', detail: `${cls} has no class to add margin-block to; add it in GWD.` });
         continue;
       }
-      adds.set(cls, ['margin-block: 0px auto;']);
+      // GWD zeroes paragraph margins; without that, the browser's default margin is in play and removing it moves text.
+      const margined = seen.find(({ el, frame }) => {
+        const cs = frameParts(frame).win.getComputedStyle(el);
+        const inline = cs.display === 'inline';
+        const flowsBelow = cs.position === 'static' || cs.position === 'relative';
+        return !inline && (parseFloat(cs.marginTop) !== 0 || (flowsBelow && parseFloat(cs.marginBottom) !== 0));
+      });
+      if (margined) {
+        const cs = frameParts(margined.frame).win.getComputedStyle(margined.el);
+        moving.set(cls, ['margin-block: 0px auto;']);
+        why.push(`.${cls} has margin ${cs.marginTop} / ${cs.marginBottom} today`);
+      } else {
+        safe.set(cls, ['margin-block: 0px auto;']);
+      }
     }
-    this.add('marginBlock', 'Add margin-block: 0px auto', [...adds.keys()].map((c) => `.${c}`).join(', '), this.addToBase(adds));
+    this.add('marginBlock', 'Add margin-block: 0px auto', [...safe.keys()].map((c) => `.${c}`).join(', '), this.addToBase(safe));
+    this.add(
+      'marginBlock',
+      'Add margin-block: 0px auto where it moves text',
+      [...moving.keys()].map((c) => `.${c}`).join(', '),
+      this.addToBase(moving),
+      `This moves text: ${why.join('; ')}. The checklist still asks for it; check the result in the preview.`,
+    );
   }
 
   lineHeight() {

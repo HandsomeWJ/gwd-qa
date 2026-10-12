@@ -201,13 +201,13 @@ function renderFixes() {
   ];
   const list = fixes.map((f: PlannedFix, i: number) => `
     <li>
-      <input type="checkbox" id="fix-${i}" data-fix="${i}" checked>
+      <input type="checkbox" id="fix-${i}" data-fix="${i}"${f.moves ? '' : ' checked'}>
       <label for="fix-${i}"><strong>${esc(f.title)}</strong> <span class="pill info">${esc(CHECKS.find((c) => c.id === f.check)!.title)}</span>
-        <div class="detail">${esc(f.detail)}</div></label>
+        <div class="detail">${esc(f.detail)}</div>${f.moves ? `<div class="detail"><span class="pill note">Moves text</span> ${esc(f.moves)}</div>` : ''}</label>
     </li>`).join('');
   box.innerHTML = `
     <h2>Fixes</h2>
-    <p class="sub">These declare what the ad already renders, so nothing should move. Text positions in every size are compared before and after.</p>
+    <p class="sub">These declare what the ad already renders, so nothing should move; any fix that would move text is marked and left unticked. Text positions in every size are compared before and after.</p>
     ${session!.lastApply ? applyBanner(session!.lastApply) : ''}
     ${fixes.length
       ? `<ul class="fixlist">${list}</ul><button class="primary" data-action="apply">Apply selected fixes</button>`
