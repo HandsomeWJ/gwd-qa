@@ -31,6 +31,8 @@ export class Session {
   frames: AdFrame[] = [];
   sizes: string[] = [];
   lastApply: ApplyResult | null = null;
+  /** Off by default: the preview blocks the ad's requests to other sites, so no tracker fires. */
+  allowThirdParty = false;
 
   private constructor(readonly pkg: AdPackage) {
     this.originalHtml = decoder.decode(pkg.files.get(pkg.htmlPath)!);
@@ -84,7 +86,7 @@ export class Session {
         fail(new Error(`The ${f.size} frame did not load.`));
       }, 30_000);
       f.el.addEventListener('load', onLoad);
-      f.el.src = `${adUrl(this.id, this.pkg.htmlPath)}?${token}`;
+      f.el.src = `${adUrl(this.id, this.pkg.htmlPath)}?${token}${this.allowThirdParty ? '&net=open' : ''}`;
     });
     // A page the service worker did not serve (say the host's 404) must never be checked as the ad.
     const nav = f.el.contentWindow?.performance.getEntriesByType('navigation')[0] as (PerformanceEntry & { responseStatus?: number }) | undefined;
@@ -99,7 +101,8 @@ export class Session {
     const stuck = this.frames.filter((f) => !f.started).map((f) => f.size);
     if (!stuck.length) return;
     const hidden = document.visibilityState === 'hidden' ? ' Keep this tab visible while it checks, then try again.' : '';
-    throw new Error(`The ad did not start in ${stuck.join(', ')}: GWD never showed its first page, so nothing was checked.${hidden}`);
+    const blocked = this.allowThirdParty ? '' : ' If it needs a script from another site, let it contact other sites and check again.';
+    throw new Error(`The ad did not start in ${stuck.join(', ')}: GWD never showed its first page, so nothing was checked.${hidden}${blocked}`);
   }
 
   /** Runs every check. Leaves the frames freshly reloaded, playing from the start. */

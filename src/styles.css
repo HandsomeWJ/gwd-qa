@@ -63,6 +63,11 @@ header.top p { margin: 4px 0 0; color: var(--muted); max-width: 64ch; }
 
 .drop { display: block; cursor: pointer; border: 2px dashed var(--line); border-radius: 12px; padding: 48px 16px; text-align: center; background: var(--surface); transition: border-color 0.15s, background 0.15s; }
 .drop.over { border-color: var(--accent); background: var(--pass-bg); }
+.drop:focus-within { border-color: var(--accent); }
+
+.net { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--code-bg); }
+.net .switch { font-weight: 600; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.net p.sub { margin: 4px 0 0; }
 .drop strong { display: block; font-size: 17px; margin-bottom: 6px; }
 .drop p { margin: 0 0 16px; color: var(--muted); }
 

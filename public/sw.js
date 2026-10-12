@@ -3,6 +3,21 @@
 // ad's relative paths work and every frame shares the page's origin.
 const CACHE = 'gwdqa-ads';
 
+// Unless the frame URL carries net=open, the ad's HTML gets this policy, so the browser blocks
+// every request to another site (trackers, pixels, ad-server scripts, beacons, frames) at the
+// source. Stylesheets and fonts from any https host still load, so text renders as it really does.
+const BLOCK_THIRD_PARTY = [
+  "default-src 'self' data: blob:",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:",
+  "style-src 'self' 'unsafe-inline' https:",
+  "font-src 'self' data: https:",
+  "img-src 'self' data: blob:",
+  "media-src 'self' data: blob:",
+  "connect-src 'self'",
+  "frame-src 'self' data: blob:",
+  "object-src 'none'",
+].join('; ');
+
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
@@ -26,5 +41,12 @@ async function serve(url, scope, prefix) {
   }
   const key = `${scope.origin}${scope.pathname}__adkey/${id}/${encodeURIComponent(path)}`;
   const hit = await (await caches.open(CACHE)).match(key);
-  return hit ?? new Response(`Not in this ad: ${path}`, { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+  if (!hit) {
+    return new Response(`Not in this ad: ${path}`, { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+  }
+  const isHtml = (hit.headers.get('Content-Type') ?? '').startsWith('text/html');
+  if (!isHtml || url.searchParams.get('net') === 'open') return hit;
+  const headers = new Headers(hit.headers);
+  headers.set('Content-Security-Policy', BLOCK_THIRD_PARTY);
+  return new Response(hit.body, { status: hit.status, statusText: hit.statusText, headers });
 }

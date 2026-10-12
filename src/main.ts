@@ -2,6 +2,7 @@ import './styles.css';
 import { CHECKS, type CheckId, type Finding } from './audit/types';
 import { staticAudit } from './audit/static';
 import type { PlannedFix } from './fix/plan';
+import { allowedZipUrl, outsideHosts } from './net';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
 
@@ -24,12 +25,12 @@ app.innerHTML = `
       </div>
     </header>
     <div id="status"></div>
-    <label class="drop" id="drop">
+    <div class="drop" id="drop">
       <strong>Drop a GWD ad .zip here</strong>
       <p>Or choose one. Zip the folder GWD saves to, the one with Responsive.html or index.html in it.</p>
-      <span class="button primary">Choose a zip</span>
+      <button type="button" class="primary">Choose a zip</button>
       <input type="file" id="file" accept=".zip,application/zip" hidden>
-    </label>
+    </div>
     <section id="summary" class="card" hidden></section>
     <section id="checklist" class="card" hidden></section>
     <section id="fixes" class="card" hidden></section>
@@ -39,10 +40,11 @@ app.innerHTML = `
         <div><h2>Preview</h2><p class="sub" style="margin:0">Every served size at its exact dimensions. Interact with it like the live ad.</p></div>
         <button data-action="replay-all">Replay all</button>
       </div>
+      <div class="net" id="net"></div>
       <div class="frames" id="frames" style="margin-top:14px"></div>
     </section>
     <footer class="foot">
-      Runs entirely in your browser: the zip is unpacked here and served to the preview by a service worker. Nothing is uploaded.
+      Runs entirely in your browser: the zip is unpacked here and served to the preview by a service worker. Nothing is uploaded, and the ad's own requests to other sites are blocked unless you allow them.
       <a href="https://github.com/HandsomeWJ/gwd-qa">Source</a>
     </footer>
   </div>`;
@@ -78,11 +80,13 @@ async function load(name: string, bytes: Uint8Array) {
     status('Unpacking the zip…', 'busy');
     await workerReady;
     session = await Session.open(name, bytes);
+    session.allowThirdParty = allowThirdPartySaved();
     const sizes = staticAudit(session.html).sizes;
     if (!sizes.length) throw new Error('No served sizes found: this does not look like a GWD ad.');
     $('#drop').hidden = true;
     $('#preview').hidden = false;
     session.mountFrames($('#frames'), sizes, frameCard);
+    renderNet();
     status(`Loading ${plural(sizes.length, 'size')}…`, 'busy');
     await session.reloadAll();
     await check();
@@ -98,6 +102,50 @@ async function check() {
   result = await session!.audit();
   status('');
   render();
+}
+
+const NET_KEY = 'gwdqa.allowThirdParty';
+
+function allowThirdPartySaved(): boolean {
+  try {
+    return localStorage.getItem(NET_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function renderNet() {
+  const s = session!;
+  const others = outsideHosts(s.html, location.host).filter((h) => !h.fonts).map((h) => h.host);
+  const refers = others.length ? ` Its code refers to ${others.join(', ')}.` : ' Its code refers to no other sites apart from fonts.';
+  const state = s.allowThirdParty
+    ? 'The ad can contact other sites, so its trackers and pixels can fire from this preview.'
+    : 'Requests to other sites are blocked, so the ad cannot fire trackers or pixels from this preview. Fonts still load.';
+  $('#net').innerHTML = `
+    <label class="switch"><input type="checkbox" id="allow-net"${s.allowThirdParty ? ' checked' : ''}> Let the ad contact other sites</label>
+    <p class="sub">${esc(state + refers)}</p>`;
+}
+
+async function setThirdParty(allow: boolean) {
+  if (!session) return;
+  if (busy) return renderNet(); // undo the click: a check is running
+  try {
+    localStorage.setItem(NET_KEY, allow ? '1' : '0');
+  } catch {
+    // private mode: the choice just isn't remembered
+  }
+  session.allowThirdParty = allow;
+  renderNet();
+  setBusy(true);
+  try {
+    status('Reloading every size…', 'busy');
+    await session.reloadAll();
+    await check();
+  } catch (err) {
+    status(esc(err instanceof Error ? err.message : String(err)), 'err');
+  } finally {
+    setBusy(false);
+  }
 }
 
 function frameCard(size: string, frame: HTMLIFrameElement): HTMLElement {
@@ -284,6 +332,14 @@ app.addEventListener('click', async (e) => {
 
 const drop = $('#drop');
 const input = $<HTMLInputElement>('#file');
+// The whole drop zone opens the picker; its real button makes that reachable by keyboard.
+drop.addEventListener('click', (e) => {
+  if (e.target !== input && !busy) input.click();
+});
+app.addEventListener('change', (e) => {
+  const box = e.target as HTMLInputElement;
+  if (box.id === 'allow-net') setThirdParty(box.checked);
+});
 const readFile = async (file: File) => load(file.name, new Uint8Array(await file.arrayBuffer()));
 input.addEventListener('change', () => input.files?.[0] && readFile(input.files[0]));
 drop.addEventListener('dragover', (e) => {
@@ -305,13 +361,18 @@ async function boot() {
     status(esc(err instanceof Error ? err.message : String(err)), 'err');
     return;
   }
-  // ?zip=<url> loads an ad straight away (same-origin or CORS-enabled URLs).
-  const zipUrl = new URLSearchParams(location.search).get('zip');
-  if (zipUrl) {
+  // ?zip=<path> loads an ad straight away, but only a zip stored on this site under the app's folder.
+  const raw = new URLSearchParams(location.search).get('zip');
+  if (raw) {
+    const url = allowedZipUrl(raw, location.href, import.meta.env.BASE_URL);
+    if (!url) {
+      status(esc(`?zip= only loads zips stored on this site under ${import.meta.env.BASE_URL}. Drop the file instead.`), 'err');
+      return;
+    }
     try {
-      const res = await fetch(zipUrl);
-      if (!res.ok) throw new Error(`Could not fetch ${zipUrl}: ${res.status}`);
-      await load(decodeURIComponent(zipUrl.split('/').pop() || 'ad.zip'), new Uint8Array(await res.arrayBuffer()));
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Could not fetch ${url.pathname}: ${res.status}`);
+      await load(decodeURIComponent(url.pathname.split('/').pop() || 'ad.zip'), new Uint8Array(await res.arrayBuffer()));
     } catch (err) {
       status(esc(err instanceof Error ? err.message : String(err)), 'err');
     }

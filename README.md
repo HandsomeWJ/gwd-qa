@@ -6,6 +6,8 @@ Checks a Google Web Designer HTML5 ad against the GWD QA checklist in every serv
 
 Everything runs in your browser. The zip is unpacked in the page and served to the preview frames by a service worker, so nothing is uploaded anywhere.
 
+The preview also blocks the ad's own requests to other sites by default. The worker gives the ad's HTML a Content-Security-Policy, so trackers, pixels, ad-server scripts and beacons never fire from the preview, while stylesheets and fonts still load. A switch above the previews lets the ad contact other sites when it needs to; the page lists which hosts the ad's code refers to.
+
 ## Using it
 
 1. Zip the folder GWD saves to (the one with `Responsive.html` or `index.html`) and drop it on the page.
@@ -41,7 +43,7 @@ npm test         # parser, checks and zip round-trips (Vitest + happy-dom)
 npm run build    # type-check and build to dist/
 ```
 
-`?zip=<url>` loads an ad straight away, for example `?zip=/gwd-qa/local-fixtures/my-ad.zip` in development. Put real ads in `local-fixtures/`, which git ignores: client files must never reach this repo.
+`?zip=<path>` loads an ad straight away, for example `?zip=/gwd-qa/local-fixtures/my-ad.zip` in development. It only accepts zips stored on this site under `/gwd-qa/`: any other URL could run someone else's HTML on this origin, which every GitHub Pages site of the account shares. Put real ads in `local-fixtures/`, which git ignores: client files must never reach this repo.
 
 Pushing to `main` deploys to GitHub Pages through `.github/workflows/deploy.yml`.
 
