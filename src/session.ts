@@ -86,6 +86,11 @@ export class Session {
       f.el.addEventListener('load', onLoad);
       f.el.src = `${adUrl(this.id, this.pkg.htmlPath)}?${token}`;
     });
+    // A page the service worker did not serve (say the host's 404) must never be checked as the ad.
+    const nav = f.el.contentWindow?.performance.getEntriesByType('navigation')[0] as (PerformanceEntry & { responseStatus?: number }) | undefined;
+    if (nav?.responseStatus !== undefined && nav.responseStatus !== 200) {
+      throw new Error(`The ${f.size} preview got HTTP ${nav.responseStatus} instead of the ad. Reload this page and try again.`);
+    }
     f.started = await waitForAd(f.el);
   }
 

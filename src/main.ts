@@ -68,11 +68,15 @@ function setBusy(on: boolean) {
   app.querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.disabled = on || b.dataset.disabled === 'true'));
 }
 
+// Started at once; loading waits for it so frames never miss the worker on a first visit.
+const workerReady = startWorker();
+
 async function load(name: string, bytes: Uint8Array) {
   if (busy) return;
   setBusy(true);
   try {
     status('Unpacking the zip…', 'busy');
+    await workerReady;
     session = await Session.open(name, bytes);
     const sizes = staticAudit(session.html).sizes;
     if (!sizes.length) throw new Error('No served sizes found: this does not look like a GWD ad.');
@@ -296,7 +300,7 @@ drop.addEventListener('drop', (e) => {
 
 async function boot() {
   try {
-    await startWorker();
+    await workerReady;
   } catch (err) {
     status(esc(err instanceof Error ? err.message : String(err)), 'err');
     return;
