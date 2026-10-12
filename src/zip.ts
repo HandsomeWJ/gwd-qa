@@ -10,6 +10,9 @@ export interface AdPackage {
 const JUNK = /(^|\/)__MACOSX\/|(^|\/)\.DS_Store$/;
 // GWD keeps older copies of the HTML here; they are never the ad itself.
 const STALE_COPIES = /(^|\/)(_revision|gwd_preview_[^/]*)\//;
+
+/** GWD's backup and preview copies: never part of the ad, so an upload leaves them out. */
+export const isGwdBackup = (name: string) => STALE_COPIES.test(name);
 const STORED = /\.(png|jpe?g|gif|webp|woff2?|mp4|webm|zip)$/i;
 
 export function readZip(zipName: string, bytes: Uint8Array): AdPackage {
@@ -39,10 +42,11 @@ export function findAdHtml(files: Map<string, Uint8Array>): string {
     .sort((a, b) => a.s[0] - b.s[0] || a.s[1] - b.s[1] || a.s[2] - b.s[2])[0].p;
 }
 
-/** Same entries, same order, with any changed files swapped in. */
-export function writeZip(pkg: AdPackage, changed: Map<string, Uint8Array>): Uint8Array {
+/** Same entries, same order, with any changed files swapped in and any `leaveOut` entries dropped. */
+export function writeZip(pkg: AdPackage, changed: Map<string, Uint8Array>, leaveOut?: (name: string) => boolean): Uint8Array {
   const input: Zippable = {};
   for (const name of pkg.entries) {
+    if (leaveOut?.(name)) continue;
     if (name.endsWith('/')) {
       input[name] = [new Uint8Array(0), { level: 0 }];
     } else {

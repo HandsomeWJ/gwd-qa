@@ -1,7 +1,7 @@
-// Serves the unzipped ad to the preview frames. The page stores each file in Cache Storage
-// under a canonical key; requests under <scope>__ad/<id>/ are answered from there, so the
-// ad's relative paths work and every frame shares the page's origin.
-const CACHE = 'gwdqa-ads';
+// Serves the unzipped ad to the preview frames. The page stores each file in the ad's own
+// cache, gwdqa-ad-<id>, under a canonical key; requests under <scope>__ad/<id>/ are answered
+// from there, so the ad's relative paths work and every frame shares the page's origin.
+const PREFIX = 'gwdqa-ad-';
 
 // Unless the frame URL carries net=open, the ad's HTML gets this policy, so the browser blocks
 // every request to another site (trackers, pixels, ad-server scripts, beacons, frames) at the
@@ -40,7 +40,8 @@ async function serve(url, scope, prefix) {
     // keep the raw path when it is not valid percent-encoding
   }
   const key = `${scope.origin}${scope.pathname}__adkey/${id}/${encodeURIComponent(path)}`;
-  const hit = await (await caches.open(CACHE)).match(key);
+  // match() with a cacheName never creates the cache, unlike open().
+  const hit = /^[a-z0-9]+$/.test(id) ? await caches.match(key, { cacheName: PREFIX + id }) : undefined;
   if (!hit) {
     return new Response(`Not in this ad: ${path}`, { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
   }

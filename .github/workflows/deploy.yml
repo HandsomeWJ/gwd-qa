@@ -26,6 +26,15 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      # Browser tests run against the built site, so what deploys is what was tested.
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

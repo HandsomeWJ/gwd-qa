@@ -1,6 +1,6 @@
 import { strToU8, strFromU8, unzipSync, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
-import { findAdHtml, readZip, writeZip } from '../src/zip';
+import { findAdHtml, isGwdBackup, readZip, writeZip } from '../src/zip';
 
 const gwd = '<html><head><meta name="generator" content="Google Web Designer 16"></head><body><gwd-genericad></gwd-genericad></body></html>';
 
@@ -38,5 +38,20 @@ describe('writeZip', () => {
     expect(Object.keys(out)).toEqual(['Ad/', 'Ad/Responsive.html', 'Ad/assets/x.png']);
     expect(strFromU8(out['Ad/Responsive.html'])).toBe('changed');
     expect(strFromU8(out['Ad/assets/x.png'])).toBe('png');
+  });
+});
+
+describe('upload-ready zip', () => {
+  it('leaves out GWD backup and preview copies, and nothing else', () => {
+    const pkg = readZip('ad.zip', makeZip({
+      'Ad/': '',
+      'Ad/_revision/': '',
+      'Ad/_revision/Responsive.html': gwd,
+      'Ad/gwd_preview_Responsive/index.html': gwd,
+      'Ad/Responsive.html': gwd,
+      'Ad/gwd_workspace.json': '{}',
+    }));
+    const out = unzipSync(writeZip(pkg, new Map(), isGwdBackup));
+    expect(Object.keys(out)).toEqual(['Ad/', 'Ad/Responsive.html', 'Ad/gwd_workspace.json']);
   });
 });

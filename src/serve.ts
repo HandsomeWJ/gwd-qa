@@ -1,8 +1,12 @@
 // Publishes an unzipped ad to Cache Storage for the service worker (public/sw.js) to serve.
+// Each loaded ad gets its own cache, gwdqa-ad-<id>, so tabs never touch each other's files.
 // Keys must match the worker's: <base>__adkey/<id>/<encodeURIComponent(path)>.
 
-const CACHE = 'gwdqa-ads';
+const PREFIX = 'gwdqa-ad-';
+const LEGACY = 'gwdqa-ads'; // the one shared cache earlier versions used
 const BASE = import.meta.env.BASE_URL;
+
+export const cacheName = (id: string) => `${PREFIX}${id}`;
 
 const MIME: Record<string, string> = {
   html: 'text/html; charset=utf-8',
@@ -71,14 +75,49 @@ export async function startWorker(): Promise<void> {
   }
 }
 
-export async function publish(id: string, files: Map<string, Uint8Array>): Promise<void> {
-  await caches.delete(CACHE); // one ad at a time
-  const cache = await caches.open(CACHE);
-  await Promise.all([...files].map(([path, data]) => putFile(cache, id, path, data)));
+/**
+ * Holds a Web Lock named after the ad's cache while this page keeps the ad open. The browser
+ * releases it when the tab closes, so other tabs can tell which caches are still in use.
+ */
+function holdLock(name: string): Promise<() => void> {
+  if (!navigator.locks) return Promise.resolve(() => undefined);
+  return new Promise((granted) => {
+    void navigator.locks.request(name, () => new Promise<void>((release) => granted(release)));
+  });
+}
+
+/** Deletes the caches of ads that no open tab holds any more. */
+async function sweep(): Promise<void> {
+  await caches.delete(LEGACY);
+  if (!navigator.locks) return;
+  const held = new Set(((await navigator.locks.query()).held ?? []).map((l) => l.name));
+  const stale = (await caches.keys()).filter((name) => name.startsWith(PREFIX) && !held.has(name));
+  await Promise.all(stale.map((name) => caches.delete(name)));
+}
+
+/** Stores the ad's files for the worker. Returns a function that deletes them again. */
+export async function publish(id: string, files: Map<string, Uint8Array>): Promise<() => Promise<void>> {
+  const release = await holdLock(cacheName(id));
+  await sweep();
+  await putAll(id, files);
+  return async () => {
+    await caches.delete(cacheName(id));
+    release();
+  };
+}
+
+/** Puts the files back when the cache has gone, for example after the site's data was cleared. */
+export async function ensurePublished(id: string, files: () => Map<string, Uint8Array>): Promise<void> {
+  if (!(await caches.has(cacheName(id)))) await putAll(id, files());
 }
 
 export async function updateFile(id: string, path: string, data: Uint8Array): Promise<void> {
-  await putFile(await caches.open(CACHE), id, path, data);
+  await putFile(await caches.open(cacheName(id)), id, path, data);
+}
+
+async function putAll(id: string, files: Map<string, Uint8Array>): Promise<void> {
+  const cache = await caches.open(cacheName(id));
+  await Promise.all([...files].map(([path, data]) => putFile(cache, id, path, data)));
 }
 
 function putFile(cache: Cache, id: string, path: string, data: Uint8Array): Promise<void> {

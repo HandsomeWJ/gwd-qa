@@ -15,6 +15,8 @@
   --info-bg: #e5eefc;
   --info-fg: #1d4fa3;
   --code-bg: #eef0f3;
+  --add-bg: #e3f4ea;
+  --del-bg: #fde7e7;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
   color-scheme: light;
 }
@@ -37,6 +39,8 @@
     --info-bg: #182a46;
     --info-fg: #9cc0ff;
     --code-bg: #262a32;
+    --add-bg: #15301f;
+    --del-bg: #361a1a;
     --shadow: none;
     color-scheme: dark;
   }
@@ -114,12 +118,32 @@ button:focus-visible, .button:focus-visible, summary:focus-visible, input:focus-
 .findings li:first-child { border-top: 0; }
 .findings .target { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: var(--code-bg); border-radius: 5px; padding: 1px 6px; }
 .findings .sizes { color: var(--muted); }
+.findings .page { font-weight: 600; }
 .findings .hint { color: var(--muted); display: block; margin-top: 2px; }
+.findings .exempt { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.findings .exempt + * { margin-top: 0; }
 
 .fixlist { list-style: none; margin: 0 0 14px; padding: 0; }
-.fixlist li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.fixlist li { display: grid; grid-template-columns: 22px 1fr; align-items: start; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.fixlist li > input { margin-top: 4px; }
 .fixlist li:first-child { border-top: 0; }
+.fixlist li > div { min-width: 0; }
 .fixlist .detail { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.upload-note { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+
+details.edits { margin-top: 6px; }
+details.edits > summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; }
+details.edits .stat { font-weight: 400; font-variant-numeric: tabular-nums; }
+.diff { margin-top: 6px; max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; padding: 4px 0; }
+.diff > div { padding: 0 10px 0 0; min-width: max-content; }
+.diff .ln { display: inline-block; width: 5ch; margin-right: 6px; text-align: right; color: var(--muted); user-select: none; }
+.diff .ln + .ln { margin-right: 10px; }
+.diff .add { background: var(--add-bg); }
+.diff .del { background: var(--del-bg); }
+.diff .hunk { color: var(--muted); padding: 4px 10px; font-weight: 600; }
+.diff .hunk:not(:first-child) { border-top: 1px dashed var(--line); margin-top: 4px; }
+
+.banner ul { margin: 0; padding-left: 18px; }
 .manual { margin: 14px 0 0; padding-left: 18px; }
 .manual li { margin: 6px 0; }
 

@@ -33,10 +33,45 @@ export const CHECKS: CheckInfo[] = [
 export interface Finding {
   check: CheckId;
   level: 'fail' | 'note';
-  size?: string; // served size where it was seen; absent for source-level findings
+  size?: string; // frame label where it was seen; absent for source-level findings
+  page?: string; // GWD page it is on, when the ad has more than one page
   target: string; // element or keyframes label
   message: string;
   hint?: string; // how to fix it by hand, for problems that are not fixed automatically
+}
+
+/**
+ * What the checks saw of one element, in one frame, on one page. Plain data: the rendered
+ * checks and the fix planner read only this, never the frames.
+ */
+export interface Box {
+  frame: string; // frame label
+  page: string; // GWD page id when the ad has more than one page, else ''
+  target: string; // label(el)
+  id: string;
+  tag: string; // lower case
+  classes: string[];
+  text: string; // its text, whitespace collapsed, at most 40 characters
+  /** Set for elements with their own text that render. */
+  type?: { fontSize: number; scale: number; onScreen: boolean; moves: boolean; hidden: boolean };
+  /** Values its own CSS declares (inline style or a rule that applies in this frame); '' when none. */
+  declared: { lineHeight: string; color: string; width: string; height: string; marginBlockStart: string; marginBlockEnd: string };
+  computed: {
+    color: string;
+    lineHeight: string;
+    padding: [number, number, number, number]; // top, right, bottom, left in px
+    paddingText: string;
+    textAlign: string;
+    whiteSpace: string;
+    display: string;
+    position: string;
+    marginTop: number;
+    marginBottom: number;
+  };
+  /** The px a browser renders for line-height: normal in its font; set when no line-height is declared. */
+  normalLineHeight?: number;
+  /** A span inside other text (a p, button, link…), which takes that parent's line-height. */
+  inTextParent: boolean;
 }
 
 export interface CopyItem {

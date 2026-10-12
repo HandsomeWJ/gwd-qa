@@ -1,10 +1,13 @@
 import './styles.css';
 import { CHECKS, type CheckId, type Finding } from './audit/types';
 import { staticAudit } from './audit/static';
+import { applyEdits, mergeEdits } from './css/edit';
+import { diffLines, diffStats, type Hunk } from './diff';
 import type { PlannedFix } from './fix/plan';
 import { allowedZipUrl, outsideHosts } from './net';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
+import { describeSize, type FrameSize } from './sizes';
 
 const app = document.getElementById('app')!;
 let session: Session | null = null;
@@ -79,15 +82,18 @@ async function load(name: string, bytes: Uint8Array) {
   try {
     status('Unpacking the zip…', 'busy');
     await workerReady;
+    await session?.close();
     session = await Session.open(name, bytes);
     session.allowThirdParty = allowThirdPartySaved();
+    loadDisclaimers(session.pkg.zipName);
     const sizes = staticAudit(session.html).sizes;
     if (!sizes.length) throw new Error('No served sizes found: this does not look like a GWD ad.');
+    session.mountFrames($('#frames'), sizes, frameCard);
+    if (!session.frames.length) throw new Error(`None of the served sizes can be previewed: ${sizes.join(', ')}.`);
     $('#drop').hidden = true;
     $('#preview').hidden = false;
-    session.mountFrames($('#frames'), sizes, frameCard);
     renderNet();
-    status(`Loading ${plural(sizes.length, 'size')}…`, 'busy');
+    status(`Loading ${plural(session.frames.length, 'size')}…`, 'busy');
     await session.reloadAll();
     await check();
   } catch (err) {
@@ -105,6 +111,36 @@ async function check() {
 }
 
 const NET_KEY = 'gwdqa.allowThirdParty';
+const DISCLAIMER_KEY = 'gwdqa.disclaimers';
+// An id that names a disclaimer. Only ids count: GWD's generated class names are random.
+const DISCLAIMER_ID = /disclaim|legal|terms|tnc|t&c|fine-?print|small-?print/i;
+// Per element label: marked (true) or unmarked (false) as a disclaimer, for the loaded zip.
+let disclaimerChoices: Record<string, boolean> = {};
+
+function storedDisclaimers(): Record<string, Record<string, boolean>> {
+  try {
+    return JSON.parse(localStorage.getItem(DISCLAIMER_KEY) ?? '{}');
+  } catch {
+    return {};
+  }
+}
+
+function loadDisclaimers(zipName: string) {
+  disclaimerChoices = storedDisclaimers()[zipName] ?? {};
+}
+
+function saveDisclaimers(zipName: string) {
+  const all = storedDisclaimers();
+  all[zipName] = disclaimerChoices;
+  try {
+    localStorage.setItem(DISCLAIMER_KEY, JSON.stringify(all));
+  } catch {
+    // private mode: the marks just aren't remembered
+  }
+}
+
+const namedDisclaimer = (target: string) => DISCLAIMER_ID.test(/#([^.]+)/.exec(target)?.[1] ?? '');
+const isDisclaimer = (target: string) => disclaimerChoices[target] ?? namedDisclaimer(target);
 
 function allowThirdPartySaved(): boolean {
   try {
@@ -148,10 +184,10 @@ async function setThirdParty(allow: boolean) {
   }
 }
 
-function frameCard(size: string, frame: HTMLIFrameElement): HTMLElement {
+function frameCard(fs: FrameSize, frame: HTMLIFrameElement): HTMLElement {
   const card = document.createElement('div');
   card.className = 'frame';
-  card.innerHTML = `<header><span>${size}</span><button data-action="replay" data-size="${size}">Replay</button></header><div class="viewport"></div>`;
+  card.innerHTML = `<header><span>${esc(fs.label)}</span><button data-action="replay" data-frame="${esc(fs.label)}">Replay</button></header><div class="viewport"></div>`;
   card.querySelector('.viewport')!.appendChild(frame);
   return card;
 }
@@ -165,7 +201,28 @@ function render() {
 }
 
 function failing(check: CheckId): Finding[] {
-  return result!.findings.filter((f) => f.check === check && f.level === 'fail');
+  return result!.findings.filter((f) => f.check === check && f.level === 'fail' && !(check === 'type' && isDisclaimer(f.target)));
+}
+
+/** Type findings for text marked as a disclaimer, which the 8px rule exempts. */
+function exempt(): Finding[] {
+  return result!.findings.filter((f) => f.check === 'type' && f.level === 'fail' && isDisclaimer(f.target));
+}
+
+const diffClass = { '+': 'add', '-': 'del', ' ': 'ctx' } as const;
+
+function diffHtml(hunks: Hunk[]): string {
+  const head = '<div class="hunk"><span class="ln">Was</span><span class="ln">Now</span></div>';
+  return head + hunks.map((h) => `<div class="hunk">Line ${h.old}</div>${h.lines
+    .map((l) => `<div class="${diffClass[l.kind]}"><span class="ln">${l.old ?? ''}</span><span class="ln">${l.new ?? ''}</span>${esc(`${l.kind} ${l.text.replace(/\r$/, '')}`)}</div>`)
+    .join('')}`).join('');
+}
+
+/** A collapsed view of the line changes from `before` to `after`. */
+function diffBox(title: string, before: string, after: string): string {
+  const hunks = diffLines(before, after);
+  const { added, removed } = diffStats(hunks);
+  return `<details class="edits"><summary>${esc(title)} <span class="stat">+${added} / -${removed} lines</span></summary><div class="diff">${diffHtml(hunks)}</div></details>`;
 }
 
 function renderSummary() {
@@ -183,52 +240,77 @@ function renderSummary() {
       <div class="actions">
         ${s.changed ? '<button data-action="undo">Undo fixes</button>' : ''}
         <button class="${s.changed ? 'primary' : ''}" data-action="download">${s.changed ? 'Download fixed zip' : 'Download zip'}</button>
+        ${s.backups.length ? '<button data-action="download-upload">Download for upload</button>' : ''}
         <button data-action="reset">Check another ad</button>
       </div>
-    </div>`;
+    </div>
+    ${s.backups.length ? `<p class="sub upload-note">Download for upload leaves out GWD's backup copies: ${esc(backupFolders(s).join(', '))} (${plural(s.backups.length, 'file')}).</p>` : ''}
+    ${s.changed ? diffBox(`Review the changes to ${s.pkg.htmlPath.split('/').pop()}`, s.originalHtml, s.html) : ''}`;
 }
 
-function groupFindings(list: Finding[]): string {
+function backupFolders(s: Session): string[] {
+  return [...new Set(s.backups.map((n) => /(?:^|\/)(_revision|gwd_preview_[^/]*)\//.exec(n)?.[1] ?? n))].map((d) => `${d}/`);
+}
+
+function groupFindings(list: Finding[], control: (f: Finding) => string = () => ''): string {
   const groups = new Map<string, { f: Finding; sizes: string[] }>();
   for (const f of list) {
-    const key = `${f.target}|${f.message}`;
+    const key = `${f.target}|${f.page ?? ''}|${f.message}`;
     const g = groups.get(key) ?? { f, sizes: [] };
     if (f.size) g.sizes.push(f.size);
     groups.set(key, g);
   }
   return [...groups.values()]
-    .map(({ f, sizes }) => `<li><span class="target">${esc(f.target)}</span>${sizes.length ? ` <span class="sizes">${esc(sizes.join(', '))}</span>` : ''}: ${esc(f.message)}${f.hint ? `<span class="hint">${esc(f.hint)}</span>` : ''}</li>`)
+    .map(({ f, sizes }) => `<li><span class="target">${esc(f.target)}</span>${f.page ? ` <span class="page">on ${esc(f.page)}</span>` : ''}${sizes.length ? ` <span class="sizes">${esc(sizes.join(', '))}</span>` : ''}: ${esc(f.message)}${f.hint ? `<span class="hint">${esc(f.hint)}</span>` : ''}${control(f)}</li>`)
     .join('');
+}
+
+function disclaimerToggle(f: Finding): string {
+  const byName = disclaimerChoices[f.target] === undefined && namedDisclaimer(f.target);
+  return `<label class="exempt"><input type="checkbox" data-disclaimer="${esc(f.target)}"${isDisclaimer(f.target) ? ' checked' : ''}> Disclaimer, exempt from 8px${byName ? ' (from its id)' : ''}</label>`;
 }
 
 function renderChecklist() {
   const r = result!;
   const box = $('#checklist');
   box.hidden = false;
+  // Re-rendering must not close the rows that are open.
+  const open = new Set([...box.querySelectorAll<HTMLDetailsElement>('details[data-check]')].filter((d) => d.open).map((d) => d.dataset.check));
   const rows = CHECKS.map((c) => {
     if (c.id === 'copy') {
       return `<li><details><summary><span class="pill info">Review</span><span><span class="title">${esc(c.title)}</span><br><span class="when">${esc(c.passWhen)}</span></span><span class="count">${plural(r.report.copy.length, 'text')} below</span></summary></details></li>`;
     }
     const fails = failing(c.id);
+    const exempted = c.id === 'type' ? exempt().map((f) => ({ ...f, hint: undefined })) : [];
     const notes = r.findings.filter((f) => f.check === c.id && f.level === 'note');
     const fixable = r.plan.fixes.some((f) => f.check === c.id);
     const targets = new Set(fails.map((f) => f.target)).size;
     const pill = fails.length ? '<span class="pill fail">Fail</span>' : '<span class="pill pass">Pass</span>';
-    const count = fails.length
-      ? `${plural(targets, 'item')}${fixable ? ' · auto-fix ready' : ''}`
-      : notes.length ? plural(notes.length, 'note') : '';
-    const body = fails.length || notes.length
-      ? `<div class="body"><ul class="findings">${groupFindings(fails)}${groupFindings(notes)}</ul></div>`
+    const extra = [
+      exempted.length ? `${plural(new Set(exempted.map((f) => f.target)).size, 'disclaimer')} exempt` : '',
+      !fails.length && notes.length ? plural(notes.length, 'note') : '',
+    ].filter(Boolean);
+    const count = [fails.length ? `${plural(targets, 'item')}${fixable ? ' · auto-fix ready' : ''}` : '', ...extra].filter(Boolean).join(' · ');
+    const toggle = c.id === 'type' ? disclaimerToggle : undefined;
+    const body = fails.length || exempted.length || notes.length
+      ? `<div class="body"><ul class="findings">${groupFindings(fails, toggle)}${groupFindings(exempted, toggle)}${groupFindings(notes)}</ul></div>`
       : '';
-    return `<li><details${fails.length ? '' : ''}><summary>${pill}<span><span class="title">${esc(c.title)}</span><br><span class="when">${esc(c.passWhen)}</span></span><span class="count">${count}</span></summary>${body}</details></li>`;
+    return `<li><details data-check="${c.id}"${open.has(c.id) ? ' open' : ''}><summary>${pill}<span><span class="title">${esc(c.title)}</span><br><span class="when">${esc(c.passWhen)}</span></span><span class="count">${count}</span></summary>${body}</details></li>`;
   }).join('');
-  box.innerHTML = `<h2>QA checklist</h2><p class="sub">Open a row for the details. Each size is checked as it renders.</p><ul class="checks">${rows}</ul>`;
+  const s = session!;
+  const warnings = [
+    ...s.unknownSizes.map((size) => `Served size "${size}" has no preview: it is not a size like 300x250 or a range like 300x250:320x480 that a size fits. It was not checked.`),
+    ...r.skipped.map((page) => `${page} never showed, so it was not checked there.`),
+  ];
+  const pages = r.pages > 1 ? `, on each of its ${r.pages} pages` : '';
+  box.innerHTML = `<h2>QA checklist</h2><p class="sub">Open a row for the details. Each size is checked as it renders${pages}.</p>${warnings.length ? `<div class="banner warn"><ul>${warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}<ul class="checks">${rows}</ul>`;
 }
 
 function applyBanner(a: ApplyResult): string {
   const p = a.positions;
   if (!p.changed.length && !p.missing.length) {
-    return `<div class="banner ok">Applied ${plural(a.applied.length, 'fix', 'fixes')}. All ${plural(p.unchanged, 'text element')} are exactly where they were, in every size.</div>`;
+    const where = result && result.pages > 1 ? 'in every size and on every page' : 'in every size';
+    return `<div class="banner ok">Applied ${plural(a.applied.length, 'fix', 'fixes')}. All ${plural(p.unchanged, 'text element')} are exactly where they were, ${where}.</div>`;
   }
   const list = [...p.changed, ...p.missing].slice(0, 12).map((k) => `<li>${esc(k)}</li>`).join('');
   return `<div class="banner warn">Applied ${plural(a.applied.length, 'fix', 'fixes')}, but ${plural(p.changed.length + p.missing.length, 'text element')} moved. Check them in the preview, or undo.<ul>${list}</ul></div>`;
@@ -247,11 +329,13 @@ function renderFixes() {
     ...r.plan.manual.map((m) => `<li>${esc(m.detail)}</li>`),
     ...(failing('position').length ? ['<li>Re-animate top/left movement with transform: translate3d in GWD.</li>'] : []),
   ];
+  const html = session!.html;
   const list = fixes.map((f: PlannedFix, i: number) => `
     <li>
       <input type="checkbox" id="fix-${i}" data-fix="${i}"${f.moves ? '' : ' checked'}>
-      <label for="fix-${i}"><strong>${esc(f.title)}</strong> <span class="pill info">${esc(CHECKS.find((c) => c.id === f.check)!.title)}</span>
+      <div><label for="fix-${i}"><strong>${esc(f.title)}</strong> <span class="pill info">${esc(CHECKS.find((c) => c.id === f.check)!.title)}</span>
         <div class="detail">${esc(f.detail)}</div>${f.moves ? `<div class="detail"><span class="pill note">Moves text</span> ${esc(f.moves)}</div>` : ''}</label>
+        ${diffBox('Show the edits', html, applyEdits(html, mergeEdits(f.edits)))}</div>
     </li>`).join('');
   box.innerHTML = `
     <h2>Fixes</h2>
@@ -267,7 +351,7 @@ function renderCopy() {
   const box = $('#copy');
   box.hidden = false;
   const rows = result!.report.copy
-    .map((c) => `<tr><td class="el">${esc(c.target)}</td><td>${esc(c.size)}</td><td>${esc(c.text)}</td></tr>`)
+    .map((c) => `<tr><td class="el">${esc(c.target)}</td><td>${esc(describeSize(c.size))}</td><td>${esc(c.text)}</td></tr>`)
     .join('');
   box.innerHTML = `
     <h2>Copy</h2>
@@ -290,17 +374,19 @@ async function applySelected() {
   }
 }
 
-function download() {
+function download(forUpload = false) {
   const s = session!;
-  const url = URL.createObjectURL(s.zip());
+  const url = URL.createObjectURL(s.zip(forUpload));
+  const stem = s.pkg.zipName.replace(/\.zip$/i, '');
   const a = document.createElement('a');
   a.href = url;
-  a.download = s.pkg.zipName.endsWith('.zip') ? s.pkg.zipName : `${s.pkg.zipName}.zip`;
+  a.download = forUpload ? `${stem}-upload.zip` : `${stem}.zip`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 function reset() {
+  void session?.close();
   session = null;
   result = null;
   for (const id of ['summary', 'checklist', 'fixes', 'copy', 'preview']) $(`#${id}`).hidden = true;
@@ -315,6 +401,7 @@ app.addEventListener('click', async (e) => {
   const action = btn.dataset.action;
   if (action === 'apply') return applySelected();
   if (action === 'download') return download();
+  if (action === 'download-upload') return download(true);
   if (action === 'reset') return reset();
   if (action === 'undo') {
     setBusy(true);
@@ -325,7 +412,7 @@ app.addEventListener('click', async (e) => {
   }
   if (action === 'replay-all') await session?.reloadAll();
   if (action === 'replay') {
-    const f = session?.frames.find((x) => x.size === btn.dataset.size);
+    const f = session?.frames.find((x) => x.label === btn.dataset.frame);
     if (f) await session!.reload(f);
   }
 });
@@ -339,6 +426,15 @@ drop.addEventListener('click', (e) => {
 app.addEventListener('change', (e) => {
   const box = e.target as HTMLInputElement;
   if (box.id === 'allow-net') setThirdParty(box.checked);
+  if (box.dataset.disclaimer !== undefined && session && result) {
+    const target = box.dataset.disclaimer;
+    if (box.checked === namedDisclaimer(target)) delete disclaimerChoices[target];
+    else disclaimerChoices[target] = box.checked;
+    saveDisclaimers(session.pkg.zipName);
+    renderSummary();
+    renderChecklist();
+    app.querySelector<HTMLInputElement>(`input[data-disclaimer="${CSS.escape(target)}"]`)?.focus();
+  }
 });
 const readFile = async (file: File) => load(file.name, new Uint8Array(await file.arrayBuffer()));
 input.addEventListener('change', () => input.files?.[0] && readFile(input.files[0]));

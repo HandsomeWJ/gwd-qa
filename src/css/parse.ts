@@ -182,12 +182,19 @@ export function parseCss(html: string): CssModel {
   return out;
 }
 
-/** "(width: 300px) and (height: 250px)" -> "300x250"; null for other conditions. */
+/**
+ * The served size key GWD wrote a media condition for: "(width: 300px) and (height: 250px)" ->
+ * "300x250", and a min/max range (with its orientation) -> "300x250:320x480:l". Null otherwise.
+ */
 export function sizeOfMedia(media: string | null): string | null {
   if (!media) return null;
-  const w = /\(\s*width\s*:\s*(\d+)px\s*\)/.exec(media);
-  const h = /\(\s*height\s*:\s*(\d+)px\s*\)/.exec(media);
-  return w && h ? `${w[1]}x${h[1]}` : null;
+  const num = (feature: string) => new RegExp(`\\(\\s*${feature}\\s*:\\s*(\\d+(?:\\.\\d+)?)(?:px)?\\s*\\)`).exec(media)?.[1];
+  const [w, h] = [num('width'), num('height')];
+  if (w && h) return `${w}x${h}`;
+  const [minW, minH, maxW, maxH] = ['min-width', 'min-height', 'max-width', 'max-height'].map(num);
+  if (!minW || !minH || !maxW || !maxH) return null;
+  const orientation = /\(\s*orientation\s*:\s*(landscape|portrait)\s*\)/.exec(media)?.[1];
+  return `${minW}x${minH}:${maxW}x${maxH}${orientation ? `:${orientation[0]}` : ''}`;
 }
 
 /** A selector made of exactly one class, e.g. ".gwd-p-1lgf". */

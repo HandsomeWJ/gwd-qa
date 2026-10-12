@@ -1,11 +1,12 @@
-// Plans the layout-neutral fixes as text edits on the ad's HTML. Design-changing problems
-// (type below 8px) are reported, never fixed automatically.
+// Plans the layout-neutral fixes as text edits on the ad's HTML, from what the checks observed in
+// every size and on every page (plain data, never the frames). Design-changing problems (type
+// below 8px) are reported, never fixed automatically.
 
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
 import { singleClass, sizeOfMedia, type CssModel, type Decl, type StyleRule } from '../css/parse';
-import { declared, frameParts, normalLineHeight, type AdFrame, type SafetyMismatch } from '../audit/render';
-import { label, type StaticReport } from '../audit/static';
-import type { CheckId } from '../audit/types';
+import type { StaticReport } from '../audit/static';
+import type { Box, CheckId } from '../audit/types';
+import { describeSize } from '../sizes';
 
 export interface PlannedFix {
   check: CheckId;
@@ -24,14 +25,17 @@ export interface FixPlan {
 export interface PlanInput {
   html: string;
   css: CssModel;
-  frames: AdFrame[];
-  report: StaticReport;
-  safety: SafetyMismatch[];
+  boxes: Box[];
+  /** Per frame label, the media conditions that apply in that frame. */
+  media: Map<string, Set<string>>;
+  report: Pick<StaticReport, 'fadeDecls' | 'unchanged'>;
+  /** Keyframes whose unchanged values differ from the element's own style. */
+  safety: { animation: string }[];
 }
 
 const PADDING = /^padding(-(top|right|bottom|left|block|inline)(-(start|end))?)?$/;
-// An inline <span> inside one of these takes the parent's line-height.
-const TEXT_PARENT = 'p, h1, h2, h3, h4, h5, h6, button, a, li, label, span';
+const TEXT_TAGS = ['p', 'span', 'button'];
+const px = (n: number) => `${+n.toFixed(2)}px`;
 
 class Planner {
   readonly fixes: PlannedFix[] = [];
@@ -40,27 +44,29 @@ class Planner {
   private readonly deleted = new Set<Decl>();
   private readonly html: string;
   private readonly css: CssModel;
-  private readonly frames: AdFrame[];
 
   constructor(private readonly input: PlanInput) {
     this.html = input.html;
     this.css = input.css;
-    this.frames = input.frames;
   }
 
   baseRule(cls: string): StyleRule | undefined {
     return this.css.rules.find((r) => r.media === null && singleClass(r.selector) === cls);
   }
 
-  mediaRule(cls: string, size: string): StyleRule | undefined {
-    return this.css.rules.filter((r) => sizeOfMedia(r.media) === size && singleClass(r.selector) === cls).pop();
+  /** The last rule for a class that applies in a frame through @media and declares `prop`. */
+  sizeRule(cls: string, frame: string, prop: string): StyleRule | undefined {
+    const applies = this.input.media.get(frame);
+    return this.css.rules
+      .filter((r) => r.media !== null && applies?.has(r.media) && singleClass(r.selector) === cls && r.decls.some((d) => d.prop === prop))
+      .pop();
   }
 
   /** The class GWD styles an element through: the one whose base rule carries the most declarations. */
-  mainClass(el: Element): string | null {
+  mainClass(classes: string[]): string | null {
     let best: string | null = null;
     let bestCount = -1;
-    for (const cls of el.classList) {
+    for (const cls of classes) {
       const n = this.baseRule(cls)?.decls.length ?? -1;
       if (n > bestCount) {
         best = cls;
@@ -70,16 +76,19 @@ class Planner {
     return bestCount >= 0 ? best : null;
   }
 
-  /** Every element matching `selector`, in every size, grouped by its main class. */
-  byClass(selector: string): Map<string, { el: Element; frame: AdFrame }[]> {
-    const out = new Map<string, { el: Element; frame: AdFrame }[]>();
-    for (const frame of this.frames) {
-      for (const el of frameParts(frame).doc.querySelectorAll(selector)) {
-        const cls = this.mainClass(el) ?? `#${el.id || label(el)}`;
-        out.set(cls, [...(out.get(cls) ?? []), { el, frame }]);
-      }
+  /** Elements with these tags, in every size and on every page, grouped by main class. */
+  byClass(tags: string[]): Map<string, Box[]> {
+    const out = new Map<string, Box[]>();
+    for (const b of this.input.boxes) {
+      if (!tags.includes(b.tag)) continue;
+      const cls = this.mainClass(b.classes) ?? `#${b.id || b.target}`;
+      out.set(cls, [...(out.get(cls) ?? []), b]);
     }
     return out;
+  }
+
+  manualNote(check: CheckId, detail: string) {
+    if (!this.manual.some((m) => m.detail === detail)) this.manual.push({ check, detail });
   }
 
   /** Edits that add declarations to classes' base rules, creating missing rules in the main <style>. */
@@ -108,19 +117,15 @@ class Planner {
     const moving: string[] = [];
     const adds = new Map<string, string[]>();
     const movingAdds = new Map<string, string[]>();
-    for (const [cls, seen] of this.byClass('button')) {
-      const padded = seen.filter(({ el, frame }) => {
-        const c = frameParts(frame).win.getComputedStyle(el);
-        return [c.paddingTop, c.paddingRight, c.paddingBottom, c.paddingLeft].some((v) => v !== '0px');
-      });
+    for (const [cls, seen] of this.byClass(['button'])) {
+      const padded = seen.filter((b) => b.computed.padding.some((v) => v !== 0));
       if (!padded.length) continue;
       if (cls.startsWith('#')) {
-        this.manual.push({ check: 'buttonPadding', detail: `${cls} has no class to set padding on; change it in GWD.` });
+        this.manualNote('buttonPadding', `${cls} has no class to set padding on; change it in GWD.`);
         continue;
       }
-      const { el, frame } = padded[0];
-      const cs = frameParts(frame).win.getComputedStyle(el);
-      const [top, right, bottom, left] = [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(parseFloat);
+      const cs = padded[0].computed;
+      const [top, right, bottom, left] = cs.padding;
       const rule = this.baseRule(cls);
       const padDecls = rule?.decls.filter((d) => PADDING.test(d.prop)) ?? [];
       const perSize = this.css.rules.some((r) => r.media && singleClass(r.selector) === cls && r.decls.some((d) => PADDING.test(d.prop)));
@@ -128,7 +133,7 @@ class Planner {
       const insetOnly = top === 0 && right === 0 && bottom === 0 && left > 0 && cs.textAlign === 'center' && !cs.whiteSpace.startsWith('pre');
       const fromUserAgent = !padDecls.length;
       if (perSize || (!insetOnly && !fromUserAgent)) {
-        this.manual.push({ check: 'buttonPadding', detail: `.${cls} padding ${cs.padding} cannot be zeroed without moving its text; change it in GWD.` });
+        this.manualNote('buttonPadding', `.${cls} padding ${cs.paddingText} cannot be zeroed without moving its text; change it in GWD.`);
         continue;
       }
       if (rule && padDecls.length) {
@@ -142,10 +147,7 @@ class Planner {
         this.deleted.add(first);
       } else {
         // The browser's default padding: zeroing it keeps centred text in place only in a fixed-size button.
-        const fixedSize = padded.every(({ el: b, frame: fr }) => {
-          const { win } = frameParts(fr);
-          return declared(win, b, 'width') && declared(win, b, 'height');
-        });
+        const fixedSize = padded.every((b) => b.declared.width && b.declared.height);
         if (fixedSize) adds.set(cls, ['padding: 0px;']);
         else movingAdds.set(cls, ['padding: 0px;']);
         if (!fixedSize) {
@@ -169,10 +171,15 @@ class Planner {
   buttonColor() {
     const adds = new Map<string, string[]>();
     const done: string[] = [];
-    for (const [cls, seen] of this.byClass('button')) {
-      if (cls.startsWith('#') || seen.every(({ el, frame }) => declared(frameParts(frame).win, el, 'color'))) continue;
-      const { el, frame } = seen[0];
-      const color = frameParts(frame).win.getComputedStyle(el).color;
+    for (const [cls, seen] of this.byClass(['button'])) {
+      const bare = seen.filter((b) => !b.declared.color);
+      if (cls.startsWith('#') || !bare.length) continue;
+      const colors = [...new Set(bare.map((b) => b.computed.color))];
+      if (colors.length > 1) {
+        this.manualNote('buttonColor', `.${cls} renders ${colors.join(' and ')} in different sizes; set its color per size in GWD.`);
+        continue;
+      }
+      const color = colors[0];
       adds.set(cls, [`color: ${color};`]);
       done.push(`.${cls} (${color})`);
     }
@@ -183,27 +190,23 @@ class Planner {
     const safe = new Map<string, string[]>();
     const moving = new Map<string, string[]>();
     const why: string[] = [];
-    for (const [cls, seen] of this.byClass('p, span')) {
-      const missing = seen.some(({ el, frame }) => {
-        const { win } = frameParts(frame);
-        return declared(win, el, 'margin-block-start') !== '0px' || declared(win, el, 'margin-block-end') !== 'auto';
-      });
+    for (const [cls, seen] of this.byClass(['p', 'span'])) {
+      const missing = seen.some((b) => b.declared.marginBlockStart !== '0px' || b.declared.marginBlockEnd !== 'auto');
       if (!missing) continue;
       if (cls.startsWith('#')) {
-        this.manual.push({ check: 'marginBlock', detail: `${cls} has no class to add margin-block to; add it in GWD.` });
+        this.manualNote('marginBlock', `${cls} has no class to add margin-block to; add it in GWD.`);
         continue;
       }
       // GWD zeroes paragraph margins; without that, the browser's default margin is in play and removing it moves text.
-      const margined = seen.find(({ el, frame }) => {
-        const cs = frameParts(frame).win.getComputedStyle(el);
+      const margined = seen.find(({ computed: cs }) => {
         const inline = cs.display === 'inline';
         const flowsBelow = cs.position === 'static' || cs.position === 'relative';
-        return !inline && (parseFloat(cs.marginTop) !== 0 || (flowsBelow && parseFloat(cs.marginBottom) !== 0));
+        return !inline && (cs.marginTop !== 0 || (flowsBelow && cs.marginBottom !== 0));
       });
       if (margined) {
-        const cs = frameParts(margined.frame).win.getComputedStyle(margined.el);
+        const cs = margined.computed;
         moving.set(cls, ['margin-block: 0px auto;']);
-        why.push(`.${cls} has margin ${cs.marginTop} / ${cs.marginBottom} today`);
+        why.push(`.${cls} has margin ${px(cs.marginTop)} / ${px(cs.marginBottom)} today`);
       } else {
         safe.set(cls, ['margin-block: 0px auto;']);
       }
@@ -220,37 +223,36 @@ class Planner {
 
   lineHeight() {
     const planned = new Map<StyleRule, number>();
+    const conflicts = new Set<StyleRule>();
     const inherit = new Map<string, string[]>();
-    for (const frame of this.frames) {
-      const { doc, win } = frameParts(frame);
-      for (const el of doc.querySelectorAll('p, span, button')) {
-        if (declared(win, el, 'line-height')) continue;
-        const cls = this.mainClass(el);
-        if (!cls) {
-          this.manual.push({ check: 'lineHeight', detail: `${frame.size} ${label(el)} has no styled class; set its line-height in GWD.` });
-          continue;
-        }
-        if (el.tagName === 'SPAN' && el.parentElement?.closest(TEXT_PARENT)) {
-          inherit.set(cls, ['line-height: inherit;']);
-          continue;
-        }
-        // Declare it where this size's font-size lives, so other sizes keep theirs.
-        const own = this.mediaRule(cls, frame.size);
-        const rule = own?.decls.some((d) => d.prop === 'font-size') ? own : this.baseRule(cls);
-        if (!rule) continue;
-        const px = normalLineHeight(win, el);
-        const prior = planned.get(rule);
-        if (prior !== undefined && prior !== px) {
-          this.manual.push({ check: 'lineHeight', detail: `.${cls} renders ${prior}px and ${px}px in different sizes; set line-height per size in GWD.` });
-          continue;
-        }
-        planned.set(rule, px);
+    for (const b of this.input.boxes) {
+      if (!TEXT_TAGS.includes(b.tag) || b.declared.lineHeight) continue;
+      const cls = this.mainClass(b.classes);
+      if (!cls) {
+        this.manualNote('lineHeight', `${b.frame} ${b.target} has no styled class; set its line-height in GWD.`);
+        continue;
       }
+      if (b.tag === 'span' && b.inTextParent) {
+        inherit.set(cls, ['line-height: inherit;']);
+        continue;
+      }
+      // Declare it where this size's font-size lives, so other sizes keep theirs.
+      const rule = this.sizeRule(cls, b.frame, 'font-size') ?? this.baseRule(cls);
+      if (!rule || b.normalLineHeight === undefined) continue;
+      const prior = planned.get(rule);
+      if (prior !== undefined && prior !== b.normalLineHeight) {
+        conflicts.add(rule);
+        this.manualNote('lineHeight', `.${cls} renders ${prior}px and ${b.normalLineHeight}px in different sizes; set line-height per size in GWD.`);
+        continue;
+      }
+      planned.set(rule, b.normalLineHeight);
     }
-    const edits = [...planned].map(([rule, px]) => insertDecl(this.html, rule, `line-height: ${px}px;`, this.deleted));
+    conflicts.forEach((rule) => planned.delete(rule));
+    const edits = [...planned].map(([rule, lh]) => insertDecl(this.html, rule, `line-height: ${lh}px;`, this.deleted));
     edits.push(...this.addToBase(inherit));
+    const where = (media: string) => describeSize(sizeOfMedia(media) ?? media);
     const notes = [
-      ...[...planned].map(([rule, px]) => `${rule.selector}${rule.media ? ` in ${sizeOfMedia(rule.media)}` : ''}: ${px}px`),
+      ...[...planned].map(([rule, lh]) => `${rule.selector}${rule.media ? ` in ${where(rule.media)}` : ''}: ${lh}px`),
       ...[...inherit.keys()].map((c) => `.${c}: inherit`),
     ];
     this.add('lineHeight', 'Declare line-height (the value it renders now)', notes.join(', '), edits);
@@ -268,7 +270,7 @@ class Planner {
     let blocks = 0;
     for (const { block, props } of this.input.report.unchanged) {
       if (unsafe.has(block.name)) {
-        this.manual.push({ check: 'keyframes', detail: `${block.name}: deleting ${props.join(', ')} would change how it looks, because those values differ from the element's own style.` });
+        this.manualNote('keyframes', `${block.name}: deleting ${props.join(', ')} would change how it looks, because those values differ from the element's own style.`);
         continue;
       }
       blocks++;
