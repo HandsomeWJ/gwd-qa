@@ -42,7 +42,22 @@ export function adUrl(id: string, path: string): string {
 
 export async function startWorker(): Promise<void> {
   if (!('serviceWorker' in navigator)) throw new Error('This browser has no service workers, which the preview needs.');
-  await navigator.serviceWorker.register(`${BASE}sw.js`, { scope: BASE });
+  const reg = await navigator.serviceWorker.register(`${BASE}sw.js`, { scope: BASE });
+  // A returning visitor still runs the previous worker. Fetch the current one and wait for it
+  // to take over, so no preview is served by stale code (such as one without request blocking).
+  await reg.update().catch(() => undefined);
+  const pending = reg.installing ?? reg.waiting;
+  if (pending) {
+    await new Promise<void>((done) => {
+      const timer = setTimeout(done, 5000);
+      pending.addEventListener('statechange', () => {
+        if (pending.state === 'activated' || pending.state === 'redundant') {
+          clearTimeout(timer);
+          done();
+        }
+      });
+    });
+  }
   await navigator.serviceWorker.ready;
   if (!navigator.serviceWorker.controller) {
     // First visit: wait for clients.claim() so the page itself is controlled too.
