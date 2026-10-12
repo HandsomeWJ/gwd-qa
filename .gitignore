@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# Real ads for local testing only: client files must never reach the public repo.
+local-fixtures/
+.DS_Store
