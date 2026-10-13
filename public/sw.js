@@ -18,11 +18,11 @@ const BLOCK_THIRD_PARTY = [
   "object-src 'none'",
 ].join('; ');
 
-// GWD's runtime files, such as gwdpage_min.js, gwd-events-support.1.0.js and gwdpage_style.css (the
-// same rule as missingRuntime() in src/zip.ts). An ad dropped as just its HTML, or an incomplete
-// folder, loads them without having them, so a missing script gets the site's own stand-in
-// (gwd-standin.js) and a missing style is empty.
-const GWD_SCRIPT = /^gwd[\w.-]*\.js$/i;
+// GWD's runtime files, such as gwdpage_min.js, gwd-events-support.1.0.js, groups_runtime.min.1.0.js
+// and gwdpage_style.css (the same rule as missingRuntime() in src/zip.ts). An ad dropped as just its
+// HTML, or an incomplete folder, loads them without having them, so a missing script gets the site's
+// own stand-in (gwd-standin.js) and a missing style is empty.
+const GWD_SCRIPT = /^(gwd|groups_runtime)[\w.-]*\.js$/i;
 const GWD_STYLE = /^gwd[\w.-]*\.css$/i;
 let standin = null; // the stand-in's text, fetched once per worker
 

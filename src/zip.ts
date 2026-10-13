@@ -96,9 +96,10 @@ export function dirOf(path: string): string {
   return k < 0 ? '' : path.slice(0, k + 1);
 }
 
-// GWD's runtime files, such as gwd_webcomponents_v1_min.js, gwdpage_min.js, gwd-events-support.1.0.js
-// and gwdpage_style.css. The service worker (public/sw.js) stands in for these when they are missing.
-const GWD_RUNTIME = /^gwd[\w.-]*\.(js|css)$/i;
+// GWD's runtime files, such as gwd_webcomponents_v1_min.js, gwdpage_min.js, gwd-events-support.1.0.js,
+// gwdpage_style.css and the groups runtime, groups_runtime.min.1.0.js. The service worker
+// (public/sw.js) stands in for these when they are missing.
+const GWD_RUNTIME = /^(gwd[\w.-]*\.(js|css)|groups_runtime[\w.-]*\.js)$/i;
 
 /** GWD runtime files the ad's HTML loads but the package does not have, by path. */
 export function missingRuntime(pkg: AdPackage): string[] {
