@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyEdits, insertDecl, insertRule, removeDecl, setValue } from '../src/css/edit';
+import { applyEdits, insertDecl, insertRule, mergeEdits, removeDecl, setValue } from '../src/css/edit';
 import { lastCompound, parseCss, singleClass, sizeOfMedia } from '../src/css/parse';
 import { fixture } from './fixture';
 
@@ -94,6 +94,15 @@ describe('edits', () => {
     const style = '  <style>.a { color: red; }</style>';
     const added = applyEdits(style, [insertRule(style, parseCss(style).styleBlocks[0], '.b', ['margin-block: 0px auto;'], true)]);
     expect(parseCss(added).rules.map((r) => r.selector)).toEqual(['.a', '.b']);
+  });
+
+  it('adds several rules to a blank block, on one line or several', () => {
+    for (const body of ['', ' ', '\n    ']) {
+      const src = `<style>\n    @media (width: 300px) and (height: 600px) {${body}}\n</style>`;
+      const block = parseCss(src).media[0];
+      const out = applyEdits(src, mergeEdits([insertRule(src, block, '.a', ['line-height: 18px;']), insertRule(src, block, '.b', ['line-height: 14px;'])]));
+      expect(parseCss(out).rules.map((r) => `${r.media} ${r.selector}`).sort(), JSON.stringify(body)).toEqual(['(width: 300px) and (height: 600px) .a', '(width: 300px) and (height: 600px) .b']);
+    }
   });
 
   it('adds a rule at the end of a style element', () => {
