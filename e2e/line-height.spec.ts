@@ -55,6 +55,24 @@ test('keeps the spacing between the ends of a range whose two ends are exact siz
   }
 });
 
+test('measures every span of a class where it sits in different paragraphs, in a size no frame shows', async ({ page, browser }) => {
+  // Two id-less spans of one class take their font from different paragraphs, which the range block sizes differently.
+  const css = (cls: string, top: number) => `    .${cls} {\n      position: absolute;\n      left: 10px;\n      top: ${top}px;\n      margin: 0px;\n      font-family: Arial;\n      font-size: 16px;\n    }\n`;
+  const block = (media: string, a: number, b: number) => `    @media ${media} {\n      .gwd-p-ka {\n        font-size: ${a}px;\n      }\n      .gwd-p-kb {\n        font-size: ${b}px;\n      }\n    }\n`;
+  const html = mockAdHtml()
+    .replace('["300x250", "300x250:320x480"]', '["300x600", "300x250:320x480", "300x250", "320x480"]')
+    .replace('  </style>', `${css('gwd-p-ka', 120)}${css('gwd-p-kb', 170)}    .gwd-span-kx {\n      color: rgb(0, 0, 200);\n    }\n${block('(min-width: 300px) and (max-width: 320px) and (min-height: 250px) and (max-height: 480px)', 30, 10)}${block('(width: 300px) and (height: 250px)', 12, 12)}${block('(width: 320px) and (height: 480px)', 14, 14)}  </style>`)
+    .replace('<button class="gwd-button-b"', '<p class="gwd-p-ka" id="SA_ka_1">Alpha <span class="gwd-span-kx">one</span></p>\n        <p class="gwd-p-kb" id="SA_kb_1">Beta <span class="gwd-span-kx">two</span></p>\n        <button class="gwd-button-b"');
+  await load(page, 'spans.zip', mockZip(html));
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#fixes .banner')).toContainText('exactly where they were', { timeout: 90_000 });
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
+  const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
+  for (const [w, h] of [[310, 400], [300, 600], [300, 250], [320, 480]]) {
+    expect(await spacing(browser, fixed, w, h), `${w}x${h}`).toEqual(await spacing(browser, html, w, h));
+  }
+});
+
 test('leaves the base size to you where a size no frame shows sets a font it cannot measure', async ({ page }) => {
   await load(page, 'range.zip', mockZip(shadowedRange('font-weight: inherit;')));
   await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-c in 300x250 to 320x480 was not measured, and a value in its base rule would reach it there, so its base size gets none');

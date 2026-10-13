@@ -367,7 +367,7 @@ interface Context {
   css: CssModel;
   fonts: FontBlock[];
   fit: Fitting | null;
-  claimed: Set<string>; // element and block pairs a frame already probes
+  claimed: WeakMap<Element, Set<number>>; // the blocks each element is already probed under
   specs: ProbeSpec[];
 }
 
@@ -388,11 +388,11 @@ function askProbes(win: Window, el: Element, box: Box, ctx: Context) {
   const below = box.inherits?.length ? [...el.querySelectorAll('*')] : [];
   for (const fb of ctx.fonts) {
     if (applying.includes(fb)) continue;
-    const key = `${box.target}|${box.page}|${fb.block.start}`;
-    if (ctx.claimed.has(key)) continue;
+    const done = ctx.claimed.get(el) ?? new Set<number>();
+    if (done.has(fb.block.start)) continue;
     const inside = fb.rules.some((r) => below.some((n) => matches(n, r.selector)));
     if (!inside && !touches(fb)) continue;
-    ctx.claimed.add(key);
+    ctx.claimed.set(el, done.add(fb.block.start));
     ctx.specs.push({ box, start: fb.block.start, font: inside ? null : fontUnder(win, chain, fb, ctx.css), text: el.textContent ?? '' });
   }
 }
@@ -542,7 +542,7 @@ export async function observe(frames: AdFrame[], css: CssModel): Promise<Observa
       rules: css.rules.filter((r) => r.start > block.open && r.start < block.close && r.decls.some((d) => FONT_DECL.test(d.prop))),
     }))
     .filter((fb) => fb.rules.length);
-  const claimed = new Set<string>();
+  const claimed = new WeakMap<Element, Set<number>>();
   const results = await Promise.all(frames.map(async (f) => {
     const { doc, win } = frameParts(f);
     const boxes: Box[] = [];
