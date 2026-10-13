@@ -79,8 +79,30 @@ export async function waitForAd(el: HTMLIFrameElement, timeoutMs = 10_000): Prom
     const doc = el.contentDocument;
     return doc?.readyState === 'complete' && (!!doc.querySelector('.gwd-play-animation') || !doc.querySelector('gwd-pagedeck, gwd-page'));
   }, timeoutMs);
-  if (started) await sleep(SETTLE_MS);
+  if (started) {
+    if (el.contentDocument) await Promise.race([fontsLoaded(el.contentDocument), sleep(8000)]);
+    await sleep(SETTLE_MS);
+  }
   return started;
+}
+
+/**
+ * Loads every font the ad's text uses. Line heights are measured from font metrics, and a web
+ * font that has not arrived yet measures as its fallback (Times, Arial), which has other metrics.
+ * fonts.ready alone is not enough: a font only starts loading once something lays it out.
+ */
+async function fontsLoaded(doc: Document): Promise<void> {
+  const fonts = doc.fonts;
+  const win = doc.defaultView;
+  if (!fonts || !win) return;
+  const wanted = new Map<string, string>();
+  for (const el of doc.body.querySelectorAll('*')) {
+    if (!hasDirectText(el)) continue;
+    const cs = win.getComputedStyle(el);
+    wanted.set(`${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`, (el.textContent ?? '').trim().slice(0, 40));
+  }
+  await Promise.all([...wanted].map(([font, text]) => fonts.load(font, text || 'Xg').catch(() => [])));
+  await fonts.ready;
 }
 
 function deckOf(doc: Document): PageDeck | null {
@@ -232,6 +254,9 @@ function boxesIn(f: AdFrame, scope: Element, multi: boolean): Box[] {
     const d = declared(win, el, DECLARED);
     const box: Box = {
       frame: f.label,
+      size: f.size,
+      // GWD's text effects replace a text with id- and class-less word spans while the ad runs
+      runtime: !el.id && !el.classList.length && !!el.closest('[gwd-text-effect]'),
       page: pageOf(el, multi),
       target: label(el),
       id: el.id,
@@ -248,6 +273,8 @@ function boxesIn(f: AdFrame, scope: Element, multi: boolean): Box[] {
       },
       computed: {
         color: cs.color,
+        fontSize: parseFloat(cs.fontSize),
+        fontFamily: cs.fontFamily,
         lineHeight: cs.lineHeight,
         padding: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(parseFloat) as Box['computed']['padding'],
         paddingText: cs.padding,
@@ -263,7 +290,15 @@ function boxesIn(f: AdFrame, scope: Element, multi: boolean): Box[] {
     if (typed) {
       box.type = { fontSize: parseFloat(cs.fontSize), scale: scaleOf(win, el), onScreen: onScreen(win, el), moves: moves(el), hidden: hiddenNow(win, el) };
     }
-    if (TEXT_TAGS.has(tag) && !box.declared.lineHeight) box.normalLineHeight = normalLineHeight(win, el);
+    if (TEXT_TAGS.has(tag) && !box.declared.lineHeight) {
+      box.normalLineHeight = normalLineHeight(win, el);
+      box.fontLoaded = el.ownerDocument.fonts?.check(`${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`, box.text || 'Xg') ?? true;
+    }
+    if (box.inTextParent) {
+      const parent = el.parentElement!.closest(TEXT_PARENT)!;
+      const lh = win.getComputedStyle(parent).lineHeight;
+      box.parentLineHeight = lh === 'normal' ? normalLineHeight(win, parent) : parseFloat(lh);
+    }
     out.push(box);
   }
   return out;
@@ -352,6 +387,18 @@ export async function positions(frames: AdFrame[]): Promise<Map<string, string>>
           for (const b of range.getClientRects()) rects.push([b.left, b.top, b.width, b.height].map((v) => v.toFixed(2)).join(','));
         }
         out.push([key, `${rects.join(' | ')} ${win.getComputedStyle(el).display}`]);
+      }
+      // Line spacing too, element by element: unlike positions it does not depend on what is
+      // showing at this moment, so text that is hidden or not yet typed is compared as well.
+      for (const el of scope.querySelectorAll('p, span, button')) {
+        if (!el.id && !el.classList.length && el.closest('[gwd-text-effect]')) continue;
+        const page = pageOf(el, multi);
+        let key = `${f.label}${page ? ` ${page}` : ''} ${label(el)} line-height`;
+        const n = (seen.get(key) ?? 0) + 1;
+        seen.set(key, n);
+        if (n > 1) key += ` (${n})`;
+        const lh = win.getComputedStyle(el).lineHeight;
+        out.push([key, lh === 'normal' ? `${normalLineHeight(win, el)}px` : lh]);
       }
     });
     return out;

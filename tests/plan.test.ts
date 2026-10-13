@@ -25,31 +25,98 @@ describe('line-height', () => {
   const html = fixture('mini-ad.html').replace('        font-size: 12px;\n        line-height: 14px;\n', '        font-size: 12px;\n');
   const head = { tag: 'p', classes: ['gwd-p-head'], target: 'p#SA_headline_10' };
 
-  it('goes into the rule where each size gets its font-size, at the px it renders now', () => {
+  it('puts each size\'s value, at the px it renders now, in that size\'s own media block', () => {
     const { fix, applied } = plan(html, [
-      box({ ...head, frame: '300x250', normalLineHeight: 15 }),
-      box({ ...head, frame: '300x600', normalLineHeight: 19.5 }),
+      box({ ...head, frame: '300x250', size: '300x250', normalLineHeight: 15, computed: { fontSize: 12 } }),
+      box({ ...head, frame: '300x600', size: '300x600', normalLineHeight: 19.5, computed: { fontSize: 16 } }),
     ], { '300x250': [M250], '300x600': [M600] });
-    expect(fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 15px, .gwd-p-head: 19.5px');
-    expect(applied('lineHeight')).toContain('      top: 0px;\n      line-height: 19.5px;\n    }');
+    expect(fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 15px, .gwd-p-head in 300x600: 19.5px');
     expect(applied('lineHeight')).toContain('        font-size: 12px;\n        line-height: 15px;\n      }');
+    // the 300x600 block had no rule for the class: it gets one, and the base rule stays untouched
+    expect(applied('lineHeight')).toContain('    @media (width: 300px) and (height: 600px) {\n      .gwd-p-head {\n        line-height: 19.5px;\n      }\n    }');
+    expect(applied('lineHeight')).toContain('      top: 0px;\n    }');
+  });
+
+  it('puts the design\'s base size, which has no media block, in the base rule', () => {
+    const { fix, applied } = plan(html, [
+      box({ ...head, frame: '320x480', size: '320x480', normalLineHeight: 19.5, computed: { fontSize: 16 } }),
+      box({ ...head, frame: '300x250', size: '300x250', normalLineHeight: 15, computed: { fontSize: 12 } }),
+    ], { '320x480': [], '300x250': [M250] });
+    expect(fix('lineHeight')?.detail).toBe('.gwd-p-head: 19.5px, .gwd-p-head in 300x250: 15px');
+    expect(applied('lineHeight')).toContain('      top: 0px;\n      line-height: 19.5px;\n    }');
+  });
+
+  it('leaves out word spans a text effect makes at runtime', () => {
+    const { fix, p } = plan(html, [box({ tag: 'span', classes: [], runtime: true, normalLineHeight: 30, computed: { fontSize: 24 } })], {});
+    expect(fix('lineHeight')).toBeUndefined();
+    expect(p.manual).toEqual([]);
   });
 
   it('uses a range size\'s own rule when its font-size lives there', () => {
     const withRange = html.replace('    @media (width: 300px) and (height: 600px) {}', `    @media ${RANGE} {\n      .gwd-p-swap {\n        font-size: 12px;\n      }\n    }\n    @media (width: 300px) and (height: 600px) {}`);
     const label = '320x480 (range 300x250 to 320x480)';
-    const { applied } = plan(withRange, [box({ tag: 'p', classes: ['gwd-p-swap'], frame: label, normalLineHeight: 14.5 })], { [label]: [RANGE] });
+    const { applied } = plan(withRange, [box({ tag: 'p', classes: ['gwd-p-swap'], frame: label, size: '300x250:320x480', normalLineHeight: 14.5 })], { [label]: [RANGE] });
     expect(applied('lineHeight')).toContain('        font-size: 12px;\n        line-height: 14.5px;\n      }');
+  });
+
+  it('lets an exact size inside a range keep its own value, and gives the range the other end\'s', () => {
+    // GWD writes ranges first, so at 300x250 the exact block overrides the range block
+    const withRange = html.replace(/(    @media \(width: 300px\) and \(height: 250px\) \{)/, `    @media ${RANGE} {\n      .gwd-p-head {\n        font-size: 10px;\n      }\n    }\n$1`);
+    const [lo, hi] = ['300x250 (range 300x250 to 320x480)', '320x480 (range 300x250 to 320x480)'];
+    const range = '300x250:320x480';
+    const { fix, p, applied } = plan(withRange, [
+      box({ ...head, frame: '300x250', size: '300x250', normalLineHeight: 15 }),
+      box({ ...head, frame: lo, size: range, normalLineHeight: 15 }),
+      box({ ...head, frame: hi, size: range, normalLineHeight: 12.5 }),
+    ], { '300x250': [RANGE, M250], [lo]: [RANGE, M250], [hi]: [RANGE] });
+    expect(p.manual).toEqual([]);
+    expect(fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 15px, .gwd-p-head in 300x250 to 320x480: 12.5px');
+    expect(applied('lineHeight')).toContain('        font-size: 10px;\n        line-height: 12.5px;\n      }');
+    expect(applied('lineHeight')).toContain('        font-size: 12px;\n        line-height: 15px;\n      }');
+  });
+
+  it('gives a span in its parent\'s font its own px line-height when the parent\'s differs', () => {
+    const { fix } = plan(html, [
+      box({ tag: 'span', classes: ['gwd-span-hl'], inTextParent: true, normalLineHeight: 34, parentLineHeight: 19.5 }),
+    ], { '300x250': [M250] });
+    expect(fix('lineHeight')?.detail).toBe('.gwd-span-hl in 300x250: 34px');
+  });
+
+  it('refuses measurements taken before the web font loaded', () => {
+    const { fix, p } = plan(html, [
+      box({ ...head, frame: '300x250', size: '300x250', normalLineHeight: 12, fontLoaded: false, computed: { fontSize: 12, fontFamily: 'Brand' } }),
+      box({ ...head, frame: '300x600', size: '300x600', normalLineHeight: 19, computed: { fontSize: 16, fontFamily: 'Brand' } }),
+    ], { '300x250': [M250], '300x600': [M600] });
+    expect(fix('lineHeight')).toBeUndefined();
+    expect(p.manual[0].detail).toContain('its web font had not loaded');
+  });
+
+  it('accepts a font whose metrics round differently at different sizes', () => {
+    // Chromium rounds ascent and descent to whole pixels: 8px -> 10, 15px -> 17 (ratios 1.25 and 1.13)
+    const { fix } = plan(html, [
+      box({ ...head, frame: '300x250', size: '300x250', normalLineHeight: 10, computed: { fontSize: 8, fontFamily: 'Brand' } }),
+      box({ ...head, frame: '300x600', size: '300x600', normalLineHeight: 17, computed: { fontSize: 15, fontFamily: 'Brand' } }),
+    ], { '300x250': [M250], '300x600': [M600] });
+    expect(fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 10px, .gwd-p-head in 300x600: 17px');
+  });
+
+  it('covers a size that sets its own font-size but was not measured', () => {
+    // only the base size is measured; 300x250 has its own font-size, which the base value must not reach
+    const { applied } = plan(html, [
+      box({ ...head, frame: '320x480', normalLineHeight: 16, computed: { fontSize: 16, fontFamily: 'Brand' } }),
+    ], { '320x480': [] });
+    expect(applied('lineHeight')).toContain('      top: 0px;\n      line-height: 16px;\n    }');
+    expect(applied('lineHeight')).toContain('        font-size: 12px;\n        line-height: 12px;\n      }');
   });
 
   it('gives a span inside text line-height: inherit, and leaves sizes that disagree to you', () => {
     const { fix, p } = plan(html, [
-      box({ tag: 'span', classes: ['gwd-span-hl'], inTextParent: true }),
+      box({ tag: 'span', classes: ['gwd-span-hl'], inTextParent: true, normalLineHeight: 19.5, parentLineHeight: 19.5 }),
       box({ ...head, frame: '300x600', normalLineHeight: 19.5 }),
       box({ ...head, frame: '300x600 again', normalLineHeight: 21 }),
     ], { '300x600': [M600], '300x600 again': [M600] });
     expect(fix('lineHeight')?.detail).toBe('.gwd-span-hl: inherit');
-    expect(p.manual.map((m) => m.detail)).toEqual(['.gwd-p-head renders 19.5px and 21px in different sizes; set line-height per size in GWD.']);
+    expect(p.manual.map((m) => m.detail)).toEqual(['.gwd-p-head renders 19.5px and 21px in 300x600; set its line-height in GWD.']);
   });
 });
 

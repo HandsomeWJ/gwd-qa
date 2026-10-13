@@ -46,6 +46,9 @@ export interface Finding {
  */
 export interface Box {
   frame: string; // frame label
+  size?: string; // served size key of the frame
+  /** Made at runtime (e.g. a text effect's word spans): not in the HTML, so it cannot be edited. */
+  runtime?: boolean;
   page: string; // GWD page id when the ad has more than one page, else ''
   target: string; // label(el)
   id: string;
@@ -58,6 +61,8 @@ export interface Box {
   declared: { lineHeight: string; color: string; width: string; height: string; marginBlockStart: string; marginBlockEnd: string };
   computed: {
     color: string;
+    fontSize: number;
+    fontFamily: string;
     lineHeight: string;
     padding: [number, number, number, number]; // top, right, bottom, left in px
     paddingText: string;
@@ -70,8 +75,12 @@ export interface Box {
   };
   /** The px a browser renders for line-height: normal in its font; set when no line-height is declared. */
   normalLineHeight?: number;
+  /** False when its web font had not loaded, so normalLineHeight measured a fallback font. */
+  fontLoaded?: boolean;
   /** A span inside other text (a p, button, link…), which takes that parent's line-height. */
   inTextParent: boolean;
+  /** For such a span: the px line-height its text parent renders (normal resolved to px). */
+  parentLineHeight?: number;
 }
 
 export interface CopyItem {

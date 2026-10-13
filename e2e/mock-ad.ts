@@ -67,6 +67,17 @@ export function mockAdHtml(headline = 'Headline'): string {
     .gwd-span-x {
       color: rgb(200, 0, 0);
     }
+    .gwd-p-f {
+      position: absolute;
+      left: 10px;
+      top: 110px;
+      margin: 0px;
+      font-family: Arial;
+      font-size: 12px;
+    }
+    .gwd-span-big {
+      font-size: 24px;
+    }
     .gwd-button-b {
       position: absolute;
       left: 10px;
@@ -130,6 +141,7 @@ export function mockAdHtml(headline = 'Headline'): string {
       <gwd-page id="page1">
         <p class="gwd-p-a" id="SA_headline_1">${headline} <span class="gwd-span-x">one</span></p>
         <button class="gwd-button-b" id="SA_cta_1">Go</button>
+        <p class="gwd-p-f" id="SA_body_1">Save<br><span class="gwd-span-big">50%</span> today</p>
         <img src="https://pixel.invalid/p.gif" width="1" height="1" alt="">
       </gwd-page>
       <gwd-page id="page2">

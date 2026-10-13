@@ -13,7 +13,7 @@ The preview also blocks the ad's own requests to other sites by default. The wor
 1. Zip the folder GWD saves to (the one with `Responsive.html` or `index.html`) and drop it on the page.
 2. Every served size loads at its exact dimensions. A size range such as `300x250:320x480` is previewed at its smallest and largest size, keeping its orientation. Each checklist item is checked as each size renders, on every page of the ad: GWD keeps pages it is not showing out of the page, so the checker shows each one in turn.
 3. Small text that is a disclaimer is exempt from the 8px rule. Tick "Disclaimer" on it; text whose id names a disclaimer (`SA_disclaimer_1`, `legal`, `terms`, `tnc`) is ticked for you. The choice is remembered for that zip name in this browser.
-4. Open "Show the edits" under a fix to see the exact lines it changes, tick the fixes you want and apply them. Text positions in every size and on every page are compared before and after, so you can see that nothing moved.
+4. Open "Show the edits" under a fix to see the exact lines it changes, tick the fixes you want and apply them. Text positions and every text's line spacing are compared before and after, in every size and on every page, so you can see that nothing moved.
 5. Read the copy list for typos, review the changes, then download:
    - **Download fixed zip** keeps the same files, in the same order, with only the HTML changed.
    - **Download for upload** also leaves out GWD's backup copies (`_revision/`, `gwd_preview_*/`). It appears when the zip has them.
@@ -27,7 +27,7 @@ Each open tab keeps its ad in its own cache, so several ads can be checked side 
 | Check | Passes when | Fixed automatically |
 |---|---|---|
 | Type size | Rendered text is at least 8px (font-size × every ancestor scale), except text marked as a disclaimer | No: it changes the design. Each item says what scale or font-size would reach 8px |
-| line-height | Every `<p>`, `<span>` and `<button>` declares one, in every size | Yes: the px value it renders now, in the rule where that size's font-size lives; `inherit` for inline spans |
+| line-height | Every `<p>`, `<span>` and `<button>` declares one, in every size | Yes: the px value each size renders now, measured after the ad's web fonts have loaded and declared in the media block that wins in that size (the base size in its base rule), so no value reaches another size; a span gets `inherit` only where that already equals its own spacing. Word spans that text effects create while the ad runs are skipped |
 | Button padding | Every `<button>` has `padding: 0px` | Yes, when the text cannot move: a left-only inset on centred text becomes `text-indent` |
 | Button color | Every `<button>` declares `color` | Yes: the color it renders now |
 | margin-block | Every `<p>` and `<span>` declares `margin-block: 0px auto` | Yes |

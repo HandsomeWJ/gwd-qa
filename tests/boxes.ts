@@ -21,6 +21,8 @@ export function box(input: BoxInput = {}): Box {
     declared: { lineHeight: '', color: '', width: '', height: '', marginBlockStart: '0px', marginBlockEnd: 'auto', ...declared },
     computed: {
       color: 'rgb(0, 0, 0)',
+      fontSize: 16,
+      fontFamily: 'Arial',
       lineHeight: 'normal',
       padding: [0, 0, 0, 0],
       paddingText: '0px',

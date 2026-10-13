@@ -21,7 +21,7 @@ export function renderFindings(boxes: Box[]): Finding[] {
         out.push({ check: 'type', level: 'note', ...where, message: `"${b.text}" is ${px.toFixed(2)}px but sits off-canvas and never moves, so it is never visible.` });
       }
     }
-    if (!TEXT_TAGS.has(b.tag)) continue;
+    if (!TEXT_TAGS.has(b.tag) || b.runtime) continue;
     if (!b.declared.lineHeight) {
       out.push({ check: 'lineHeight', level: 'fail', ...where, message: `No line-height (renders ${b.computed.lineHeight}).` });
     }

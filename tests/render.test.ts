@@ -12,6 +12,10 @@ describe('renderFindings', () => {
     expect(note).toMatchObject({ check: 'type', level: 'note' });
   });
 
+  it('skips declaration checks on word spans a text effect makes at runtime', () => {
+    expect(renderFindings([box({ tag: 'span', runtime: true, declared: { marginBlockStart: '' } })])).toEqual([]);
+  });
+
   it('checks line-height, button padding and color, and margin-block, naming the page', () => {
     const button = box({ tag: 'button', page: 'page2', computed: { padding: [1, 6, 1, 6], paddingText: '1px 6px', lineHeight: '17px' } });
     const span = box({ tag: 'span', declared: { lineHeight: '10px', marginBlockStart: '' } });
