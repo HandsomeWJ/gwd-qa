@@ -21,9 +21,10 @@ describe('comparePositions', () => {
     after.set('300x250 p#a "Headline"', '10,11,80,18 block');
     after.set('300x250 span.x line-height', '19px');
     after.delete('300x250 p#a line-height (2)');
+    after.delete('300x250 span.x "one"');
     expect(comparePositions(before, after)).toMatchObject({
       texts: 3,
-      moved: ['300x250 p#a "Headline"'],
+      moved: ['300x250 p#a "Headline"', '300x250 span.x "one"'],
       spacings: 3,
       respaced: ['300x250 p#a line-height (2)', '300x250 span.x line-height'],
     });

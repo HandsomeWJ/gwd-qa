@@ -1,7 +1,7 @@
 import { strFromU8, unzipSync } from 'fflate';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { GWD_RUNTIME, mockAdHtml, mockAdZip } from './mock-ad';
+import { GWD_RUNTIME, mockAdHtml, mockAdZip, mockZip } from './mock-ad';
 
 type Gwdqa = { session: { id: string; key: string; html: string; originalHtml: string; lastApply: unknown; pkg: { zipName: string }; audit?: unknown } | null };
 const gwdqa = (page: Page) => page.evaluate(() => {
@@ -35,6 +35,21 @@ test('a second ad that is refused leaves the loaded ad as it was', async ({ page
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download zip', exact: true }).click()]);
   expect(download.suggestedFilename()).toBe('mock-ad.zip');
   expect(Object.keys(unzipSync(new Uint8Array(readFileSync((await download.path())!))))).toContain('Mock Ad/Responsive.html');
+});
+
+test('an ad that starts on a later check hides the drop zone again', async ({ page }) => {
+  await page.goto('./');
+  await load(page, 'mock-ad.zip', mockAdZip());
+  // Stays still until the test lets it start, as an ad waiting on a blocked script would.
+  const stuck = mockAdHtml('Late').replace('<script src="mock-gwd.js"></script>', '<script src="mock-gwd.js"></script>\n  <script>if (!sessionStorage.getItem("gwdqaLetStart")) customElements.get("gwd-genericad").prototype.initAd = () => {};</script>');
+  await pick(page, 'late.zip', mockZip(stuck));
+  await expect(page.locator('#status .banner.err')).toContainText('The ad did not start', { timeout: 60_000 });
+  await expect(page.locator('#drop')).toBeVisible();
+
+  await page.evaluate(() => sessionStorage.setItem('gwdqaLetStart', '1'));
+  await page.getByLabel('Let the ad contact other sites').check();
+  await expect(page.locator('#summary')).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator('#drop')).toBeHidden();
 });
 
 test('a second ad that fails after the first is closed takes the first one\'s results off the page', async ({ page }) => {
