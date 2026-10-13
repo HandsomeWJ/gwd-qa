@@ -74,6 +74,7 @@ header.top p { margin: 4px 0 0; color: var(--muted); max-width: 64ch; }
 .net p.sub { margin: 4px 0 0; }
 .drop strong { display: block; font-size: 17px; margin-bottom: 6px; }
 .drop p { margin: 0 0 16px; color: var(--muted); }
+.drop .picks { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 
 button, .button {
   font: inherit;
@@ -130,6 +131,7 @@ button:focus-visible, .button:focus-visible, summary:focus-visible, input:focus-
 .fixlist li > div { min-width: 0; }
 .fixlist .detail { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .upload-note { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+.banner.standin { margin: 12px 0 0; }
 
 details.edits { margin-top: 6px; }
 details.edits > summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; }

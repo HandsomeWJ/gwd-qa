@@ -9,7 +9,7 @@ import type { Finding } from './audit/types';
 import { planFixes, type FixPlan, type PlannedFix } from './fix/plan';
 import { adUrl, ensurePublished, publish, updateFile } from './serve';
 import { frameSizes, type FrameSize } from './sizes';
-import { isGwdBackup, readZip, writeZip, type AdPackage } from './zip';
+import { isGwdBackup, missingRuntime, writeZip, type AdPackage } from './zip';
 
 export interface AuditResult {
   report: StaticReport;
@@ -31,6 +31,8 @@ const encoder = new TextEncoder();
 export class Session {
   readonly id = Math.random().toString(36).slice(2, 10);
   readonly originalHtml: string;
+  /** GWD runtime files the ad loads but did not come with; the preview runs a stand-in for them. */
+  readonly missingRuntime: string[];
   html: string;
   frames: AdFrame[] = [];
   sizes: string[] = [];
@@ -44,10 +46,11 @@ export class Session {
   private constructor(readonly pkg: AdPackage) {
     this.originalHtml = decoder.decode(pkg.files.get(pkg.htmlPath)!);
     this.html = this.originalHtml;
+    this.missingRuntime = missingRuntime(pkg);
   }
 
-  static async open(name: string, bytes: Uint8Array): Promise<Session> {
-    const s = new Session(readZip(name, bytes));
+  static async open(pkg: AdPackage): Promise<Session> {
+    const s = new Session(pkg);
     s.unpublish = await publish(s.id, s.pkg.files);
     return s;
   }
@@ -125,7 +128,8 @@ export class Session {
     if (!stuck.length) return;
     const hidden = document.visibilityState === 'hidden' ? ' Keep this tab visible while it checks, then try again.' : '';
     const blocked = this.allowThirdParty ? '' : ' If it needs a script from another site, let it contact other sites and check again.';
-    throw new Error(`The ad did not start in ${stuck.join(', ')}: GWD never showed its first page, so nothing was checked.${hidden}${blocked}`);
+    const standin = this.missingRuntime.length ? " GWD's runtime files were not included and the stand-in could not start it: drop the whole folder or zip." : '';
+    throw new Error(`The ad did not start in ${stuck.join(', ')}: GWD never showed its first page, so nothing was checked.${hidden}${blocked}${standin}`);
   }
 
   /** Runs every check on every page of every size. Leaves the frames freshly reloaded, playing from the start. */
@@ -166,5 +170,10 @@ export class Session {
   zip(forUpload = false): Blob {
     const changed = new Map([[this.pkg.htmlPath, encoder.encode(this.html)]]);
     return new Blob([writeZip(this.pkg, changed, forUpload ? isGwdBackup : undefined) as BlobPart], { type: 'application/zip' });
+  }
+
+  /** The HTML with the fixes applied, for an ad that came as just its HTML. */
+  htmlFile(): Blob {
+    return new Blob([this.html], { type: 'text/html' });
   }
 }
