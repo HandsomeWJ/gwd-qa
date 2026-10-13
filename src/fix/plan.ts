@@ -39,9 +39,10 @@ const PADDING = /^padding(-(top|right|bottom|left|block|inline)(-(start|end))?)?
 const TEXT_TAGS = ['p', 'span', 'button'];
 const px = (n: number) => `${+n.toFixed(2)}px`;
 // Properties that only change how things look: a value that starts to apply never moves text.
+// Not filter or backdrop-filter: they make their element the containing block of positioned text.
 const PAINT_ONLY = new Set([
   'opacity', 'visibility', 'color', 'background', 'background-color', 'background-image', 'border-color', 'outline', 'outline-color',
-  'box-shadow', 'text-shadow', 'filter', 'cursor', 'z-index', 'transition', 'transition-delay', 'transition-duration', 'transition-property',
+  'box-shadow', 'text-shadow', 'cursor', 'z-index', 'transition', 'transition-delay', 'transition-duration', 'transition-property',
   'transition-timing-function',
 ]);
 

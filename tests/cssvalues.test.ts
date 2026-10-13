@@ -19,6 +19,7 @@ const VALUES: Record<string, RegExp> = {
   transform: /^scale\(\d+(, ?\d+)?\)$/,
   'background-size': /^(auto|cover|contain)$/,
   'box-shadow': /^(\d*\.?\d+px ){3}rgba\((\d*\.?\d+, ?){3}\d*\.?\d+\)$/,
+  filter: /^blur\(\d*\.?\d+px\)$/,
 };
 const valid: CssValidator = (prop, value) => (value === 'inherit' ? Object.hasOwn(VALUES, prop) : VALUES[prop]?.test(value) ?? false);
 const issues = (html: string) => cssValueIssues(html, parseCss(html), valid);
@@ -295,6 +296,9 @@ describe('fixing CSS values', () => {
       left: 1,5px;
       opacity: abc;
     }
+    .gwd-div-box {
+      filter: blur(0,5px);
+    }
   </style>`, '  <div id="SA_bg_1" style="opacity: 0,6"></div>');
 
   it('writes decimal points in place, offering values that size or place things unticked', () => {
@@ -305,9 +309,10 @@ describe('fixing CSS values', () => {
     expect(applyEdits(html, mergeEdits(safe.edits))).toBe(
       html.replace("'opacity: 0,3;'", "'opacity: 0.3;'").replace('style="opacity: 0,6"', 'style="opacity: 0.6"'),
     );
-    expect(moving.detail).toBe('.gwd-p-a left: 1,5px -> 1.5px');
+    // A filter makes its element the containing block of positioned text inside it, so it can move text.
+    expect(moving.detail).toBe('.gwd-p-a left: 1,5px -> 1.5px, .gwd-div-box filter: blur(0,5px) -> blur(0.5px)');
     expect(moving.moves).toContain('Check the result in the preview');
-    expect(applyEdits(html, moving.edits)).toBe(html.replace('left: 1,5px;', 'left: 1.5px;'));
+    expect(applyEdits(html, mergeEdits(moving.edits))).toBe(html.replace('left: 1,5px;', 'left: 1.5px;').replace('blur(0,5px)', 'blur(0.5px)'));
   });
 
   it('leaves other invalid values to you', () => {
