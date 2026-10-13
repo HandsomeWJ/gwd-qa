@@ -322,7 +322,11 @@
   // without it, the helper shows the HTML as plain text.
   gwd.binders ??= {};
   gwd.binders.html ??= (el, html) => {
-    if (html !== undefined) el.innerHTML = html;
+    if (html === undefined) return;
+    // As GWD's binder does: the text helper notes the element's first text before it changes, which
+    // decides whether text fitting may shrink it.
+    document.querySelector('gwd-text-helper')?.saveInitialText?.(el);
+    el.innerHTML = html;
   };
 
   // GWD's ad element asks this helper to apply the overrides.

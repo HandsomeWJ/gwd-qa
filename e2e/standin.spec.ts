@@ -78,6 +78,7 @@ test('stands in for a missing groups runtime in a folder that has the rest', asy
 // gwd-dynamic-binders.js, and is shown as plain text when that is missing.
 const HELPER = `
 customElements.define('gwd-responsive-attributes-helper', class extends HTMLElement {});
+customElements.define('gwd-text-helper', class extends HTMLElement { saveInitialText(el) { el.dataset.initialText = el.textContent; } });
 document.addEventListener('DOMContentLoaded', () => {
   for (const el of document.querySelectorAll('[data-gwd-media-override]')) {
     for (const [size, values] of Object.entries(JSON.parse(el.getAttribute('data-gwd-media-override')))) {
@@ -96,12 +97,15 @@ const OVERRIDE = JSON.stringify({
 
 test('gives GWD\'s responsive helper the rich-text binder when gwd-dynamic-binders.js is missing', async ({ page }, testInfo) => {
   const html = mockAdHtml('Headline', ['mock-gwd.js', 'mock-helper.js', 'gwd-dynamic-binders.js'])
-    .replace('id="SA_headline_1"', `id="SA_headline_1" data-gwd-media-override="${OVERRIDE}"`);
+    .replace('id="SA_headline_1"', `id="SA_headline_1" data-gwd-media-override="${OVERRIDE}"`)
+    .replace('<gwd-genericad id="gwd-ad">', '<gwd-text-helper></gwd-text-helper>\n  <gwd-genericad id="gwd-ad">');
   await checkFolder(page, testInfo, { 'Responsive.html': html, 'mock-gwd.js': MOCK_RUNTIME, 'mock-helper.js': HELPER });
   await expect(page.locator('#summary .banner.standin')).toContainText('Not included: gwd-dynamic-binders.js.');
   const headline = frame(page, '300x250').locator('#SA_headline_1');
   await expect(headline).toHaveText('Exact size');
   await expect(headline.locator('span.gwd-span-x')).toHaveText('size');
+  // GWD's text helper saw the text before the binder replaced it.
+  await expect(headline).toHaveAttribute('data-initial-text', 'Headline one');
 });
 
 // Like GWD's own gwd-page holding something that loads, such as an image effect: hidden until its
