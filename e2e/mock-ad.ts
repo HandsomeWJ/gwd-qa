@@ -176,7 +176,7 @@ export function mockAdHtml(headline = 'Headline', runtime = ['mock-gwd.js']): st
 
 /** An ad's HTML in a zip with the mock runtime, without a backup copy. */
 export function mockZip(html: string): Buffer {
-  return Buffer.from(zipSync({ 'Mock Ad/Responsive.html': strToU8(html), 'Mock Ad/mock-gwd.js': strToU8(RUNTIME) }));
+  return Buffer.from(zipSync({ 'Mock Ad/Responsive.html': strToU8(html), 'Mock Ad/mock-gwd.js': strToU8(MOCK_RUNTIME) }));
 }
 
 /** The ad as GWD saves it, with a backup copy in _revision/. */
