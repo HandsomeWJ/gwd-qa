@@ -61,7 +61,7 @@ test('checks an ad from just its HTML, with a stand-in for GWD\'s runtime', asyn
   await expect(row(page, 'type').locator('summary .count')).toHaveText('1 item · 1 disclaimer exempt');
 
   // Measured in a fallback font, its line-height would change once the real font loads: no value is written.
-  await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-c: its web font was missing or still loading');
+  await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-c: its font had not loaded');
   await expect(page.locator('#fixes .fixlist li', { hasText: 'Declare line-height' }).locator('.detail').first()).not.toContainText('.gwd-p-c');
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();

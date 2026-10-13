@@ -283,7 +283,7 @@ class Planner {
       } else if (seen.some((b) => b.computed.lineHeight === 'normal' && b.fontLoaded === false)) {
         // Normal line-height comes from the font's metrics: a web font that had not loaded measures as
         // its fallback, and that value would change the spacing once the real font arrives.
-        refuse(cls, `.${cls}: its web font was missing or still loading when it was measured, so its line-height is not fixed automatically. Check the whole ad folder or zip so its fonts load, or set it in GWD.`);
+        refuse(cls, `.${cls}: its font had not loaded when it was measured, so its line-height is not fixed automatically. Check the whole ad folder or zip, and let the ad contact other sites if a script loads its fonts, or set it in GWD.`);
       }
     }
 

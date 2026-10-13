@@ -88,7 +88,7 @@ describe('line-height', () => {
       box({ ...head, frame: '300x600', size: '300x600', normalLineHeight: 19, computed: { fontSize: 16, fontFamily: 'Brand' } }),
     ], { '300x250': [M250], '300x600': [M600] });
     expect(fix('lineHeight')).toBeUndefined();
-    expect(p.manual[0].detail).toContain('its web font was missing or still loading');
+    expect(p.manual[0].detail).toContain('its font had not loaded');
   });
 
   it('accepts a font whose metrics round differently at different sizes', () => {
@@ -208,7 +208,7 @@ describe('line-height', () => {
     const unloaded = plan(html, [box({ ...head, normalLineHeight: 18, inherits: [classed] }), box({ ...span, fontLoaded: false })], { '300x250': [M250] });
     expect(unloaded.fix('lineHeight')).toBeUndefined();
     expect(unloaded.p.manual.map((m) => m.detail)).toEqual([
-      '.gwd-span-hl: its web font was missing or still loading when it was measured, so its line-height is not fixed automatically. Check the whole ad folder or zip so its fonts load, or set it in GWD.',
+      '.gwd-span-hl: its font had not loaded when it was measured, so its line-height is not fixed automatically. Check the whole ad folder or zip, and let the ad contact other sites if a script loads its fonts, or set it in GWD.',
       '.gwd-p-head: span.gwd-span-hl inside it takes its line-height and would go from 32px to 18px in 300x250; set their line-heights in GWD.',
     ]);
   });

@@ -238,9 +238,13 @@ interface Font {
 const fontOf = (cs: CSSStyleDeclaration): Font => ({ family: cs.fontFamily, size: cs.fontSize, weight: cs.fontWeight, style: cs.fontStyle });
 const fontText = (f: Font) => `${f.style} ${f.weight} ${f.size} ${f.family}`;
 
+const GENERIC = /^(serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-[a-z-]+|math|emoji|fangsong|-apple-system|blinkmacsystemfont)$/i;
+
 /**
  * Whether text renders in its own font. A web font that failed to load (missing from the upload)
- * or has not loaded yet leaves a fallback font in its place, whose spacing is not the design's.
+ * or has not loaded yet leaves a fallback font in its place, whose spacing is not the design's. So
+ * does a font that a blocked script would have loaded (a web font loader), which leaves no
+ * FontFace at all: check() passes it, so it must be one the browser has.
  */
 function fontReady(doc: Document, font: Font, text: string): boolean {
   const fonts = doc.fonts;
@@ -250,11 +254,25 @@ function fontReady(doc: Document, font: Font, text: string): boolean {
   const faces: FontFace[] = [];
   fonts.forEach((f) => { if (unquote(f.family) === family) faces.push(f); });
   if (faces.some((f) => f.status === 'error') && !faces.some((f) => f.status === 'loaded')) return false;
+  if (!faces.length && !GENERIC.test(family) && !installed(doc, family)) return false;
   try {
     return fonts.check(fontText(font), text || 'Xg');
   } catch {
     return false; // not a font it can read, such as a size block's "font-weight: inherit"
   }
+}
+
+/** Whether the browser has a font of this family to draw with: text in one it lacks measures as its fallback. */
+function installed(doc: Document, family: string): boolean {
+  const ctx = doc.createElement('canvas').getContext('2d');
+  if (!ctx) return true;
+  const sample = 'mmmmmmmmmmlli1WQ@#';
+  return ['monospace', 'serif'].some((fallback) => {
+    ctx.font = `72px ${fallback}`;
+    const width = ctx.measureText(sample).width;
+    ctx.font = `72px "${family.replace(/"/g, '')}", ${fallback}`;
+    return Math.abs(ctx.measureText(sample).width - width) > 0.01;
+  });
 }
 
 /** The px line-height a browser renders for `normal` in this font. */

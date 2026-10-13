@@ -80,6 +80,16 @@ test('leaves the base size to you where a size no frame shows sets a font it can
   await expect(lineHeightFix(page).locator('.detail').first()).not.toContainText(/\.gwd-p-c: /);
 });
 
+test('leaves text to you whose font a blocked script would load', async ({ page }) => {
+  // A web font loader adds the font from another site; with those requests blocked, a fallback draws the text.
+  const html = mockAdHtml()
+    .replace('  </style>', '    .gwd-p-c {\n      font-family: "Lobster Loaded By Script", serif;\n    }\n  </style>\n  <script src="https://fonts.invalid/webfont.js"></script>');
+  await load(page, 'loader.zip', mockZip(html));
+  await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-c: its font had not loaded when it was measured');
+  await expect(lineHeightFix(page).locator('.detail').first()).not.toContainText('.gwd-p-c');
+  await expect(lineHeightFix(page).locator('.detail').first()).toContainText('.gwd-p-a');
+});
+
 test('leaves a text to you where its line-height would reach text inside it that has none of its own', async ({ page }) => {
   // A <sup> renders smaller type, so its normal line-height is not the paragraph's.
   await load(page, 'sup.zip', mockAdZip('Brand<sup>®</sup> deals'));
