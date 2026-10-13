@@ -4,6 +4,7 @@ import { staticAudit } from './audit/static';
 import { applyEdits, mergeEdits } from './css/edit';
 import { diffLines, diffStats, type Hunk } from './diff';
 import type { PlannedFix } from './fix/plan';
+import { adPackage, droppedFiles, pickedFiles, type PickedFile } from './input';
 import { allowedZipUrl, outsideHosts } from './net';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
@@ -24,15 +25,19 @@ app.innerHTML = `
     <header class="top">
       <div>
         <h1>GWD Ad QA</h1>
-        <p>Checks a Google Web Designer ad against the QA checklist in every served size, fixes the safe items, and gives you back the fixed zip. Your files never leave this browser.</p>
+        <p>Checks a Google Web Designer ad against the QA checklist in every served size, fixes the safe items, and gives you back the fixed files. Your files never leave this browser.</p>
       </div>
     </header>
     <div id="status"></div>
     <div class="drop" id="drop">
-      <strong>Drop a GWD ad .zip here</strong>
-      <p>Or choose one. Zip the folder GWD saves to, the one with Responsive.html or index.html in it.</p>
-      <button type="button" class="primary">Choose a zip</button>
-      <input type="file" id="file" accept=".zip,application/zip" hidden>
+      <strong>Drop a GWD ad here: its zip, its folder, or just its HTML</strong>
+      <p>The folder GWD saves to is the one with Responsive.html or index.html in it. With just the HTML, the preview runs on a stand-in for GWD's runtime, without the ad's images.</p>
+      <div class="picks">
+        <button type="button" class="primary">Choose a zip</button>
+        <button type="button" data-pick="folder">Choose a folder</button>
+      </div>
+      <input type="file" id="file" accept=".zip,.html,.htm,application/zip,text/html" multiple hidden>
+      <input type="file" id="folder" webkitdirectory hidden>
     </div>
     <section id="summary" class="card" hidden></section>
     <section id="checklist" class="card" hidden></section>
@@ -47,7 +52,7 @@ app.innerHTML = `
       <div class="frames" id="frames" style="margin-top:14px"></div>
     </section>
     <footer class="foot">
-      Runs entirely in your browser: the zip is unpacked here and served to the preview by a service worker. Nothing is uploaded, and the ad's own requests to other sites are blocked unless you allow them.
+      Runs entirely in your browser: the ad's files are read here and served to the preview by a service worker. Nothing is uploaded, and the ad's own requests to other sites are blocked unless you allow them.
       <a href="https://github.com/HandsomeWJ/gwd-qa">Source</a>
     </footer>
   </div>`;
@@ -76,14 +81,16 @@ function setBusy(on: boolean) {
 // Started at once; loading waits for it so frames never miss the worker on a first visit.
 const workerReady = startWorker();
 
-async function load(name: string, bytes: Uint8Array) {
+/** Loads the ad from what was picked or dropped: a zip, the ad's folder, or just its HTML. */
+async function load(pick: () => Promise<PickedFile[]>) {
   if (busy) return;
   setBusy(true);
   try {
-    status('Unpacking the zip…', 'busy');
+    status('Reading the ad…', 'busy');
+    const pkg = adPackage(await pick());
     await workerReady;
     await session?.close();
-    session = await Session.open(name, bytes);
+    session = await Session.open(pkg);
     session.allowThirdParty = allowThirdPartySaved();
     loadDisclaimers(session.pkg.zipName);
     const sizes = staticAudit(session.html).sizes;
@@ -225,26 +232,38 @@ function diffBox(title: string, before: string, after: string): string {
   return `<details class="edits"><summary>${esc(title)} <span class="stat">+${added} / -${removed} lines</span></summary><div class="diff">${diffHtml(hunks)}</div></details>`;
 }
 
+/** Says that GWD's runtime is missing and the preview runs the site's stand-in, or '' when it is not. */
+function standinNote(s: Session): string {
+  if (!s.missingRuntime.length) return '';
+  const images = [...s.pkg.files.keys()].some((p) => /\.(png|jpe?g|gif|webp|svg)$/i.test(p));
+  const which = s.pkg.kind === 'html' ? '' : ` Not included: ${s.missingRuntime.map((p) => p.split('/').pop()).join(', ')}.`;
+  return `GWD's runtime files were not included, so the preview uses a stand-in: layout and text are checked, but ${images ? '' : 'images are missing and '}animations or interactions may differ. Drop the whole folder or zip for the full preview.${which}`;
+}
+
 function renderSummary() {
   const s = session!;
   const failed = CHECKS.filter((c) => c.id !== 'copy' && failing(c.id).length).length;
+  const lone = s.pkg.kind === 'html';
+  const fileKind = lone ? 'HTML' : 'zip';
+  const note = standinNote(s);
   const box = $('#summary');
   box.hidden = false;
   box.innerHTML = `
     <div class="bar">
       <div class="meta">
-        <strong>${esc(s.pkg.zipName)}</strong> · ${esc(s.pkg.htmlPath)} · ${plural(s.sizes.length, 'size')}<br>
+        <strong>${esc(s.pkg.zipName)}</strong>${lone ? '' : ` · ${esc(s.pkg.htmlPath)}`} · ${plural(s.sizes.length, 'size')}<br>
         ${failed ? `<span class="pill fail">${plural(failed, 'check')} failing</span>` : '<span class="pill pass">Every check passes</span>'}
         ${s.changed ? '<span class="pill info">Fixed, not yet downloaded</span>' : ''}
       </div>
       <div class="actions">
         ${s.changed ? '<button data-action="undo">Undo fixes</button>' : ''}
-        <button class="${s.changed ? 'primary' : ''}" data-action="download">${s.changed ? 'Download fixed zip' : 'Download zip'}</button>
+        <button class="${s.changed ? 'primary' : ''}" data-action="download">${s.changed ? `Download fixed ${fileKind}` : `Download ${fileKind}`}</button>
         ${s.backups.length ? '<button data-action="download-upload">Download for upload</button>' : ''}
         <button data-action="reset">Check another ad</button>
       </div>
     </div>
     ${s.backups.length ? `<p class="sub upload-note">Download for upload leaves out GWD's backup copies: ${esc(backupFolders(s).join(', '))} (${plural(s.backups.length, 'file')}).</p>` : ''}
+    ${note ? `<div class="banner warn standin">${esc(note)}</div>` : ''}
     ${s.changed ? diffBox(`Review the changes to ${s.pkg.htmlPath.split('/').pop()}`, s.originalHtml, s.html) : ''}`;
 }
 
@@ -376,11 +395,12 @@ async function applySelected() {
 
 function download(forUpload = false) {
   const s = session!;
-  const url = URL.createObjectURL(s.zip(forUpload));
+  const lone = s.pkg.kind === 'html';
+  const url = URL.createObjectURL(lone ? s.htmlFile() : s.zip(forUpload));
   const stem = s.pkg.zipName.replace(/\.zip$/i, '');
   const a = document.createElement('a');
   a.href = url;
-  a.download = forUpload ? `${stem}-upload.zip` : `${stem}.zip`;
+  a.download = lone ? s.pkg.zipName : forUpload ? `${stem}-upload.zip` : `${stem}.zip`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
@@ -419,9 +439,12 @@ app.addEventListener('click', async (e) => {
 
 const drop = $('#drop');
 const input = $<HTMLInputElement>('#file');
-// The whole drop zone opens the picker; its real button makes that reachable by keyboard.
+const folderInput = $<HTMLInputElement>('#folder');
+// The whole drop zone opens the file picker; its real buttons make the pickers reachable by keyboard.
 drop.addEventListener('click', (e) => {
-  if (e.target !== input && !busy) input.click();
+  const target = e.target as HTMLElement;
+  if (busy || target instanceof HTMLInputElement) return;
+  (target.closest('[data-pick="folder"]') ? folderInput : input).click();
 });
 app.addEventListener('change', (e) => {
   const box = e.target as HTMLInputElement;
@@ -436,18 +459,26 @@ app.addEventListener('change', (e) => {
     app.querySelector<HTMLInputElement>(`input[data-disclaimer="${CSS.escape(target)}"]`)?.focus();
   }
 });
-const readFile = async (file: File) => load(file.name, new Uint8Array(await file.arrayBuffer()));
-input.addEventListener('change', () => input.files?.[0] && readFile(input.files[0]));
+for (const picker of [input, folderInput]) {
+  picker.addEventListener('change', () => {
+    const files = [...(picker.files ?? [])];
+    picker.value = ''; // so choosing the same files again loads them again
+    if (files.length) load(() => pickedFiles(files));
+  });
+}
 drop.addEventListener('dragover', (e) => {
   e.preventDefault();
   drop.classList.add('over');
 });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+// A file dropped anywhere else must not open in place of the page, which an HTML file would.
+for (const type of ['dragover', 'drop']) window.addEventListener(type, (e) => e.preventDefault());
 drop.addEventListener('drop', (e) => {
   e.preventDefault();
   drop.classList.remove('over');
-  const file = e.dataTransfer?.files[0];
-  if (file) readFile(file);
+  if (!e.dataTransfer || busy) return;
+  const files = droppedFiles(e.dataTransfer); // the drop's files are only readable during the event
+  load(() => files);
 });
 
 async function boot() {
@@ -465,15 +496,17 @@ async function boot() {
       status(esc(`?zip= only loads zips stored on this site under ${import.meta.env.BASE_URL}. Drop the file instead.`), 'err');
       return;
     }
-    try {
+    await load(async () => {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Could not fetch ${url.pathname}: ${res.status}`);
-      await load(decodeURIComponent(url.pathname.split('/').pop() || 'ad.zip'), new Uint8Array(await res.arrayBuffer()));
-    } catch (err) {
-      status(esc(err instanceof Error ? err.message : String(err)), 'err');
-    }
+      return [{ path: decodeURIComponent(url.pathname.split('/').pop() || 'ad.zip'), data: new Uint8Array(await res.arrayBuffer()) }];
+    });
   }
 }
 
-(window as unknown as { gwdqa: unknown }).gwdqa = { get session() { return session; }, get result() { return result; }, load };
+(window as unknown as { gwdqa: unknown }).gwdqa = {
+  get session() { return session; },
+  get result() { return result; },
+  load: (name: string, bytes: Uint8Array) => load(async () => [{ path: name, data: bytes }]),
+};
 boot();

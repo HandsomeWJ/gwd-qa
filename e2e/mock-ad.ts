@@ -43,7 +43,13 @@ window.addEventListener('load', () => requestAnimationFrame(() => document.getEl
 
 const RANGE = '(min-width: 300px) and (max-width: 320px) and (min-height: 250px) and (max-height: 480px)';
 
-export function mockAdHtml(headline = 'Headline'): string {
+/** GWD's own runtime file names, which the site stands in for when an ad comes without them. */
+export const GWD_RUNTIME = ['gwdpage_style.css', 'gwd_webcomponents_v1_min.js', 'gwdpage_min.js', 'gwdpagedeck_min.js', 'gwdgenericad_min.js'];
+
+const runtimeTag = (file: string) => (file.endsWith('.css') ? `<link href="${file}" rel="stylesheet">` : `<script src="${file}"></script>`);
+
+/** The ad's HTML, loading the mock runtime, or `runtime` such as GWD_RUNTIME. */
+export function mockAdHtml(headline = 'Headline', runtime = ['mock-gwd.js']): string {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -53,7 +59,7 @@ export function mockAdHtml(headline = 'Headline'): string {
   <script>
     document.addEventListener('securitypolicyviolation', () => { document.documentElement.dataset.blocked = 'yes'; });
   </script>
-  <script src="mock-gwd.js"></script>
+  ${runtime.map(runtimeTag).join('\n  ')}
   <script type="text/javascript" gwd-events="handlers">
     window.gwd = window.gwd || {};
     gwd.framechange_savings = function(event) {
@@ -158,6 +164,10 @@ export function mockAdHtml(headline = 'Headline'): string {
       </gwd-page>
     </gwd-pagedeck>
   </gwd-genericad>
+  <script>
+    // As GWD writes it: start the ad once the runtime has defined its elements. The mock starts it on load instead.
+    window.addEventListener('WebComponentsReady', () => requestAnimationFrame(() => setTimeout(() => document.getElementById('gwd-ad').initAd(), 1)));
+  </script>
 </body>
 </html>
 `;

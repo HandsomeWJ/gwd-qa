@@ -18,6 +18,14 @@ const BLOCK_THIRD_PARTY = [
   "object-src 'none'",
 ].join('; ');
 
+// GWD's runtime files, such as gwdpage_min.js, gwd-events-support.1.0.js and gwdpage_style.css (the
+// same rule as missingRuntime() in src/zip.ts). An ad dropped as just its HTML, or an incomplete
+// folder, loads them without having them, so a missing script gets the site's own stand-in
+// (gwd-standin.js) and a missing style is empty.
+const GWD_SCRIPT = /^gwd[\w.-]*\.js$/i;
+const GWD_STYLE = /^gwd[\w.-]*\.css$/i;
+let standin = null; // the stand-in's text, fetched once per worker
+
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
@@ -43,11 +51,31 @@ async function serve(url, scope, prefix) {
   // match() with a cacheName never creates the cache, unlike open().
   const hit = /^[a-z0-9]+$/.test(id) ? await caches.match(key, { cacheName: PREFIX + id }) : undefined;
   if (!hit) {
-    return new Response(`Not in this ad: ${path}`, { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    if (GWD_SCRIPT.test(name)) return standinScript(scope, path);
+    if (GWD_STYLE.test(name)) return new Response('', { headers: { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' } });
+    return notFound(path);
   }
   const isHtml = (hit.headers.get('Content-Type') ?? '').startsWith('text/html');
   if (!isHtml || url.searchParams.get('net') === 'open') return hit;
   const headers = new Headers(hit.headers);
   headers.set('Content-Security-Policy', BLOCK_THIRD_PARTY);
   return new Response(hit.body, { status: hit.status, statusText: hit.statusText, headers });
+}
+
+function notFound(path) {
+  return new Response(`Not in this ad: ${path}`, { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+}
+
+async function standinScript(scope, path) {
+  standin ??= fetch(new URL('gwd-standin.js', scope)).then((res) => {
+    if (!res.ok) throw new Error(`gwd-standin.js: ${res.status}`);
+    return res.text();
+  });
+  try {
+    return new Response(await standin, { headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' } });
+  } catch {
+    standin = null; // try again on the next request
+    return notFound(path);
+  }
 }
