@@ -1,8 +1,9 @@
 // Stands in for Google Web Designer's runtime when an ad is checked without it, for example from
 // its HTML file alone. This is the site's own code, not Google's: just enough of the runtime for
 // the ad to start, show each of its pages and apply its per-size overrides, so the checks can read
-// its layout and text. The service worker (sw.js) serves it for every gwd*.js the ad loads but
-// does not include, so it can run several times in one page; only the first run sets it up.
+// its layout and text. The service worker (sw.js) serves it for every gwd*.js and groups_runtime*.js
+// the ad loads but does not include, so it can run several times in one page; only the first run
+// sets it up.
 (() => {
   const fileName = (url) => {
     const name = new URL(url, location.href).pathname.split('/').pop();
@@ -102,6 +103,37 @@
     }
   };
 
+  // GWD's groups runtime fills each group instance, [data-gwd-group="name"], with a copy of the
+  // group's definition from <template id="gwd-group-definitions">, and the groups inside that copy
+  // in turn. Only empty instances are filled, so this can run again, or after GWD's own runtime.
+  const groupDefs = () => {
+    const defs = new Map();
+    const template = document.getElementById('gwd-group-definitions');
+    for (const def of (template?.content ?? document).querySelectorAll('[data-gwd-group-def]')) {
+      const name = def.getAttribute('data-gwd-group-def');
+      if (name && !defs.has(name)) defs.set(name, def);
+    }
+    return defs;
+  };
+  const isEmpty = (el) => [...el.childNodes].every((n) => n.nodeType === Node.COMMENT_NODE || (n.nodeType === Node.TEXT_NODE && !n.data.trim()));
+  // A group inside a copy of itself would never end; GWD leaves it out.
+  const insideItself = (el, name) => {
+    for (let n = el.parentElement; n; n = n.parentElement) {
+      if (n.getAttribute('data-gwd-group') === name || n.getAttribute('data-gwd-group-def') === name) return true;
+    }
+    return false;
+  };
+  const fillGroups = (root, defs = groupDefs()) => {
+    if (!defs.size) return;
+    for (const el of root.querySelectorAll('[data-gwd-group]')) {
+      const name = el.getAttribute('data-gwd-group');
+      const def = defs.get(name);
+      if (!def || !isEmpty(el) || insideItself(el, name)) continue;
+      el.append(...[...def.childNodes].map((n) => n.cloneNode(true)));
+      fillGroups(el, defs);
+    }
+  };
+
   const decks = new Set();
   // By id, also on the pages a deck keeps out of the document.
   const byId = (id) => {
@@ -116,6 +148,33 @@
     }
     return null;
   };
+
+  // Runs `fn` on the first `type` event that `el` itself fires.
+  const once = (el, type, fn) => {
+    const listener = (e) => {
+      if (e.target !== el) return;
+      el.removeEventListener(type, listener);
+      fn();
+    };
+    el.addEventListener(type, listener);
+  };
+
+  // GWD's own gwd-page (gwdpage_min.js) stays hidden until what it holds, such as an image effect,
+  // has loaded. Like GWD's deck: once the page is attached, activate and load it, and present it when
+  // it has loaded, unless the deck has moved on (`current` is false).
+  const OWN_PAGE = ['gwdActivate', 'gwdIsLoaded', 'gwdLoad', 'gwdPresent'];
+  const showOwnPage = (page, current) => once(page, 'attached', () => {
+    if (!current()) return;
+    page.gwdActivate();
+    const present = () => {
+      if (!current()) return;
+      void page.offsetWidth; // so its animations start from the beginning
+      page.gwdPresent();
+    };
+    if (page.gwdIsLoaded()) return present();
+    once(page, 'pageload', present);
+    page.gwdLoad();
+  });
 
   class GwdPage extends HTMLElement {}
 
@@ -163,14 +222,20 @@
       if (!page || i === this.current) return;
       const old = this.pages[this.current];
       if (old) {
-        old.dispatchEvent(new CustomEvent('pagedeactivated', { bubbles: true }));
+        if (typeof old.gwdDeactivate === 'function') old.gwdDeactivate();
+        else old.dispatchEvent(new CustomEvent('pagedeactivated', { bubbles: true }));
         old.classList.remove('gwd-play-animation');
         old.remove();
       }
       this.current = i;
+      const visit = (this.visits = (this.visits ?? 0) + 1);
       page.classList.remove('gwd-play-animation');
+      fillGroups(page);
+      const own = OWN_PAGE.every((name) => typeof page[name] === 'function');
+      if (own) showOwnPage(page, () => this.visits === visit);
       this.appendChild(page);
       applyOverrides(page);
+      if (own) return;
       page.dispatchEvent(new CustomEvent('pagepresenting', { bubbles: true }));
       void page.offsetWidth; // so its animations start from the beginning
       page.classList.add('gwd-play-animation');
@@ -253,6 +318,12 @@
   gwd.actions ??= new Proxy({ events: namespace(events) }, {
     get: (target, key) => (typeof key !== 'string' || key === 'then' || key in target ? Reflect.get(target, key) : (target[key] = namespace({}))),
   });
+  // GWD's own responsive helper writes each size's rich text through this (gwd-dynamic-binders.js);
+  // without it, the helper shows the HTML as plain text.
+  gwd.binders ??= {};
+  gwd.binders.html ??= (el, html) => {
+    if (html !== undefined) el.innerHTML = html;
+  };
 
   // GWD's ad element asks this helper to apply the overrides.
   class GwdResponsiveAttributesHelper extends HTMLElement {
@@ -284,13 +355,17 @@
   state.overrides = customElements.get('gwd-responsive-attributes-helper') === GwdResponsiveAttributesHelper;
   // GWD's own page deck takes its pages out of the document as it registers them.
   document.addEventListener('pagesregistered', (e) => {
-    for (const page of e.detail?.pages ?? []) applyOverrides(page);
+    for (const page of e.detail?.pages ?? []) {
+      fillGroups(page);
+      applyOverrides(page);
+    }
   }, true);
 
   // Everything else GWD writes (tap areas, gestures, reveals, image effects...) does nothing here.
   const INERT = ['gwd-taparea', 'gwd-gesture', 'gwd-reveal', 'gwd-image-effect', 'gwd-attached', 'gwd-text-helper'];
 
   const setUp = () => {
+    fillGroups(document);
     applyOverrides(document);
     const found = [...document.querySelectorAll('*')].map((el) => el.localName).filter((tag) => tag.startsWith('gwd-'));
     for (const tag of new Set([...INERT, ...found])) define(tag, class extends HTMLElement {});

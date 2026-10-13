@@ -3,7 +3,8 @@
 // adding gwd-play-animation, the parts of GWD the checks rely on.
 import { strToU8, zipSync } from 'fflate';
 
-const RUNTIME = `
+/** The mock runtime, which the mock ad loads as mock-gwd.js. */
+export const MOCK_RUNTIME = `
 customElements.define('gwd-page', class extends HTMLElement {});
 customElements.define('gwd-pagedeck', class extends HTMLElement {
   // On first use, not on connect: the parser has not added the pages yet when the deck connects.
@@ -184,7 +185,7 @@ export function mockAdZip(headline?: string): Buffer {
   return Buffer.from(zipSync({
     'Mock Ad/': new Uint8Array(0),
     'Mock Ad/Responsive.html': html,
-    'Mock Ad/mock-gwd.js': strToU8(RUNTIME),
+    'Mock Ad/mock-gwd.js': strToU8(MOCK_RUNTIME),
     'Mock Ad/_revision/': new Uint8Array(0),
     'Mock Ad/_revision/Responsive.html': html,
   }));

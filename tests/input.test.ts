@@ -118,4 +118,11 @@ describe('missingRuntime', () => {
     const pkg = adPackage(picked({ 'My Ad #2/Responsive.html': html, 'My Ad #2/gwdpage_min.js': 'js', 'My Ad #2/gwdpage_style.css': 'css' }));
     expect(missingRuntime(pkg)).toEqual(['My Ad #2/gwd_webcomponents_v1_min.js', 'My Ad #2/gwd-events-support.1.0.js']);
   });
+
+  it('counts GWD\'s groups runtime, whose name does not start with gwd', () => {
+    const groups = html.replace('<script src="app.js">', '<script type="text/javascript" src="groups_runtime.min.1.0.js" gwd-groups-version="1.0"></script>\n    <script src="app.js">');
+    const files = { 'Responsive.html': groups, 'gwdpage_style.css': 'css', 'gwd_webcomponents_v1_min.js': 'js', 'gwdpage_min.js': 'js', 'gwd-events-support.1.0.js': 'js' };
+    expect(missingRuntime(adPackage(picked(files)))).toEqual(['groups_runtime.min.1.0.js']);
+    expect(missingRuntime(adPackage(picked({ ...files, 'groups_runtime.min.1.0.js': 'js' })))).toEqual([]);
+  });
 });
