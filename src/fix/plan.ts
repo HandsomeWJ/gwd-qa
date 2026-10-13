@@ -5,7 +5,6 @@
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
 import { singleClass, sizeOfMedia, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
 import type { StaticReport } from '../audit/static';
-import { pointDecimals } from '../audit/cssvalues';
 import type { Box, CheckId } from '../audit/types';
 import { describeSize } from '../sizes';
 
@@ -385,13 +384,21 @@ class Planner {
     const moving: { edits: Edit[]; notes: string[] } = { edits: [], notes: [] };
     for (const v of this.input.report.cssValues) {
       const handler = v.handler ? ` (in ${v.handler})` : '';
+      const invalid = `${v.target} ${v.prop}: ${v.value}${handler} is not valid CSS, so browsers ignore it`;
       if (!v.fixed) {
-        this.manualNote('cssValues', `${v.target} ${v.prop}: ${v.value}${handler} is not valid CSS, so browsers ignore it; correct it in GWD.`);
+        this.manualNote('cssValues', `${invalid}; correct it in GWD.`);
         continue;
       }
-      if (rewritten.some((e) => e.start < v.end && v.start < e.end)) continue;
+      const located = Number.isFinite(v.start) && Number.isFinite(v.end);
+      if (located && rewritten.some((e) => e.start < v.end && v.start < e.end)) continue;
+      // Edited in place only when the source reads exactly as the browser does: a comma written as
+      // &#44; or \x2c would stay, and a value without a place in the source has nothing to replace.
+      if (!located || this.html.slice(v.start, v.end) !== v.value) {
+        this.manualNote('cssValues', `${invalid}; write ${v.fixed} in GWD.`);
+        continue;
+      }
       const into = PAINT_ONLY.has(v.prop) ? safe : moving;
-      into.edits.push({ start: v.start, end: v.end, text: pointDecimals(this.html.slice(v.start, v.end)) });
+      into.edits.push({ start: v.start, end: v.end, text: v.fixed });
       into.notes.push(`${v.target} ${v.prop}: ${v.value} -> ${v.fixed}${handler}`);
     }
     this.add('cssValues', 'Write decimal points in CSS values', safe.notes.join(', '), safe.edits);

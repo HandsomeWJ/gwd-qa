@@ -1,4 +1,4 @@
-import { strFromU8, unzipSync } from 'fflate';
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { mockAdZip } from './mock-ad';
@@ -70,6 +70,32 @@ test('checks every page and both ends of a range, then fixes without moving text
   expect(fixed).toContain('margin-block: 0px auto;');
   expect(fixed).toContain("setInlineStyle('SA_cta_1', 'opacity: 0.3;')");
   expect(fixed).toContain('<div id="SA_rule_1" style="opacity: 0.5;"></div>');
+});
+
+test('checks CSS values as Chromium reads them, skipping GWD\'s runtime and styles that never apply', async ({ page }) => {
+  const files = unzipSync(new Uint8Array(mockAdZip()));
+  const html = strFromU8(files['Mock Ad/Responsive.html'])
+    // A component inlined the way GWD can publish it: it picks a value, it does not set "none".
+    .replace('  <style type="text/css">', `  <script data-source="gwdmock_min.js" data-version="1" data-exports-type="gwd-mock">
+    (function () { var el = document.createElement('div'), fit = 'cover'; el.style.backgroundSize = 'none' != fit ? fit : 'auto'; })();
+  </script>
+  <!-- <style>.gwd-p-a { opacity: 0,1; }</style> -->
+  <style type="text/css">`)
+    .replace("'opacity: 0,3;');", "'opacity: 0,3;');\n      gwd.actions.events.setInlineStyle('SA_cta_1', 'box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5);');")
+    .replace('<gwd-genericad id="gwd-ad">', '<noscript><div style="opacity: 0,2"></div></noscript>\n  <gwd-genericad id="gwd-ad">');
+  files['Mock Ad/Responsive.html'] = strToU8(html);
+  await load(page, Buffer.from(zipSync(files)));
+
+  const cssValues = row(page, 'cssValues');
+  await cssValues.locator('summary').click();
+  const findings = cssValues.locator('.findings');
+  await expect(findings).toContainText('"box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5)" is not valid CSS');
+  for (const never of ['background-size', '0,1', '0,2']) await expect(findings).not.toContainText(never);
+  const cssFix = page.locator('#fixes .fixlist li', { hasText: 'Write decimal points in CSS values' });
+  await expect(cssFix).toContainText('SA_cta_1 box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5) -> 0px 2px 1.5px rgba(0,0,0,0.5) (in gwd.framechange_savings)');
+
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(cssValues.locator('summary .pill')).toHaveText('Pass', { timeout: 90_000 });
 });
 
 test('shows the preview sharp, says when a size is cut off, and replays', async ({ page }) => {

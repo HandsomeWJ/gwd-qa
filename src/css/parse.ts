@@ -1,5 +1,6 @@
 // Parses the CSS inside an HTML document's <style> blocks and keeps absolute offsets into
-// the HTML, so fixes can edit the source in place without disturbing GWD's formatting.
+// the HTML, so fixes can edit the source in place without disturbing GWD's formatting. Also reads
+// the HTML's start tags, the way a browser finds them.
 
 export interface Decl {
   prop: string; // lower-cased property name
@@ -103,8 +104,9 @@ function parseDecls(m: string, orig: string, from: number, to: number, base: num
   let segStart = from;
   let depth = 0;
   const flush = (segEnd: number, hasSemi: boolean) => {
-    const colon = m.indexOf(':', segStart);
-    if (colon < 0 || colon >= segEnd) return;
+    let colon = segStart;
+    while (colon < segEnd && m[colon] !== ':') colon++;
+    if (colon >= segEnd) return;
     let s = segStart;
     while (s < colon && /\s/.test(m[s])) s++;
     const prop = orig.slice(s, colon).trim().toLowerCase();
@@ -135,7 +137,10 @@ function parseDecls(m: string, orig: string, from: number, to: number, base: num
   return decls;
 }
 
-function parseBlock(m: string, orig: string, from: number, to: number, base: number, media: string | null, out: CssModel) {
+// Deeper @media nesting is never real CSS; past it, blocks are skipped rather than overflow the stack.
+const MAX_NESTING = 16;
+
+function parseBlock(m: string, orig: string, from: number, to: number, base: number, media: string | null, out: CssModel, depth = 0) {
   let i = from;
   while (i < to) {
     const open = m.indexOf('{', i);
@@ -148,9 +153,11 @@ function parseBlock(m: string, orig: string, from: number, to: number, base: num
     const prelude = orig.slice(ps, open).trim();
     const close = matchBrace(m, open, to);
     if (/^@media\b/i.test(prelude)) {
-      const cond = prelude.slice(6).trim();
-      out.media.push({ media: cond, start: base + ps, open: base + open, close: base + close });
-      parseBlock(m, orig, open + 1, close, base, cond, out);
+      if (depth < MAX_NESTING) {
+        const cond = prelude.slice(6).trim();
+        out.media.push({ media: cond, start: base + ps, open: base + open, close: base + close });
+        parseBlock(m, orig, open + 1, close, base, cond, out, depth + 1);
+      }
     } else if (/^@(-webkit-)?keyframes\b/i.test(prelude)) {
       const frames: KeyframeBlock[] = [];
       let j = open + 1;
@@ -169,17 +176,102 @@ function parseBlock(m: string, orig: string, from: number, to: number, base: num
   }
 }
 
+/** The <style> elements a browser applies: not in comments, nor in <noscript> or another raw text element. */
 export function parseCss(html: string): CssModel {
   const out: CssModel = { rules: [], keyframes: [], media: [], styleBlocks: [] };
-  const re = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
-  for (let match = re.exec(html); match; match = re.exec(html)) {
-    const open = match.index + match[0].indexOf('>') + 1;
-    const close = open + match[1].length;
+  for (const tag of startTags(html)) {
+    if (tag.name !== 'style' || !tag.content || !html.startsWith('</', tag.content.end)) continue;
+    const { start: open, end: close } = tag.content;
     out.styleBlocks.push({ open, close });
     const orig = html.slice(open, close);
     parseBlock(mask(orig), orig, 0, orig.length, open, null, out);
   }
   return out;
+}
+
+export interface Attr {
+  value: string; // raw, as written
+  start: number;
+  end: number;
+}
+
+export interface Tag {
+  name: string; // lower case
+  attrs: Map<string, Attr>;
+  /** For raw text elements such as <script>: where their content is. */
+  content?: { start: number; end: number };
+}
+
+// Elements whose content is not markup, so it holds no tags or attributes. The ad runs with
+// scripting on, so <noscript> is one of them.
+const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'noscript', 'iframe', 'noembed', 'noframes']);
+const COMMENT_END = /--!?>/g;
+
+/** Start tags in source order, skipping comments and the content of raw text elements. */
+export function startTags(html: string): Tag[] {
+  const tags: Tag[] = [];
+  const n = html.length;
+  let i = html.indexOf('<');
+  while (i >= 0 && i < n) {
+    if (html.startsWith('<!--', i)) {
+      // As in browsers, <!--> and <!---> are whole comments, and --!> also ends one.
+      let end = n;
+      if (html[i + 4] === '>') end = i + 5;
+      else if (html.startsWith('->', i + 4)) end = i + 6;
+      else {
+        COMMENT_END.lastIndex = i + 4;
+        if (COMMENT_END.exec(html)) end = COMMENT_END.lastIndex;
+      }
+      i = html.indexOf('<', end);
+      continue;
+    }
+    const name = /^[a-zA-Z][^\s/>]*/.exec(html.slice(i + 1, i + 64))?.[0];
+    if (!name) {
+      i = html.indexOf('<', i + 1);
+      continue;
+    }
+    const tag: Tag = { name: name.toLowerCase(), attrs: new Map() };
+    let k = i + 1 + name.length;
+    while (k < n) {
+      while (k < n && /[\s/]/.test(html[k])) k++;
+      if (k >= n || html[k] === '>') break;
+      let e = k + 1;
+      while (e < n && !/[\s/>=]/.test(html[e])) e++;
+      const attr = html.slice(k, e).toLowerCase();
+      let value: Attr = { value: '', start: e, end: e };
+      let j = e;
+      while (j < n && /\s/.test(html[j])) j++;
+      if (html[j] === '=') {
+        j++;
+        while (j < n && /\s/.test(html[j])) j++;
+        const quote = html[j];
+        if (quote === '"' || quote === "'") {
+          const close = html.indexOf(quote, j + 1);
+          const end = close < 0 ? n : close;
+          value = { value: html.slice(j + 1, end), start: j + 1, end };
+          e = end + 1;
+        } else {
+          let end = j;
+          while (end < n && !/[\s>]/.test(html[end])) end++;
+          value = { value: html.slice(j, end), start: j, end };
+          e = end;
+        }
+      }
+      if (!tag.attrs.has(attr)) tag.attrs.set(attr, value); // like browsers, the first one wins
+      k = e;
+    }
+    i = k + 1;
+    if (RAW_TEXT.has(tag.name)) {
+      const close = new RegExp(`</${tag.name}[\\s/>]`, 'gi');
+      close.lastIndex = i;
+      const end = close.exec(html)?.index ?? n;
+      tag.content = { start: i, end };
+      i = end;
+    }
+    tags.push(tag);
+    i = html.indexOf('<', i);
+  }
+  return tags;
 }
 
 /** Declarations in a bare declaration list, such as a style="" value; offsets are into `text`. */
