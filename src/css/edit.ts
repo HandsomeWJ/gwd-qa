@@ -117,7 +117,8 @@ export function insertRule(
   const ruleIndent = firstRule ? firstRule[1] : containerIndent + '  ';
   const declIndent = ruleIndent + '  ';
   const rule = `${ruleIndent}${selector} {\n${declTexts.map((d) => `${declIndent}${d}`).join('\n')}\n${ruleIndent}}`;
-  if (!body.includes('\n')) {
+  // Only a blank body is replaced: a block written on one line keeps the rules it holds.
+  if (!body.trim()) {
     return { start: contentStart, end: container.close, text: `\n${rule}\n${containerIndent}` };
   }
   const closeLine = lineStart(src, container.close);
