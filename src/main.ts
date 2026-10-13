@@ -8,7 +8,7 @@ import { adPackage, droppedFiles, pickedFiles, type PickedFile } from './input';
 import { allowedZipUrl, outsideHosts } from './net';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
-import { describeSize, type FrameSize } from './sizes';
+import { describeSize, frameSizes, type FrameSize } from './sizes';
 
 const app = document.getElementById('app')!;
 let session: Session | null = null;
@@ -85,26 +85,38 @@ const workerReady = startWorker();
 async function load(pick: () => Promise<PickedFile[]>) {
   if (busy) return;
   setBusy(true);
+  let swapped = false;
   try {
     status('Reading the ad…', 'busy');
+    // Whatever can refuse the new ad runs first, so a refusal leaves the loaded ad as it was.
     const pkg = adPackage(await pick());
-    await workerReady;
-    await session?.close();
-    session = await Session.open(pkg);
-    session.allowThirdParty = allowThirdPartySaved();
-    loadDisclaimers(session.pkg.zipName);
-    const sizes = staticAudit(session.html).sizes;
+    const sizes = staticAudit(new TextDecoder().decode(pkg.files.get(pkg.htmlPath))).sizes;
     if (!sizes.length) throw new Error('No served sizes found: this does not look like a GWD ad.');
-    session.mountFrames($('#frames'), sizes, frameCard);
+    if (!sizes.some((s) => frameSizes(s).length)) throw new Error(`None of the served sizes can be previewed: ${sizes.join(', ')}.`);
+    await workerReady;
+    const next = await Session.open(pkg);
+    next.allowThirdParty = allowThirdPartySaved();
+    const old = session;
+    session = next;
+    swapped = true;
+    clearResults();
+    clearPreview();
+    await old?.close();
+    loadDisclaimers(next.key);
+    next.mountFrames($('#frames'), sizes, frameCard);
     layoutFrames();
-    if (!session.frames.length) throw new Error(`None of the served sizes can be previewed: ${sizes.join(', ')}.`);
     $('#drop').hidden = true;
     $('#preview').hidden = false;
     renderNet();
-    status(`Loading ${plural(session.frames.length, 'size')}…`, 'busy');
-    await session.reloadAll();
+    status(`Loading ${plural(next.frames.length, 'size')}…`, 'busy');
+    await next.reloadAll();
     await check();
   } catch (err) {
+    // The old ad is gone: nothing of it may stay on the page, and another ad can be dropped.
+    if (swapped) {
+      clearResults();
+      $('#drop').hidden = false;
+    }
     status(esc(err instanceof Error ? err.message : String(err)), 'err');
   } finally {
     setBusy(false);
@@ -115,16 +127,29 @@ async function check() {
   status('Checking every size…', 'busy');
   result = await session!.audit();
   status('');
+  $('#drop').hidden = true;
   render();
+}
+
+/** Takes the results off the page, so no button acts on results that no longer hold. */
+function clearResults() {
+  result = null;
+  for (const id of ['summary', 'checklist', 'fixes', 'copy']) $(`#${id}`).hidden = true;
+}
+
+function clearPreview() {
+  $('#preview').hidden = true;
+  $('#frames').replaceChildren();
 }
 
 const NET_KEY = 'gwdqa.allowThirdParty';
 const DISCLAIMER_KEY = 'gwdqa.disclaimers';
 // An id that names a disclaimer. Only ids count: GWD's generated class names are random.
 const DISCLAIMER_ID = /disclaim|legal|terms|tnc|t&c|fine-?print|small-?print/i;
-// Per element label: marked (true) or unmarked (false) as a disclaimer, for the loaded zip.
+// Per element label: marked (true) or unmarked (false) as a disclaimer, for the loaded ad.
 let disclaimerChoices: Record<string, boolean> = {};
 
+/** Every ad's marks, by the ad's key (adKey in src/zip.ts). */
 function storedDisclaimers(): Record<string, Record<string, boolean>> {
   try {
     return JSON.parse(localStorage.getItem(DISCLAIMER_KEY) ?? '{}');
@@ -133,13 +158,13 @@ function storedDisclaimers(): Record<string, Record<string, boolean>> {
   }
 }
 
-function loadDisclaimers(zipName: string) {
-  disclaimerChoices = storedDisclaimers()[zipName] ?? {};
+function loadDisclaimers(key: string) {
+  disclaimerChoices = storedDisclaimers()[key] ?? {};
 }
 
-function saveDisclaimers(zipName: string) {
+function saveDisclaimers(key: string) {
   const all = storedDisclaimers();
-  all[zipName] = disclaimerChoices;
+  all[key] = disclaimerChoices;
   try {
     localStorage.setItem(DISCLAIMER_KEY, JSON.stringify(all));
   } catch {
@@ -348,12 +373,19 @@ function renderChecklist() {
 
 function applyBanner(a: ApplyResult): string {
   const p = a.positions;
-  if (!p.changed.length && !p.missing.length) {
+  const applied = `Applied ${plural(a.applied.length, 'fix', 'fixes')}`;
+  if (!p.moved.length && !p.respaced.length) {
     const where = result && result.pages > 1 ? 'in every size and on every page' : 'in every size';
-    return `<div class="banner ok">Applied ${plural(a.applied.length, 'fix', 'fixes')}. All ${plural(p.unchanged, 'text element')} are exactly where they were, ${where}.</div>`;
+    const texts = p.texts === 1 ? 'The one text is exactly where it was' : `All ${p.texts} texts are exactly where they were`;
+    const spacing = p.spacings ? ', and every line spacing is unchanged' : '';
+    return `<div class="banner ok">${applied}. ${texts}${spacing}, ${where}.</div>`;
   }
-  const list = [...p.changed, ...p.missing].slice(0, 12).map((k) => `<li>${esc(k)}</li>`).join('');
-  return `<div class="banner warn">Applied ${plural(a.applied.length, 'fix', 'fixes')}, but ${plural(p.changed.length + p.missing.length, 'text element')} moved. Check them in the preview, or undo.<ul>${list}</ul></div>`;
+  const what = [
+    p.moved.length ? `${plural(p.moved.length, 'text')} moved` : '',
+    p.respaced.length ? `${plural(p.respaced.length, 'line spacing')} changed` : '',
+  ].filter(Boolean).join(' and ');
+  const list = [...p.moved, ...p.respaced].slice(0, 12).map((k) => `<li>${esc(k)}</li>`).join('');
+  return `<div class="banner warn">${applied}, but ${what}. Check them in the preview, or undo.<ul>${list}</ul></div>`;
 }
 
 function renderFixes() {
@@ -402,13 +434,25 @@ function renderCopy() {
 async function applySelected() {
   const chosen = [...app.querySelectorAll<HTMLInputElement>('input[data-fix]:checked')].map((i) => result!.plan.fixes[Number(i.dataset.fix)]);
   if (!chosen.length) return;
+  return changeHtml('Applying fixes and comparing text positions…', (s) => s.apply(chosen));
+}
+
+/**
+ * Changes the ad's HTML, then checks it again. If that fails, the HTML goes back to the version
+ * the results on the page were checked on: their fixes are edits at places in that version.
+ */
+async function changeHtml(what: string, change: (s: Session) => Promise<unknown>) {
+  const s = session!;
+  const checked = { html: s.html, lastApply: s.lastApply, result };
   setBusy(true);
   try {
-    status('Applying fixes and comparing text positions…', 'busy');
-    await session!.apply(chosen);
+    status(what, 'busy');
+    await change(s);
     await check();
   } catch (err) {
-    status(esc(err instanceof Error ? err.message : String(err)), 'err');
+    const stale = s.html !== checked.html && result === checked.result;
+    if (stale) await s.revert(checked).catch(() => undefined);
+    status(esc(err instanceof Error ? err.message : String(err)) + (stale ? ' The file was put back as it was, so the results below still match it.' : ''), 'err');
   } finally {
     setBusy(false);
   }
@@ -429,9 +473,8 @@ function download(forUpload = false) {
 function reset() {
   void session?.close();
   session = null;
-  result = null;
-  for (const id of ['summary', 'checklist', 'fixes', 'copy', 'preview']) $(`#${id}`).hidden = true;
-  $('#frames').replaceChildren();
+  clearResults();
+  clearPreview();
   $('#drop').hidden = false;
   status('');
 }
@@ -444,12 +487,7 @@ app.addEventListener('click', async (e) => {
   if (action === 'download') return download();
   if (action === 'download-upload') return download(true);
   if (action === 'reset') return reset();
-  if (action === 'undo') {
-    return run('Restoring the original file…', async () => {
-      await session!.undo();
-      await check();
-    });
-  }
+  if (action === 'undo') return changeHtml('Restoring the original file…', (s) => s.undo());
   if (action === 'replay-all') return run('Replaying every size…', () => session!.reloadAll());
   if (action === 'replay') {
     const f = session?.frames.find((x) => x.label === btn.dataset.frame);
@@ -488,7 +526,7 @@ app.addEventListener('change', (e) => {
     const target = box.dataset.disclaimer;
     if (box.checked === namedDisclaimer(target)) delete disclaimerChoices[target];
     else disclaimerChoices[target] = box.checked;
-    saveDisclaimers(session.pkg.zipName);
+    saveDisclaimers(session.key);
     renderSummary();
     renderChecklist();
     app.querySelector<HTMLInputElement>(`input[data-disclaimer="${CSS.escape(target)}"]`)?.focus();

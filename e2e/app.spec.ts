@@ -51,7 +51,8 @@ test('checks every page and both ends of a range, then fixes without moving text
   await expect(lhFix).toContainText('.gwd-p-c in 300x250 to 320x480');
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
-  await expect(page.locator('#fixes .banner')).toContainText('exactly where they were, in every size and on every page', { timeout: 90_000 });
+  // Texts and line spacings are counted apart: 10 texts per frame (its two body scripts among them) and 8 spacings.
+  await expect(page.locator('#fixes .banner')).toHaveText(/^Applied \d+ fixes\. All 30 texts are exactly where they were, and every line spacing is unchanged, in every size and on every page\.$/, { timeout: 90_000 });
   await expect(page.locator('#summary')).toContainText('Every check passes', { timeout: 90_000 });
   await expect(cssValues.locator('summary .pill')).toHaveText('Pass');
   await expect(page.locator('#summary details.edits summary')).toContainText('Review the changes to Responsive.html');

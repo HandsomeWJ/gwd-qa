@@ -13,6 +13,12 @@ const isZip = (f: PickedFile) => /\.zip$/i.test(f.path) || (f.data[0] === 0x50 &
 export function adPackage(files: PickedFile[]): AdPackage {
   if (!files.length) throw new Error('There are no files in it.');
   const [one] = files;
+  if (files.length > 1) {
+    // Only a zip that was itself picked or dropped: one inside a dropped folder is just a file of the ad.
+    const zips = files.filter((f) => !f.path.includes('/') && /\.zip$/i.test(f.path)).map((f) => f.path);
+    if (zips.length > 1) throw new Error(`Check one zip at a time: ${zips.slice(0, -1).join(', ')} and ${zips.at(-1)} came together.`);
+    if (zips.length) throw new Error(`Check ${zips[0]} on its own: a zip cannot be checked together with other files.`);
+  }
   if (files.length > 1 || one.path.includes('/')) return readFolder(files);
   if (isZip(one)) return readZip(one.path, one.data);
   if (/\.html?$/i.test(one.path)) return readHtml(one.path, one.data);

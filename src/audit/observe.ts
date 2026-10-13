@@ -421,12 +421,22 @@ export async function positions(frames: AdFrame[]): Promise<Map<string, string>>
   return new Map(results.flat());
 }
 
+// The keys positions() gives line spacings; every other key is a text's position.
+const LINE_HEIGHT_KEY = / line-height( \(\d+\))?$/;
+
+/** Compares two positions() snapshots, counting texts and line spacings apart. A key that is gone counts as changed. */
 export function comparePositions(before: Map<string, string>, after: Map<string, string>) {
-  const changed = [...before.keys()].filter((k) => after.has(k) && after.get(k) !== before.get(k));
+  const keys = [...before.keys()];
+  const differs = (k: string) => after.get(k) !== before.get(k);
+  const texts = keys.filter((k) => !LINE_HEIGHT_KEY.test(k));
+  const spacings = keys.filter((k) => LINE_HEIGHT_KEY.test(k));
   return {
-    changed,
-    missing: [...before.keys()].filter((k) => !after.has(k)),
+    changed: keys.filter((k) => after.has(k) && differs(k)),
+    missing: keys.filter((k) => !after.has(k)),
     added: [...after.keys()].filter((k) => !before.has(k)),
-    unchanged: before.size - changed.length,
+    texts: texts.length,
+    moved: texts.filter(differs),
+    spacings: spacings.length,
+    respaced: spacings.filter(differs),
   };
 }

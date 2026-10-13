@@ -51,9 +51,14 @@ export function readFolder(picked: { path: string; data: Uint8Array }[]): AdPack
     entries.push(path);
   }
   const htmlPath = findAdHtml(files);
-  const tops = new Set([...files.keys()].map((p) => (p.includes('/') ? p.slice(0, p.indexOf('/')) : '')));
-  const name = tops.size === 1 && !tops.has('') ? [...tops][0] : htmlPath.split('/').pop()!.replace(/\.html?$/i, '');
+  const name = topFolder(files.keys()) || htmlPath.split('/').pop()!.replace(/\.html?$/i, '');
   return { zipName: `${name}.zip`, kind: 'folder', entries, files, htmlPath };
+}
+
+/** The one folder every path is in, or '' when they are not all in one folder. */
+function topFolder(paths: Iterable<string>): string {
+  const tops = new Set([...paths].map((p) => (p.includes('/') ? p.slice(0, p.indexOf('/')) : '')));
+  return tops.size === 1 ? [...tops][0] : '';
 }
 
 /** Just the ad's HTML file: GWD's runtime and the ad's images are not there. */
@@ -61,18 +66,37 @@ export function readHtml(name: string, data: Uint8Array): AdPackage {
   return { zipName: name, kind: 'html', entries: [name], files: new Map([[name, data]]), htmlPath: name };
 }
 
+const GWD_PAGE = /gwd-served-sizes|<gwd-genericad|<gwd-pagedeck|name="generator" content="Google Web Designer/;
+
 export function findAdHtml(files: Map<string, Uint8Array>): string {
   const decoder = new TextDecoder();
   const candidates = [...files.keys()].filter((p) => /\.html?$/i.test(p) && !STALE_COPIES.test(p));
   if (!candidates.length) throw new Error('No HTML file found outside _revisions/ and gwd_preview_ folders.');
-  const score = (p: string) => {
-    const text = decoder.decode(files.get(p)!.subarray(0, 400_000));
-    const gwd = /gwd-served-sizes|<gwd-genericad|<gwd-pagedeck|name="generator" content="Google Web Designer/.test(text) ? 0 : 1;
-    return [gwd, p.split('/').length, p.length];
-  };
-  return candidates
-    .map((p) => ({ p, s: score(p) }))
-    .sort((a, b) => a.s[0] - b.s[0] || a.s[1] - b.s[1] || a.s[2] - b.s[2])[0].p;
+  const ads = candidates.filter((p) => GWD_PAGE.test(decoder.decode(files.get(p)!.subarray(0, 400_000))));
+  // Checking one of them would pass the others on in the download, unchecked.
+  if (ads.length > 1) {
+    const list = ads.slice(0, 3).join(', ') + (ads.length > 3 ? ` and ${ads.length - 3} more` : '');
+    throw new Error(`Found ${ads.length} ads: ${list}. Check one ad at a time: its zip, its folder, or just its HTML.`);
+  }
+  if (ads.length) return ads[0];
+  return candidates.sort((a, b) => a.split('/').length - b.split('/').length || a.length - b.length)[0];
+}
+
+/**
+ * The name the page remembers choices about this ad under, such as disclaimer marks. A zip or a
+ * folder goes by its own name. Just the HTML, or loose files, go by the HTML's name, which GWD
+ * gives every ad (Responsive.html), so a short hash of the HTML as it came is added.
+ */
+export function adKey(pkg: AdPackage): string {
+  if (pkg.kind === 'zip' || (pkg.kind === 'folder' && topFolder(pkg.files.keys()))) return pkg.zipName;
+  return `${pkg.zipName}#${shortHash(pkg.files.get(pkg.htmlPath)!)}`;
+}
+
+/** FNV-1a, 32 bits, as 8 hex digits. */
+function shortHash(bytes: Uint8Array): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
 
 /** Same entries, same order, with any changed files swapped in and any `leaveOut` entries dropped. */

@@ -65,7 +65,7 @@ test('checks an ad from just its HTML, with a stand-in for GWD\'s runtime', asyn
   await expect(page.locator('#fixes .fixlist li', { hasText: 'Declare line-height' }).locator('.detail').first()).not.toContainText('.gwd-p-c');
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
-  await expect(page.locator('#fixes .banner')).toContainText('exactly where they were, in every size and on every page', { timeout: 90_000 });
+  await expect(page.locator('#fixes .banner')).toContainText('texts are exactly where they were, and every line spacing is unchanged, in every size and on every page', { timeout: 90_000 });
   await expect(page.getByRole('button', { name: 'Download for upload' })).toHaveCount(0);
 
   const file = await downloaded(page, 'Download fixed HTML');
