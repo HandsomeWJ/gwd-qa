@@ -5,6 +5,7 @@
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
 import { singleClass, sizeOfMedia, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
 import type { StaticReport } from '../audit/static';
+import { pointDecimals } from '../audit/cssvalues';
 import type { Box, CheckId } from '../audit/types';
 import { describeSize } from '../sizes';
 
@@ -28,7 +29,7 @@ export interface PlanInput {
   boxes: Box[];
   /** Per frame label, the media conditions that apply in that frame. */
   media: Map<string, Set<string>>;
-  report: Pick<StaticReport, 'fadeDecls' | 'unchanged'>;
+  report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues'>;
   /** Keyframes whose unchanged values differ from the element's own style. */
   safety: { animation: string }[];
 }
@@ -36,6 +37,12 @@ export interface PlanInput {
 const PADDING = /^padding(-(top|right|bottom|left|block|inline)(-(start|end))?)?$/;
 const TEXT_TAGS = ['p', 'span', 'button'];
 const px = (n: number) => `${+n.toFixed(2)}px`;
+// Properties that only change how things look: a value that starts to apply never moves text.
+const PAINT_ONLY = new Set([
+  'opacity', 'visibility', 'color', 'background', 'background-color', 'background-image', 'border-color', 'outline', 'outline-color',
+  'box-shadow', 'text-shadow', 'filter', 'cursor', 'z-index', 'transition', 'transition-delay', 'transition-duration', 'transition-property',
+  'transition-timing-function',
+]);
 
 class Planner {
   readonly fixes: PlannedFix[] = [];
@@ -370,6 +377,32 @@ class Planner {
     }
     this.add('keyframes', 'Delete keyframe properties that never change', `${count} declarations in ${blocks} keyframes blocks`, edits);
   }
+
+  cssValues() {
+    // Declarations another fix rewrites; that fix replaces the bad value anyway.
+    const rewritten = this.fixes.flatMap((f) => f.edits).filter((e) => e.text && e.end > e.start);
+    const safe: { edits: Edit[]; notes: string[] } = { edits: [], notes: [] };
+    const moving: { edits: Edit[]; notes: string[] } = { edits: [], notes: [] };
+    for (const v of this.input.report.cssValues) {
+      const handler = v.handler ? ` (in ${v.handler})` : '';
+      if (!v.fixed) {
+        this.manualNote('cssValues', `${v.target} ${v.prop}: ${v.value}${handler} is not valid CSS, so browsers ignore it; correct it in GWD.`);
+        continue;
+      }
+      if (rewritten.some((e) => e.start < v.end && v.start < e.end)) continue;
+      const into = PAINT_ONLY.has(v.prop) ? safe : moving;
+      into.edits.push({ start: v.start, end: v.end, text: pointDecimals(this.html.slice(v.start, v.end)) });
+      into.notes.push(`${v.target} ${v.prop}: ${v.value} -> ${v.fixed}${handler}`);
+    }
+    this.add('cssValues', 'Write decimal points in CSS values', safe.notes.join(', '), safe.edits);
+    this.add(
+      'cssValues',
+      'Write decimal points in CSS values where it moves text',
+      moving.notes.join(', '),
+      moving.edits,
+      'Browsers ignore these values today, so once valid they size or place what they style. Check the result in the preview.',
+    );
+  }
 }
 
 export function planFixes(input: PlanInput): FixPlan {
@@ -380,5 +413,6 @@ export function planFixes(input: PlanInput): FixPlan {
   p.lineHeight();
   p.textFade();
   p.keyframes();
+  p.cssValues(); // last: it skips declarations the other fixes rewrite
   return { fixes: p.fixes, manual: p.manual };
 }

@@ -54,6 +54,12 @@ export function mockAdHtml(headline = 'Headline'): string {
     document.addEventListener('securitypolicyviolation', () => { document.documentElement.dataset.blocked = 'yes'; });
   </script>
   <script src="mock-gwd.js"></script>
+  <script type="text/javascript" gwd-events="handlers">
+    window.gwd = window.gwd || {};
+    gwd.framechange_savings = function(event) {
+      gwd.actions.events.setInlineStyle('SA_cta_1', 'opacity: 0,3;');
+    };
+  </script>
   <style type="text/css">
     .gwd-p-a {
       position: absolute;
@@ -148,6 +154,7 @@ export function mockAdHtml(headline = 'Headline'): string {
         <p class="gwd-p-c" id="SA_headline_2">Page two text</p>
         <p class="gwd-p-d" id="SA_disclaimer_1">Small print</p>
         <p class="gwd-p-e" id="SA_note_1">Tiny</p>
+        <div id="SA_rule_1" style="opacity: 0,5;"></div>
       </gwd-page>
     </gwd-pagedeck>
   </gwd-genericad>

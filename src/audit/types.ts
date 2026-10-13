@@ -8,7 +8,8 @@ export type CheckId =
   | 'copy'
   | 'position'
   | 'textFade'
-  | 'keyframes';
+  | 'keyframes'
+  | 'cssValues';
 
 export interface CheckInfo {
   id: CheckId;
@@ -28,6 +29,7 @@ export const CHECKS: CheckInfo[] = [
   { id: 'position', title: 'Position animation', passWhen: 'Keyframes move elements with transform: translate3d, never top or left.' },
   { id: 'textFade', title: 'Text fade-in', passWhen: 'Text that fades in starts at opacity 0.001, not 0.' },
   { id: 'keyframes', title: 'Keyframes', passWhen: 'Keyframes hold only properties that change between them.' },
+  { id: 'cssValues', title: 'CSS values', passWhen: 'Every CSS value is valid, including styles that events and scripts set (opacity: 0.3, not 0,3).' },
 ];
 
 export interface Finding {
