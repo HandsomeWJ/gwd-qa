@@ -289,6 +289,7 @@ function standinNote(s: Session): string {
 function renderSummary() {
   const s = session!;
   const failed = CHECKS.filter((c) => c.id !== 'copy' && failing(c.id).length).length;
+  const review = CHECKS.filter((c) => !failing(c.id).length && result!.findings.some((f) => f.check === c.id && f.unknown)).length;
   const lone = s.pkg.kind === 'html';
   const fileKind = lone ? 'HTML' : 'zip';
   const note = standinNote(s);
@@ -298,7 +299,9 @@ function renderSummary() {
     <div class="bar">
       <div class="meta">
         <strong>${esc(s.pkg.zipName)}</strong>${lone ? '' : ` · ${esc(s.pkg.htmlPath)}`} · ${plural(s.sizes.length, 'size')}<br>
-        ${failed ? `<span class="pill fail">${plural(failed, 'check')} failing</span>` : '<span class="pill pass">Every check passes</span>'}
+        ${failed ? `<span class="pill fail">${plural(failed, 'check')} failing</span>` : ''}
+        ${review ? `<span class="pill info">${plural(review, 'check')} to review</span>` : ''}
+        ${failed || review ? '' : '<span class="pill pass">Every check passes</span>'}
         ${s.changed ? '<span class="pill info">Fixed, not yet downloaded</span>' : ''}
       </div>
       <div class="actions">
@@ -350,7 +353,8 @@ function renderChecklist() {
     const notes = r.findings.filter((f) => f.check === c.id && f.level === 'note');
     const fixable = r.plan.fixes.some((f) => f.check === c.id);
     const targets = new Set(fails.map((f) => f.target)).size;
-    const pill = fails.length ? '<span class="pill fail">Fail</span>' : '<span class="pill pass">Pass</span>';
+    // A note where the check could not decide leaves it to the user, so it is not a pass.
+    const pill = fails.length ? '<span class="pill fail">Fail</span>' : notes.some((f) => f.unknown) ? '<span class="pill info">Review</span>' : '<span class="pill pass">Pass</span>';
     const extra = [
       exempted.length ? `${plural(new Set(exempted.map((f) => f.target)).size, 'disclaimer')} exempt` : '',
       !fails.length && notes.length ? plural(notes.length, 'note') : '',

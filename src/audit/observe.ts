@@ -599,7 +599,7 @@ export async function positions(frames: AdFrame[]): Promise<Map<string, string>>
         a.currentTime = 1000;
       });
       for (const el of scope.querySelectorAll('*')) {
-        if (!hasDirectText(el)) continue;
+        if (!hasDirectText(el) || el.closest('script, style, template, noscript')) continue;
         const page = pageOf(el, multi);
         let key = `${f.label}${page ? ` ${page}` : ''} ${label(el)} "${(el.textContent ?? '').trim().slice(0, 24)}"`;
         const n = (seen.get(key) ?? 0) + 1;

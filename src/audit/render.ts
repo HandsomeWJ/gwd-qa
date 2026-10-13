@@ -13,7 +13,7 @@ export function renderFindings(boxes: Box[]): Finding[] {
       const px = Math.round(fontSize * scale * 100) / 100;
       // GWD's fitting only ever shrinks text, so below 8px before it is below 8px after it too.
       if (b.fit === 'missing' && px >= 8 && (b.type.onScreen || b.type.moves)) {
-        out.push({ check: 'type', level: 'note', ...where, message: `"${b.text}" is ${px.toFixed(2)}px as written, but GWD fits this text to its box when the ad runs, which needs its gwd-text-fitting.js, so its size is not known here: check the whole folder or zip.` });
+        out.push({ check: 'type', level: 'note', ...where, message: `"${b.text}" is ${px.toFixed(2)}px as written, but GWD fits this text to its box when the ad runs, which needs its gwd-text-fitting.js, so its size is not known here: check the whole folder or zip.`, unknown: true });
       } else if (px < 8 && (b.type.onScreen || b.type.moves)) {
         const hint = scale < 0.999
           ? `It is ${+fontSize.toFixed(2)}px scaled by ${scale.toFixed(2)}. Scale its group to at least ${(Math.ceil((8 / fontSize) * 100) / 100).toFixed(2)}, raise its font-size to ${Math.ceil(8 / scale)}px in this size, or hide it in this size.`

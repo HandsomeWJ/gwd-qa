@@ -40,6 +40,7 @@ export interface Finding {
   target: string; // element or keyframes label
   message: string;
   hint?: string; // how to fix it by hand, for problems that are not fixed automatically
+  unknown?: boolean; // a note where the check could not decide, so the user must look
 }
 
 /**

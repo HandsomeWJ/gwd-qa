@@ -117,6 +117,10 @@ test('leaves text GWD fits to its box out of the size check and the line-height 
   const type = row(page, 'type');
   await type.locator('summary').click();
   await expect(type.locator('li', { hasText: 'p#SA_fit_1' })).toContainText('GWD fits this text to its box when the ad runs, which needs its gwd-text-fitting.js');
+  // With the mock's own small print marked as a disclaimer, only the fitted text is left: not a pass.
+  await type.locator('input[data-disclaimer="p#SA_note_1"]').first().check();
+  await expect(type.locator('summary .pill')).toHaveText('Review');
+  await expect(page.locator('#summary .meta')).not.toContainText('Every check passes');
   await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-fit: GWD fits this text when the ad runs, which needs its gwd-text-fitting.js; check the whole folder or zip.');
   await expect(lineHeightFix(page).locator('.detail').first()).not.toContainText('.gwd-p-fit');
 });
