@@ -289,7 +289,7 @@ class Planner {
       }
     }
     unreliable.forEach((cls) => this.manualNote('lineHeight',
-      `.${cls}: its web font had not loaded when it was measured, so its line-height is not fixed automatically. Check again, or set it in GWD.`));
+      `.${cls}: its web font was missing or still loading when it was measured, so its line-height is not fixed automatically. Check the whole ad folder or zip so its fonts load, or set it in GWD.`));
 
     // A span takes its text parent's line-height only when that equals its own in every size: a span
     // in a bigger or different font would otherwise get a smaller line box and pull the lines together.

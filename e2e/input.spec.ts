@@ -23,8 +23,9 @@ const OVERRIDE = JSON.stringify({
   '300x250:320x480': { 'data-gwd-text': JSON.stringify({ content: 'Range <span class="gwd-span-x">size</span>', isPlainText: false }) },
 }).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 
-// GWD's page sizing: each page fills the frame through percentage heights.
-const PAGE_CSS = '<style>html, body { width: 100%; height: 100%; margin: 0px; } .gwd-page-container { position: relative; width: 100%; height: 100%; } .gwd-page-size { position: absolute; width: 100%; height: 100%; }</style>';
+// GWD's page sizing: each page fills the frame through percentage heights. Page two's text uses a
+// web font whose file is not in the upload.
+const PAGE_CSS = '<style>html, body { width: 100%; height: 100%; margin: 0px; } .gwd-page-container { position: relative; width: 100%; height: 100%; } .gwd-page-size { position: absolute; width: 100%; height: 100%; } @font-face { font-family: "Brand Missing"; src: url("fonts/brand.woff") format("woff"); } .gwd-p-c { font-family: "Brand Missing", Arial; }</style>';
 
 /** The mock ad's HTML as GWD saves it: loading GWD's runtime by name, with page sizing, per-size text and an image. */
 function loneHtml(): string {
@@ -58,6 +59,10 @@ test('checks an ad from just its HTML, with a stand-in for GWD\'s runtime', asyn
   await lineHeight.locator('summary').click();
   await expect(lineHeight.locator('li', { hasText: 'p#SA_headline_2' })).toContainText('on page2');
   await expect(row(page, 'type').locator('summary .count')).toHaveText('1 item · 1 disclaimer exempt');
+
+  // Measured in a fallback font, its line-height would change once the real font loads: no value is written.
+  await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-c: its web font was missing or still loading');
+  await expect(page.locator('#fixes .fixlist li', { hasText: 'Declare line-height' }).locator('.detail').first()).not.toContainText('.gwd-p-c');
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   await expect(page.locator('#fixes .banner')).toContainText('exactly where they were, in every size and on every page', { timeout: 90_000 });

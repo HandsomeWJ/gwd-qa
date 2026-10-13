@@ -227,6 +227,21 @@ function moves(el: Element): boolean {
 }
 
 /** The px line-height a browser renders for `normal` in this element's font. */
+/**
+ * Whether text renders in its own font. A web font that failed to load (missing from the upload)
+ * or has not loaded yet leaves a fallback font in its place, whose spacing is not the design's.
+ */
+function fontReady(doc: Document, cs: CSSStyleDeclaration, text: string): boolean {
+  const fonts = doc.fonts;
+  if (!fonts) return true;
+  const unquote = (f: string) => f.trim().replace(/^["']|["']$/g, '');
+  const family = unquote(cs.fontFamily.split(',')[0]);
+  const faces: FontFace[] = [];
+  fonts.forEach((f) => { if (unquote(f.family) === family) faces.push(f); });
+  if (faces.some((f) => f.status === 'error') && !faces.some((f) => f.status === 'loaded')) return false;
+  return fonts.check(`${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`, text || 'Xg');
+}
+
 export function normalLineHeight(win: Window, el: Element): number {
   const cs = win.getComputedStyle(el);
   const doc = el.ownerDocument;
@@ -292,7 +307,7 @@ function boxesIn(f: AdFrame, scope: Element, multi: boolean): Box[] {
     }
     if (TEXT_TAGS.has(tag) && !box.declared.lineHeight) {
       box.normalLineHeight = normalLineHeight(win, el);
-      box.fontLoaded = el.ownerDocument.fonts?.check(`${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`, box.text || 'Xg') ?? true;
+      box.fontLoaded = fontReady(el.ownerDocument, cs, box.text);
     }
     if (box.inTextParent) {
       const parent = el.parentElement!.closest(TEXT_PARENT)!;

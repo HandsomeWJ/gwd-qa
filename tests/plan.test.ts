@@ -88,7 +88,7 @@ describe('line-height', () => {
       box({ ...head, frame: '300x600', size: '300x600', normalLineHeight: 19, computed: { fontSize: 16, fontFamily: 'Brand' } }),
     ], { '300x250': [M250], '300x600': [M600] });
     expect(fix('lineHeight')).toBeUndefined();
-    expect(p.manual[0].detail).toContain('its web font had not loaded');
+    expect(p.manual[0].detail).toContain('its web font was missing or still loading');
   });
 
   it('accepts a font whose metrics round differently at different sizes', () => {
