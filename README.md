@@ -43,7 +43,7 @@ The HTML alone loads GWD's runtime (`gwd_webcomponents_v1_min.js`, `gwdpage_min.
 | Position animation | Keyframes move elements with `transform: translate3d`, never `top`/`left` | No |
 | Text fade-in | Text starts at `opacity: 0.001`, not `0` | Yes |
 | Keyframes | Keyframes hold only properties that change | Yes, after checking each unchanged value equals the element's own style in every size |
-| CSS values | Every CSS value is valid, including the styles that events and scripts set (`opacity: 0.3`, not `0,3`): in `<style>`, `style=""`, `setInlineStyle`, `style.cssText`, `setAttribute('style')` and `style.<property>` | Yes, for decimal commas; unticked where the value sizes or places something. Other invalid values are listed for you to correct in GWD |
+| CSS values | Every CSS value is valid, including the styles that events and scripts set (`opacity: 0.3`, not `0,3`): in `<style>`, `style=""`, `setInlineStyle`, `style.cssText`, `setAttribute('style')` and `style.<property>`. GWD's own runtime, when the HTML has it inline, and styles a browser never applies (in comments, `<noscript>` or `<iframe>`) are skipped | Yes, for decimal commas, and only those outside functions when `rgba(0,0,0,0.5)` or the like needs its commas; unticked where the value sizes or places something. Other invalid values, and a comma written as `&#44;` or `\x2c`, are listed for you to correct in GWD |
 
 Fixes are text edits on the original HTML that keep GWD's layout (one declaration per line, same indentation), so the file still opens in GWD.
 
@@ -58,7 +58,7 @@ npx playwright install chromium   # once, for the browser tests
 npm run test:e2e # the built site in Chromium (Playwright)
 ```
 
-The browser tests load a small GWD-style ad built in `e2e/mock-ad.ts`: two pages, a range size, a disclaimer, a backup copy, a request to another site, and decimal commas in an event handler and a style attribute. A mock stands in for GWD's runtime, which is not ours to publish. They check every page and both ends of a range, the disclaimer exemption, the edits view, that applying fixes moves no text, both downloads, request blocking, and two tabs side by side. `e2e/input.spec.ts` also loads the ad as a folder, as loose files, as a drop, and as just its HTML, where the stand-in runs it. `e2e/line-height.spec.ts` checks the line-height fix where the previews cannot show it: inside a range whose two ends are exact sizes, text inside a paragraph that takes the paragraph's line-height, and text GWD fits to its box.
+The browser tests load a small GWD-style ad built in `e2e/mock-ad.ts`: two pages, a range size, a disclaimer, a backup copy, a request to another site, and decimal commas in an event handler and a style attribute. A mock stands in for GWD's runtime, which is not ours to publish. They check every page and both ends of a range, the disclaimer exemption, the edits view, that applying fixes moves no text, both downloads, CSS values as Chromium reads them, request blocking, and two tabs side by side. `e2e/input.spec.ts` also loads the ad as a folder, as loose files, as a drop, and as just its HTML, where the stand-in runs it. `e2e/line-height.spec.ts` checks the line-height fix where the previews cannot show it: inside a range whose two ends are exact sizes, text inside a paragraph that takes the paragraph's line-height, and text GWD fits to its box.
 
 `?zip=<path>` loads an ad straight away, for example `?zip=/gwd-qa/local-fixtures/my-ad.zip` in development. It only accepts zips stored on this site under `/gwd-qa/`: any other URL could run someone else's HTML on this origin, which every GitHub Pages site of the account shares. Put real ads in `local-fixtures/`, which git ignores: client files must never reach this repo.
 
@@ -68,7 +68,7 @@ Pushing to `main` runs both test suites and, when they pass, deploys to GitHub P
 
 | Path | What |
 |---|---|
-| `src/css/parse.ts`, `src/css/edit.ts` | CSS parser that keeps source offsets, and formatting-preserving edits |
+| `src/css/parse.ts`, `src/css/edit.ts` | The HTML's start tags and the CSS of the `<style>` elements a browser applies, with source offsets; formatting-preserving edits |
 | `src/audit/static.ts` | Source checks: environment, keyframes, text fading from 0, copy list |
 | `src/audit/cssvalues.ts` | Invalid CSS values in style blocks, style attributes and the styles scripts set, checked with the browser's `CSS.supports` |
 | `src/audit/observe.ts` | Reads each frame on each GWD page into plain data; position snapshots |

@@ -3,7 +3,7 @@
 // scripts set: setInlineStyle(), style.cssText, setAttribute('style'), style.<prop> and
 // style.setProperty().
 
-import { parseDeclList, sizeOfMedia, type CssModel, type Decl } from '../css/parse';
+import { parseDeclList, sizeOfMedia, startTags, type CssModel, type Decl, type Tag } from '../css/parse';
 import { describeSize } from '../sizes';
 
 /** Whether a browser accepts `value` for `prop`. */
@@ -30,13 +30,46 @@ export interface CssValueIssue {
 
 type Where = Pick<CssValueIssue, 'target' | 'via' | 'handler'>;
 
-const IMPORTANT = /\s*!\s*important$/i;
+// Starts at the '!', so a long run of spaces in a value costs no backtracking.
+const IMPORTANT = /!\s*important$/i;
 const PROP = /^-{0,2}[a-z][a-z0-9-]*$/;
 const JS_TYPE = /^((text|application)\/(x-)?(java|ecma)script|text\/jscript|module)$/i;
-// Raw text elements: their content is not markup, so it holds no attributes.
-const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp']);
+// GWD's components define its elements; an ad's own scripts never do.
+const GWD_ELEMENT = /\b(customElements\.define|document\.registerElement)\(\s*["']gwd-/;
 
-export const pointDecimals = (s: string) => s.replace(/(?<=\d),(?=\d)/g, '.');
+const withoutImportant = (value: string) => {
+  const m = IMPORTANT.exec(value);
+  return m ? value.slice(0, m.index).trimEnd() : value;
+};
+
+const pointDecimals = (s: string) => s.replace(/(?<=\d),(?=\d)/g, '.');
+
+/** pointDecimals() outside brackets only, so that function arguments written without spaces keep their commas. */
+function pointTopDecimals(s: string): string {
+  let out = '';
+  let depth = 0;
+  for (let k = 0; k < s.length; k++) {
+    const c = s[k];
+    if (c === '(') depth++;
+    else if (c === ')') depth = Math.max(0, depth - 1);
+    out += c === ',' && !depth && /\d/.test(s[k - 1] ?? '') && /\d/.test(s[k + 1] ?? '') ? '.' : c;
+  }
+  return out;
+}
+
+/**
+ * GWD's own runtime, inlined into the HTML: a component (data-source, data-exports-type), the
+ * events support or another runtime file. The ad cannot change it, and it compares and picks
+ * values rather than setting them ("none" != c ? c : "auto").
+ */
+function gwdRuntime(tag: Tag, content: string): boolean {
+  const attrs = [...tag.attrs.keys()];
+  return (
+    attrs.some((a) => a === 'data-source' || a === 'data-exports-type' || /^gwd-[\w-]+-runtime$/.test(a)) ||
+    tag.attrs.get('gwd-events')?.value.trim().toLowerCase() === 'support' ||
+    GWD_ELEMENT.test(content)
+  );
+}
 
 /** What is wrong with a value, and where a script or a style attribute sets it. */
 export function describeIssue(v: CssValueIssue): string {
@@ -54,13 +87,16 @@ export function cssValueIssues(html: string, css: CssModel, valid: CssValidator 
     if (prop.startsWith('-') || !value) return;
     if (!known.has(prop)) known.set(prop, valid(prop, 'inherit'));
     if (!known.get(prop) || valid(prop, value)) return;
-    const dotted = pointDecimals(value);
-    issues.push({ ...where, prop, value, start, end, fixed: dotted !== value && valid(prop, dotted) ? dotted : null });
+    // Every decimal comma made a point; failing that, only those outside functions, as in "1,5px rgba(0,0,0,0.5)".
+    const all = pointDecimals(value);
+    const top = pointTopDecimals(value);
+    const fixed = all !== value && valid(prop, all) ? all : top !== value && top !== all && valid(prop, top) ? top : null;
+    issues.push({ ...where, prop, value, start, end, fixed });
   };
   /** `at` maps an offset in the text the declarations were read from to the HTML. */
   const checkDecls = (decls: Decl[], where: Where, at: (i: number) => number = (i) => i) => {
     for (const d of decls) {
-      const value = d.value.replace(IMPORTANT, '');
+      const value = withoutImportant(d.value);
       check(d.prop, value, at(d.valueStart), at(d.valueStart + value.length), where);
     }
   };
@@ -79,19 +115,20 @@ export function cssValueIssues(html: string, css: CssModel, valid: CssValidator 
       checkDecls(parseDeclList(src.text), { target: tagLabel(tag), via: 'style attribute', handler: null }, (i) => src.at[i]);
     }
     const type = tag.attrs.get('type')?.value.trim() || 'text/javascript';
-    if (tag.name === 'script' && tag.content && !tag.attrs.has('src') && !tag.attrs.has('gwd-served-sizes') && JS_TYPE.test(type)) {
-      scanScript(html, tag.content.start, tag.content.end, {
-        list: (src, where) => {
-          const decls = declList(src.text);
-          if (decls) checkDecls(decls, where, (i) => src.at[i]);
-        },
-        single: (prop, src, where) => {
-          const value = src.text.trim();
-          const lead = src.text.length - src.text.trimStart().length;
-          check(prop, value, src.at[lead], src.at[lead + value.length], where);
-        },
-      });
-    }
+    if (tag.name !== 'script' || !tag.content || tag.attrs.has('src') || tag.attrs.has('gwd-served-sizes') || !JS_TYPE.test(type)) continue;
+    const { start, end } = tag.content;
+    if (gwdRuntime(tag, html.slice(start, end))) continue;
+    scanScript(html, start, end, {
+      list: (src, where) => {
+        const decls = declList(src.text);
+        if (decls) checkDecls(decls, where, (i) => src.at[i]);
+      },
+      single: (prop, src, where) => {
+        const value = src.text.trim();
+        const lead = src.text.length - src.text.trimStart().length;
+        check(prop, value, src.at[lead], src.at[lead + value.length], where);
+      },
+    });
   }
   return issues.sort((a, b) => a.start - b.start);
 }
@@ -135,15 +172,19 @@ function decode(raw: string, base: number, escape: RegExp, unescape: (m: RegExpE
 }
 
 const ENTITY = /&(#x[\da-f]+|#\d+|[a-z]+);/gi;
-const NAMED: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+// Maps, so that a name such as "constructor" finds nothing rather than Object's own members.
+const NAMED = new Map([['amp', '&'], ['lt', '<'], ['gt', '>'], ['quot', '"'], ['apos', "'"], ['nbsp', '\u00a0']]);
 const JS_ESCAPE = /\\(u\{[\da-fA-F]+\}|u[\da-fA-F]{4}|x[\da-fA-F]{2}|\r\n|[\s\S])/g;
-const JS_CHARS: Record<string, string> = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', 0: '\0', '\n': '', '\r': '', '\r\n': '', '\u2028': '', '\u2029': '' };
+const JS_CHARS = new Map([
+  ['n', '\n'], ['t', '\t'], ['r', '\r'], ['b', '\b'], ['f', '\f'], ['v', '\v'], ['0', '\0'],
+  ['\n', ''], ['\r', ''], ['\r\n', ''], ['\u2028', ''], ['\u2029', ''],
+]);
 
 const fromCode = (code: number, fallback: string) => (code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : fallback);
 
 function htmlText(raw: string, base: number): Source {
   return decode(raw, base, ENTITY, ([all, name]) => {
-    if (name[0] !== '#') return NAMED[name.toLowerCase()] ?? all;
+    if (name[0] !== '#') return NAMED.get(name.toLowerCase()) ?? all;
     return fromCode(name[1].toLowerCase() === 'x' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10), all);
   });
 }
@@ -151,81 +192,8 @@ function htmlText(raw: string, base: number): Source {
 function jsText(raw: string, base: number): Source {
   return decode(raw, base, JS_ESCAPE, ([, e]) => {
     if (e.length > 1 && (e[0] === 'u' || e[0] === 'x')) return fromCode(parseInt(e.replace(/[ux{}]/g, ''), 16), e);
-    return JS_CHARS[e] ?? e;
+    return JS_CHARS.get(e) ?? e;
   });
-}
-
-interface Attr {
-  value: string; // raw, as written
-  start: number;
-  end: number;
-}
-
-interface Tag {
-  name: string; // lower case
-  attrs: Map<string, Attr>;
-  /** For raw text elements such as <script>: where their content is. */
-  content?: { start: number; end: number };
-}
-
-/** Start tags in source order, skipping comments and the content of raw text elements. */
-function startTags(html: string): Tag[] {
-  const tags: Tag[] = [];
-  const n = html.length;
-  let i = html.indexOf('<');
-  while (i >= 0 && i < n) {
-    if (html.startsWith('<!--', i)) {
-      const end = html.indexOf('-->', i + 4);
-      i = end < 0 ? n : html.indexOf('<', end + 3);
-      continue;
-    }
-    const name = /^[a-zA-Z][^\s/>]*/.exec(html.slice(i + 1, i + 64))?.[0];
-    if (!name) {
-      i = html.indexOf('<', i + 1);
-      continue;
-    }
-    const tag: Tag = { name: name.toLowerCase(), attrs: new Map() };
-    let k = i + 1 + name.length;
-    while (k < n) {
-      while (k < n && /[\s/]/.test(html[k])) k++;
-      if (k >= n || html[k] === '>') break;
-      let e = k + 1;
-      while (e < n && !/[\s/>=]/.test(html[e])) e++;
-      const attr = html.slice(k, e).toLowerCase();
-      let value: Attr = { value: '', start: e, end: e };
-      let j = e;
-      while (j < n && /\s/.test(html[j])) j++;
-      if (html[j] === '=') {
-        j++;
-        while (j < n && /\s/.test(html[j])) j++;
-        const quote = html[j];
-        if (quote === '"' || quote === "'") {
-          const close = html.indexOf(quote, j + 1);
-          const end = close < 0 ? n : close;
-          value = { value: html.slice(j + 1, end), start: j + 1, end };
-          e = end + 1;
-        } else {
-          let end = j;
-          while (end < n && !/[\s>]/.test(html[end])) end++;
-          value = { value: html.slice(j, end), start: j, end };
-          e = end;
-        }
-      }
-      if (!tag.attrs.has(attr)) tag.attrs.set(attr, value); // like browsers, the first one wins
-      k = e;
-    }
-    i = k + 1;
-    if (RAW_TEXT.has(tag.name)) {
-      const close = new RegExp(`</${tag.name}[\\s/>]`, 'gi');
-      close.lastIndex = i;
-      const end = close.exec(html)?.index ?? n;
-      tag.content = { start: i, end };
-      i = end;
-    }
-    tags.push(tag);
-    i = html.indexOf('<', i);
-  }
-  return tags;
 }
 
 /** label() in static.ts, from a start tag. */
@@ -256,28 +224,32 @@ function stringEnd(src: string, i: number): number {
 
 /** The closing backtick of a template literal; `plain` when it has no ${} substitutions. */
 function templateEnd(src: string, i: number): { end: number; plain: boolean } {
+  // What encloses k, innermost last: a template (-1), or a ${} substitution with its count of open braces.
+  // A stack rather than recursion, so that deeply nested templates cannot overflow the call stack.
+  const within = [-1];
   let plain = true;
   let k = i + 1;
-  while (k < src.length && src[k] !== '`') {
-    if (src[k] === '\\') k += 2;
-    else if (src.startsWith('${', k)) {
-      plain = false;
-      k = braceEnd(src, k + 1) + 1;
-    } else k++;
+  for (; k < src.length; k++) {
+    const c = src[k];
+    const top = within[within.length - 1];
+    if (top < 0) {
+      if (c === '\\') k++;
+      else if (c === '`') {
+        within.pop();
+        if (!within.length) break;
+      } else if (c === '$' && src[k + 1] === '{') {
+        plain = false;
+        within.push(0);
+        k++;
+      }
+    } else if (c === '{') within[within.length - 1]++;
+    else if (c === '}') {
+      if (top) within[within.length - 1]--;
+      else within.pop();
+    } else if (c === '"' || c === "'") k = stringEnd(src, k);
+    else if (c === '`') within.push(-1);
   }
   return { end: k, plain };
-}
-
-function braceEnd(src: string, open: number): number {
-  let depth = 0;
-  for (let k = open; k < src.length; k++) {
-    const c = src[k];
-    if (c === '{') depth++;
-    else if (c === '}' && --depth === 0) return k;
-    else if (c === '"' || c === "'") k = stringEnd(src, k);
-    else if (c === '`') k = templateEnd(src, k).end;
-  }
-  return src.length;
 }
 
 function regexEnd(src: string, i: number): number {
@@ -344,32 +316,39 @@ function jsTokens(src: string): Tok[] {
 
 const isP = (tok: Tok | undefined, text: string) => tok?.kind === 'punct' && tok.text === text;
 
-/** The '(' (or '[', '{') that the bracket at toks[close] closes. */
-function matchBack(toks: Tok[], close: number): number {
-  let depth = 0;
-  for (let k = close; k >= 0; k--) {
-    if (toks[k].kind !== 'punct') continue;
-    if (')]}'.includes(toks[k].text)) depth++;
-    else if ('([{'.includes(toks[k].text) && --depth === 0) return k;
-  }
-  return -1;
+/**
+ * For each bracket token, the one that closes or opens it ('(' with ')', '[' or '{' alike); -1 for
+ * other tokens and unmatched brackets. Found once, so no lookup walks the script again.
+ */
+function brackets(toks: Tok[]): number[] {
+  const partner = new Array<number>(toks.length).fill(-1);
+  const open: number[] = [];
+  toks.forEach((tok, k) => {
+    if (tok.kind !== 'punct') return;
+    if ('([{'.includes(tok.text)) open.push(k);
+    else if (')]}'.includes(tok.text) && open.length) {
+      const o = open.pop()!;
+      partner[o] = k;
+      partner[k] = o;
+    }
+  });
+  return partner;
 }
 
-/** Token indices of each argument of the call whose '(' is toks[open]. */
-function callArgs(toks: Tok[], open: number): number[][] {
-  const args: number[][] = [[]];
-  let depth = 0;
-  for (let k = open + 1; k < toks.length; k++) {
-    const tok = toks[k];
-    if (tok.kind === 'punct' && ')]}'.includes(tok.text) && depth === 0) break;
-    if (tok.kind === 'punct' && tok.text === ',' && depth === 0) {
-      args.push([]);
-      continue;
+/** Each argument of the call whose '(' is toks[open], as a token range [first, end); none when it never closes. */
+function callArgs(toks: Tok[], partner: number[], open: number): [number, number][] {
+  const close = partner[open];
+  if (close < 0) return [];
+  const args: [number, number][] = [];
+  let first = open + 1;
+  for (let k = open + 1; k < close; k++) {
+    if (partner[k] > k) k = partner[k]; // over a nested bracket
+    else if (isP(toks[k], ',')) {
+      args.push([first, k]);
+      first = k + 1;
     }
-    if (tok.kind === 'punct' && '([{'.includes(tok.text)) depth++;
-    if (tok.kind === 'punct' && ')]}'.includes(tok.text)) depth--;
-    args[args.length - 1].push(k);
   }
+  args.push([first, close]);
   return args;
 }
 
@@ -387,13 +366,13 @@ function assignee(toks: Tok[], k: number): string | null {
 }
 
 /** The name of the function whose body the '{' at toks[t] opens, when it is one and has a name. */
-function functionName(toks: Tok[], t: number): string | null {
+function functionName(toks: Tok[], partner: number[], t: number): string | null {
   if (isP(toks[t - 1], '>') && isP(toks[t - 2], '=')) {
-    const params = isP(toks[t - 3], ')') ? matchBack(toks, t - 3) : toks[t - 3]?.kind === 'name' ? t - 3 : -1;
+    const params = isP(toks[t - 3], ')') ? partner[t - 3] : toks[t - 3]?.kind === 'name' ? t - 3 : -1;
     return params < 0 ? null : assignee(toks, params);
   }
   if (!isP(toks[t - 1], ')')) return null;
-  const params = matchBack(toks, t - 1);
+  const params = partner[t - 1];
   const before = toks[params - 1];
   if (before?.kind !== 'name') return null;
   if (before.text === 'function') return assignee(toks, params - 1);
@@ -414,18 +393,28 @@ function cssName(member: string): string {
 
 /** Finds the CSS a script's string literals set, with the element and the enclosing named function. */
 function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
-  const toks = jsTokens(html.slice(from, to));
+  const src = html.slice(from, to);
+  const toks = jsTokens(src);
+  const partner = brackets(toks);
   const str = (k: number) => toks[k]?.kind === 'str';
   const text = (k: number) => jsText(toks[k].text, from + toks[k].start);
-  // A literal is the whole value only when nothing is concatenated or called on it.
-  const whole = (k: number) => str(k) && !['+', '.', '['].some((c) => isP(toks[k + 1], c));
-  const single = (arg: number[] | undefined) => (arg?.length === 1 && str(arg[0]) ? arg[0] : -1);
+  // A literal is the whole value only when the expression ends after it: nothing is concatenated,
+  // called on, compared with it or picks it ("none" != c ? c : "auto"). A name on a later line
+  // starts the next statement.
+  const whole = (k: number) => {
+    const next = toks[k + 1];
+    if (!str(k)) return false;
+    if (!next) return true;
+    if (next.kind === 'punct') return ';,)]}'.includes(next.text);
+    return next.kind === 'name' && next.text !== 'in' && next.text !== 'instanceof' && /[\n\r\u2028\u2029]/.test(src.slice(toks[k].end + 1, next.start));
+  };
+  const single = (arg: [number, number] | undefined) => (arg && arg[1] - arg[0] === 1 && str(arg[0]) ? arg[0] : -1);
 
   /** What a member call or assignment before toks[dot] styles: the id or selector it looked up, else the variable. */
   const objectBefore = (dot: number): string => {
     if (!isP(toks[dot], '.')) return 'an element';
     if (isP(toks[dot - 1], ')')) {
-      const open = matchBack(toks, dot - 1);
+      const open = partner[dot - 1];
       if (/^(getElementById|querySelector)$/.test(toks[open - 1]?.text ?? '') && open + 2 === dot - 1 && str(open + 1)) return text(open + 1).text;
     }
     const chain: string[] = [];
@@ -442,39 +431,42 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
     return v >= 0 && whole(v) ? v : -1;
   };
 
-  // Per open brace, the function it opens when that has a name; the innermost one is the handler.
-  const functions: (string | null)[] = [];
+  // Per open brace, the innermost named function around it: the handler.
+  const handlers: (string | null)[] = [];
   for (let t = 0; t < toks.length; t++) {
     const tok = toks[t];
-    if (isP(tok, '{')) functions.push(functionName(toks, t));
-    else if (isP(tok, '}')) functions.pop();
+    if (isP(tok, '{')) handlers.push(functionName(toks, partner, t) ?? handlers[handlers.length - 1] ?? null);
+    else if (isP(tok, '}')) handlers.pop();
     if (tok.kind !== 'name' || !SETTERS.has(tok.text)) continue;
-    const handler = functions.reduce<string | null>((inner, f) => f ?? inner, null);
+    const handler = handlers[handlers.length - 1] ?? null;
 
     if (tok.text === 'setInlineStyle' && isP(toks[t + 1], '(')) {
-      const [el, styles] = callArgs(toks, t + 1);
+      const [el, styles] = callArgs(toks, partner, t + 1);
       const k = single(styles);
-      if (!el?.length || k < 0) continue;
-      const target = single(el) >= 0 ? text(el[0]).text : el.map((j) => (str(j) ? `'${toks[j].text}'` : toks[j].text)).join('');
+      if (!el || el[1] <= el[0] || k < 0) continue;
+      // A long expression is not spelled out: calls nested in each other would spell out the same text again and again.
+      const words = el[1] - el[0] > 32 ? null : toks.slice(el[0], el[1]).map((w) => (w.kind === 'str' ? `'${w.text}'` : w.text));
+      const target = single(el) >= 0 ? text(el[0]).text : words?.join('') ?? 'an element';
       hits.list(text(k), { target, via: 'setInlineStyle', handler });
     } else if (tok.text === 'setAttribute' && isP(toks[t + 1], '(')) {
-      const [name, styles] = callArgs(toks, t + 1);
+      const [name, styles] = callArgs(toks, partner, t + 1);
       const n = single(name);
       const k = single(styles);
       if (n < 0 || k < 0 || text(n).text.trim().toLowerCase() !== 'style') continue;
       hits.list(text(k), { target: objectBefore(t - 1), via: "setAttribute('style')", handler });
     } else if (tok.text === 'style' && isP(toks[t - 1], '.') && isP(toks[t + 1], '.') && toks[t + 2]?.kind === 'name') {
       const member = toks[t + 2].text;
-      const target = objectBefore(t - 1);
       if (member === 'setProperty' && isP(toks[t + 3], '(')) {
-        const [name, value] = callArgs(toks, t + 3);
+        const [name, value] = callArgs(toks, partner, t + 3);
         const n = single(name);
         const k = single(value);
-        if (n >= 0 && k >= 0) hits.single(text(n).text.trim().toLowerCase(), text(k), { target, via: 'style.setProperty', handler });
+        if (n >= 0 && k >= 0) hits.single(text(n).text.trim().toLowerCase(), text(k), { target: objectBefore(t - 1), via: 'style.setProperty', handler });
         continue;
       }
       const k = assigned(t + 3);
       if (k < 0) continue;
+      // Named only for a hit, so that a long a.style.b.style… chain is walked once, not at every 'style'.
+      const target = objectBefore(t - 1);
       if (member === 'cssText') hits.list(text(k), { target, via: 'style.cssText', handler });
       else hits.single(cssName(member), text(k), { target, via: `style.${member}`, handler });
     }

@@ -15,8 +15,10 @@ const VALUES: Record<string, RegExp> = {
   padding: /^(\d*\.?\d+px ?){1,4}$/,
   color: /^(red|white)$/,
   'font-family': /^.+$/,
-  transition: /^all \d*\.?\d+s linear$/,
+  transition: /^(all \d*\.?\d+s linear|opacity \d*\.?\d+s cubic-bezier\((\d*\.?\d+, ?){3}\d*\.?\d+\))$/,
   transform: /^scale\(\d+(, ?\d+)?\)$/,
+  'background-size': /^(auto|cover|contain)$/,
+  'box-shadow': /^(\d*\.?\d+px ){3}rgba\((\d*\.?\d+, ?){3}\d*\.?\d+\)$/,
 };
 const valid: CssValidator = (prop, value) => (value === 'inherit' ? Object.hasOwn(VALUES, prop) : VALUES[prop]?.test(value) ?? false);
 const issues = (html: string) => cssValueIssues(html, parseCss(html), valid);
@@ -132,6 +134,114 @@ ${SCRIPT}`);
   it('accepts everything when the browser cannot check', () => {
     expect(cssValueIssues(page(STYLE), parseCss(page(STYLE)), () => true)).toEqual([]);
   });
+
+  it('takes a literal as the value only when the expression ends after it', () => {
+    const html = page(`  <script>
+    function pick(el, c, v) {
+      el.style.backgroundSize = "none" != c ? c : "auto";
+      el.style.opacity = "0,5" == v ? "1" : "0";
+      el.style.opacity = '0,5' || v;
+      el.style.opacity = '0,5' && v;
+      el.style.opacity = '0,5' < v;
+      el.style.opacity = '0,5' in v;
+      el.style.cssText = 'opacity: 0,5' === v ? '' : v;
+    }
+    function set(el) {
+      el.style.opacity = '0,1'
+      el.style.opacity = '0,2', el.style.left = '1,5px';
+      (el.style.opacity = '0,3');
+      [el.style.opacity = '0,4'];
+      if (el) { el.style.opacity = '0,6' }
+    }
+  </script>
+  <script>el.style.opacity = '0,7'</script>`);
+    expect(issues(html).map((v) => [v.handler, `${v.prop}: ${v.value}`, v.fixed])).toEqual([
+      ['set', 'opacity: 0,1', '0.1'],
+      ['set', 'opacity: 0,2', '0.2'],
+      ['set', 'left: 1,5px', '1.5px'],
+      ['set', 'opacity: 0,3', '0.3'],
+      ['set', 'opacity: 0,4', '0.4'],
+      ['set', 'opacity: 0,6', '0.6'],
+      [null, 'opacity: 0,7', '0.7'],
+    ]);
+  });
+
+  it("skips GWD's own runtime inlined in the HTML, which the ad cannot change", () => {
+    const html = page(`  <script data-source="gwdimage_min.js" data-version="17" data-exports-type="gwd-image">a.style.opacity = '0,1';</script>
+  <script data-exports-type="gwd-page">a.style.opacity = '0,2';</script>
+  <script data-source="gwdpage_min.js">a.style.opacity = '0,3';</script>
+  <script type="text/javascript" gwd-events="support">a.style.opacity = '0,4';</script>
+  <script gwd-text-effects-runtime="">a.style.opacity = '0,5';</script>
+  <script>(function(){ customElements.define("gwd-thing", Thing); a.style.opacity = '0,6'; })();</script>
+  <script type="text/javascript" gwd-events="handlers">a.style.opacity = '0,7';</script>
+  <script>customElements.define('my-thing', Thing); a.style.opacity = '0,8';</script>`);
+    expect(issues(html).map((v) => v.value)).toEqual(['0,7', '0,8']);
+  });
+
+  it('skips style blocks in comments, and styles inside noscript, iframe, noembed and noframes', () => {
+    const html = page(`  <!-- <style>.gwd-p-a { opacity: 0,1; }</style> -->
+  <noscript><style>.gwd-p-b { opacity: 0,2; }</style></noscript>`, `  <noscript><div style="opacity: 0,3"></div></noscript>
+  <iframe src="x.html"><div style="opacity: 0,3"></div></iframe>
+  <noembed><div style="opacity: 0,3"></div></noembed>
+  <noframes><div style="opacity: 0,3"></div></noframes>
+  <!--> <div id="a" style="opacity: 0,4"></div>
+  <!---> <div id="b" style="opacity: 0,5"></div>
+  <!-- closed the lax way --!> <div id="c" style="opacity: 0,6"></div>
+  <style>.gwd-p-c { opacity: 0,7; }</style>`);
+    expect(parseCss(html).styleBlocks).toHaveLength(1);
+    expect(issues(html).map((v) => [v.target, v.value])).toEqual([
+      ['div#a', '0,4'],
+      ['div#b', '0,5'],
+      ['div#c', '0,6'],
+      ['.gwd-p-c', '0,7'],
+    ]);
+  });
+
+  it('reads an entity named like an Object member as text, keeping every offset', () => {
+    const html = page('', `  <div id="x" style="font-family: &constructor; ; opacity: 0,5;"></div>
+  <div id="y" style="font-family: &toString;&valueOf;&hasOwnProperty; ; left: 1,5px"></div>
+  <script>go(1,2);</script>`);
+    const found = issues(html);
+    expect(found.map((v) => [v.target, v.value, html.slice(v.start, v.end)])).toEqual([
+      ['div#x', '0,5', '0,5'],
+      ['div#y', '1,5px', '1,5px'],
+    ]);
+  });
+
+  it('makes only the commas outside functions points when making every comma one breaks a function', () => {
+    const html = page(`  <script>
+    gwd.actions.events.setInlineStyle('SA_cta_1', 'box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5);');
+    gwd.actions.events.setInlineStyle('SA_cta_1', 'transition: opacity 0,5s cubic-bezier(0.42,0,0.58,1)');
+    el.style.transform = 'scale(0,5,0,5)';
+  </script>`);
+    expect(issues(html).map((v) => [v.prop, v.fixed])).toEqual([
+      ['box-shadow', '0px 2px 1.5px rgba(0,0,0,0.5)'],
+      ['transition', 'opacity 0.5s cubic-bezier(0.42,0,0.58,1)'],
+      ['transform', null], // a comma inside a function could be either
+    ]);
+  });
+});
+
+describe('scanning time', () => {
+  const MB = 1 << 20;
+  const rep = (s: string, len = MB) => s.repeat(Math.ceil(len / s.length)).slice(0, len);
+  // Each of these once took from seconds to hours, or overflowed the stack.
+  it.each([
+    ['calls that never close', () => `<script>${rep('e.setAttribute(')}</script>`],
+    ['calls nested in each other', () => `<script>${rep('gwd.actions.events.setInlineStyle(', MB / 2)}${rep("x, 'opacity: 0,5')", MB / 2)}</script>`],
+    ['unmatched brackets', () => `<script>${rep('}){')}</script>`],
+    ['nested template literals', () => `<script>${rep('`${')}</script>`],
+    ['style chains', () => `<script>${rep('a.style.')}</script>`],
+    ['open braces', () => `<script>${rep('{', MB / 2)}${rep('x.style.y;', MB / 2)}</script>`],
+    ['spaces in a value', () => `<div style="opacity: 0${' '.repeat(MB)}x"></div>`],
+    ['semicolons', () => `<div style="${rep(';')}"></div>`],
+    ['nested @media', () => `<style>${rep('@media x{')}</style>`],
+  ])('reads 1 MB of %s in time', (_, make) => {
+    const html = make();
+    const start = performance.now();
+    cssValueIssues(html, parseCss(html), valid);
+    expect(performance.now() - start).toBeLessThan(2000);
+  });
 });
 
 describe('staticAudit', () => {
@@ -195,6 +305,48 @@ describe('fixing CSS values', () => {
     expect(plan(html).manual).toEqual([
       { check: 'cssValues', detail: '.gwd-p-a opacity: abc is not valid CSS, so browsers ignore it; correct it in GWD.' },
     ]);
+  });
+
+  it('writes the points outside functions only, when that is what makes the value valid', () => {
+    const shadow = page(`  <script type="text/javascript" gwd-events="handlers">
+    window.gwd = window.gwd || {};
+    gwd.shadow = function(event) {
+      gwd.actions.events.setInlineStyle('SA_cta_1', 'box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5);');
+    };
+  </script>`);
+    const [safe] = plan(shadow).fixes;
+    expect(safe.detail).toBe('SA_cta_1 box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5) -> 0px 2px 1.5px rgba(0,0,0,0.5) (in gwd.shadow)');
+    expect(applyEdits(shadow, safe.edits)).toBe(shadow.replace('1,5px', '1.5px'));
+  });
+
+  it('leaves a value to you when its source is not written the way the browser reads it', () => {
+    const escaped = page('  <script>function fade(el) { el.style.opacity = "0\\x2c5"; }</script>', `  <div id="a" style="left:1&#44;5px"></div>
+  <div id="b" style="opacity: 0,6"></div>`);
+    const p = plan(escaped);
+    expect(p.fixes.map((f) => f.detail)).toEqual(['div#b opacity: 0,6 -> 0.6']);
+    expect(p.manual).toEqual([
+      { check: 'cssValues', detail: 'el opacity: 0,5 (in fade) is not valid CSS, so browsers ignore it; write 0.5 in GWD.' },
+      { check: 'cssValues', detail: 'div#a left: 1,5px is not valid CSS, so browsers ignore it; write 1.5px in GWD.' },
+    ]);
+  });
+
+  it('never edits a value it cannot place in the source', () => {
+    const html = '0,5 <div id="x" style="opacity: 0,5"></div>';
+    const issue = { target: 'div#x', via: 'style attribute', handler: null, prop: 'opacity', value: '0,5', fixed: '0.5' };
+    // No offsets, offsets that slice() would still read as '0,5', and offsets at other text.
+    const places = [[NaN, NaN], [undefined, 3], [-Infinity, 3], [4, 7]] as number[][];
+    const report = { fadeDecls: [], unchanged: [], cssValues: places.map(([start, end]) => ({ ...issue, start, end })) };
+    const p = planFixes({ html, css: parseCss(html), boxes: [], media: new Map(), report, safety: [] });
+    expect(p.fixes).toEqual([]);
+    expect(p.manual).toEqual([{ check: 'cssValues', detail: 'div#x opacity: 0,5 is not valid CSS, so browsers ignore it; write 0.5 in GWD.' }]);
+  });
+
+  it('edits only the value after an entity named like an Object member', () => {
+    const html = page('', `  <div id="x" style="font-family: &constructor; ; opacity: 0,5;"></div>
+  <script>function go(n, m) { return 'rgba(0,0,0,0.5)'; } go(1,2);</script>`);
+    const fixes = plan(html).fixes;
+    expect(fixes.map((f) => f.detail)).toEqual(['div#x opacity: 0,5 -> 0.5']);
+    expect(applyEdits(html, fixes[0].edits)).toBe(html.replace('opacity: 0,5;', 'opacity: 0.5;'));
   });
 
   it('never edits a declaration another fix rewrites', () => {
