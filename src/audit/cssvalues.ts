@@ -399,14 +399,19 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
   const str = (k: number) => toks[k]?.kind === 'str';
   const text = (k: number) => jsText(toks[k].text, from + toks[k].start);
   // A literal is the whole value only when the expression ends after it: nothing is concatenated,
-  // called on, compared with it or picks it ("none" != c ? c : "auto"). A name on a later line
-  // starts the next statement.
+  // called on, compared with it or picks it ("none" != c ? c : "auto"). A ':' ends the first branch
+  // of a ?: it sits in. On a later line, a token that cannot continue the expression starts the
+  // next statement.
   const whole = (k: number) => {
     const next = toks[k + 1];
     if (!str(k)) return false;
     if (!next) return true;
-    if (next.kind === 'punct') return ';,)]}'.includes(next.text);
-    return next.kind === 'name' && next.text !== 'in' && next.text !== 'instanceof' && /[\n\r\u2028\u2029]/.test(src.slice(toks[k].end + 1, next.start));
+    const newLine = /[\n\r\u2028\u2029]/.test(src.slice(toks[k].end + 1, next.start));
+    if (next.kind === 'punct') return ';,)]}:'.includes(next.text) || (newLine && '{!~'.includes(next.text));
+    if (!newLine) return false;
+    if (next.kind === 'name') return next.text !== 'in' && next.text !== 'instanceof';
+    if (next.kind === 'str') return src[next.start - 1] !== '`'; // a template right after it would be a tagged call
+    return /^\d/.test(next.text);
   };
   const single = (arg: [number, number] | undefined) => (arg && arg[1] - arg[0] === 1 && str(arg[0]) ? arg[0] : -1);
 

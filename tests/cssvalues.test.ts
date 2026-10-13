@@ -153,6 +153,13 @@ ${SCRIPT}`);
       [el.style.opacity = '0,4'];
       if (el) { el.style.opacity = '0,6' }
     }
+    function branch(el, c) {
+      c ? el.style.opacity = '0,8' : el.style.opacity = '1';
+      el.style.opacity = '0,9'
+      'next'.length;
+      el.style.left = '2,5px'
+      \`tag\`;
+    }
   </script>
   <script>el.style.opacity = '0,7'</script>`);
     expect(issues(html).map((v) => [v.handler, `${v.prop}: ${v.value}`, v.fixed])).toEqual([
@@ -162,6 +169,8 @@ ${SCRIPT}`);
       ['set', 'opacity: 0,3', '0.3'],
       ['set', 'opacity: 0,4', '0.4'],
       ['set', 'opacity: 0,6', '0.6'],
+      ['branch', 'opacity: 0,8', '0.8'],
+      ['branch', 'opacity: 0,9', '0.9'],
       [null, 'opacity: 0,7', '0.7'],
     ]);
   });
