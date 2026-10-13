@@ -249,7 +249,7 @@ function renderSummary() {
 }
 
 function backupFolders(s: Session): string[] {
-  return [...new Set(s.backups.map((n) => /(?:^|\/)(_revision|gwd_preview_[^/]*)\//.exec(n)?.[1] ?? n))].map((d) => `${d}/`);
+  return [...new Set(s.backups.map((n) => /(?:^|\/)(_revisions?|gwd_preview_[^/]*)\//.exec(n)?.[1] ?? n))].map((d) => `${d}/`);
 }
 
 function groupFindings(list: Finding[], control: (f: Finding) => string = () => ''): string {

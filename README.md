@@ -16,7 +16,7 @@ The preview also blocks the ad's own requests to other sites by default. The wor
 4. Open "Show the edits" under a fix to see the exact lines it changes, tick the fixes you want and apply them. Text positions and every text's line spacing are compared before and after, in every size and on every page, so you can see that nothing moved.
 5. Read the copy list for typos, review the changes, then download:
    - **Download fixed zip** keeps the same files, in the same order, with only the HTML changed.
-   - **Download for upload** also leaves out GWD's backup copies (`_revision/`, `gwd_preview_*/`). It appears when the zip has them.
+   - **Download for upload** also leaves out GWD's backup copies (`_revisions/` or `_revision/`, `gwd_preview_*/`). It appears when the zip has them.
 
 Keep the tab visible while it checks: GWD starts an ad from `requestAnimationFrame`, which browsers do not run in a hidden tab.
 

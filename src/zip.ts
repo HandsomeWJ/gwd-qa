@@ -9,7 +9,7 @@ export interface AdPackage {
 
 const JUNK = /(^|\/)__MACOSX\/|(^|\/)\.DS_Store$/;
 // GWD keeps older copies of the HTML here; they are never the ad itself.
-const STALE_COPIES = /(^|\/)(_revision|gwd_preview_[^/]*)\//;
+const STALE_COPIES = /(^|\/)(_revisions?|gwd_preview_[^/]*)\//;
 
 /** GWD's backup and preview copies: never part of the ad, so an upload leaves them out. */
 export const isGwdBackup = (name: string) => STALE_COPIES.test(name);
@@ -31,7 +31,7 @@ export function readZip(zipName: string, bytes: Uint8Array): AdPackage {
 export function findAdHtml(files: Map<string, Uint8Array>): string {
   const decoder = new TextDecoder();
   const candidates = [...files.keys()].filter((p) => /\.html?$/i.test(p) && !STALE_COPIES.test(p));
-  if (!candidates.length) throw new Error('No HTML file found outside _revision/ and gwd_preview_ folders.');
+  if (!candidates.length) throw new Error('No HTML file found outside _revisions/ and gwd_preview_ folders.');
   const score = (p: string) => {
     const text = decoder.decode(files.get(p)!.subarray(0, 400_000));
     const gwd = /gwd-served-sizes|<gwd-genericad|<gwd-pagedeck|name="generator" content="Google Web Designer/.test(text) ? 0 : 1;

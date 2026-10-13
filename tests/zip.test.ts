@@ -48,6 +48,8 @@ describe('upload-ready zip', () => {
       'Ad/_revision/': '',
       'Ad/_revision/Responsive.html': gwd,
       'Ad/gwd_preview_Responsive/index.html': gwd,
+      'Ad/_revisions/Responsive.html': gwd,
+      'Ad/_revisions/gwd_preview_Responsive/index.html': gwd,
       'Ad/Responsive.html': gwd,
       'Ad/gwd_workspace.json': '{}',
     }));
