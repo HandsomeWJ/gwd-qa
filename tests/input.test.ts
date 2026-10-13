@@ -1,7 +1,7 @@
 import { strToU8, strFromU8, unzipSync, zipSync } from 'fflate';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { adPackage, entryFiles, type PickedFile } from '../src/input';
-import { isGwdBackup, missingRuntime, readFolder, writeZip } from '../src/zip';
+import { adKey, isGwdBackup, missingRuntime, readFolder, writeZip } from '../src/zip';
 
 const gwd = '<html><head><meta name="generator" content="Google Web Designer 16"></head><body><gwd-genericad></gwd-genericad></body></html>';
 const picked = (entries: Record<string, string>): PickedFile[] => Object.entries(entries).map(([path, text]) => ({ path, data: strToU8(text) }));
@@ -48,6 +48,46 @@ describe('adPackage', () => {
     expect(() => adPackage(picked({ 'logo.png': 'png' }))).toThrow('not a zip or an HTML file');
     expect(() => adPackage(picked({ 'Ad/logo.png': 'png' }))).toThrow('No HTML file found');
     expect(() => adPackage([])).toThrow();
+  });
+
+  it('refuses several ads at once rather than checking only one of them', () => {
+    const two = () => adPackage(picked({ 'Banner 728x90/Responsive.html': gwd, 'Banner 300x250/Responsive.html': gwd }));
+    expect(two).toThrow('Found 2 ads: Banner 300x250/Responsive.html, Banner 728x90/Responsive.html. Check one ad at a time');
+    expect(() => adPackage(picked({ 'Campaign/728x90/Responsive.html': gwd, 'Campaign/300x250/Responsive.html': gwd }))).toThrow('Found 2 ads');
+    expect(() => adPackage(picked({ 'Banner.html': gwd, 'Other.html': gwd }))).toThrow('Found 2 ads');
+    const zip = zipSync({ 'A/Responsive.html': strToU8(gwd), 'B/Responsive.html': strToU8(gwd) });
+    expect(() => adPackage([{ path: 'ads.zip', data: zip }])).toThrow('Found 2 ads: A/Responsive.html, B/Responsive.html');
+    // Backups, GWD's previews and plain HTML are not ads of their own.
+    const one = picked({ 'Ad/Responsive.html': gwd, 'Ad/_revisions/Responsive.html': gwd, 'Ad/gwd_preview_Responsive/index.html': gwd, 'Ad/notes.html': '<p>notes</p>' });
+    expect(adPackage(one).htmlPath).toBe('Ad/Responsive.html');
+  });
+
+  it('refuses several zips, or a zip with other files, saying so', () => {
+    const zip = zipSync({ 'Ad/Responsive.html': strToU8(gwd) });
+    expect(() => adPackage([{ path: 'a.zip', data: zip }, { path: 'b.zip', data: zip }])).toThrow('Check one zip at a time: a.zip and b.zip came together.');
+    expect(() => adPackage([{ path: 'ad.zip', data: zip }, { path: 'brief.pdf', data: strToU8('pdf') }])).toThrow('Check ad.zip on its own');
+    expect(() => adPackage([{ path: 'ad.zip', data: zip }, ...picked({ 'Ad/Responsive.html': gwd })])).toThrow('Check ad.zip on its own');
+    // A zip inside a dropped folder is one of its files, and a document is not a zip by its bytes alone.
+    expect(adPackage([...picked({ 'Ad/Responsive.html': gwd }), { path: 'Ad/Ad.zip', data: zip }]).kind).toBe('folder');
+    expect(adPackage([...picked({ 'Responsive.html': gwd }), { path: 'brief.docx', data: zip }]).kind).toBe('folder');
+  });
+});
+
+describe('adKey', () => {
+  const zip = zipSync({ 'Ad/Responsive.html': strToU8(gwd) });
+
+  it('names a zip or a folder by its own name', () => {
+    expect(adKey(adPackage([{ path: 'ad.zip', data: zip }]))).toBe('ad.zip');
+    expect(adKey(adPackage(picked({ 'Ad/Responsive.html': gwd, 'Ad/gwdpage_min.js': 'js' })))).toBe('Ad.zip');
+  });
+
+  it('adds a hash of the HTML to a name that comes from the HTML, which GWD gives every ad', () => {
+    const lone = adKey(adPackage(picked({ 'Responsive.html': gwd })));
+    expect(lone).toMatch(/^Responsive\.html#[0-9a-f]{8}$/);
+    expect(adKey(adPackage(picked({ 'Responsive.html': gwd })))).toBe(lone);
+    expect(adKey(adPackage(picked({ 'Responsive.html': gwd.replace('16', '17') })))).not.toBe(lone);
+    const loose = adKey(adPackage(picked({ 'Responsive.html': gwd, 'gwdpage_min.js': 'js' })));
+    expect(loose).toBe(`Responsive.zip#${lone.split('#')[1]}`);
   });
 });
 

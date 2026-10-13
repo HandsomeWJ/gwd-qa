@@ -9,7 +9,7 @@ import type { Finding } from './audit/types';
 import { planFixes, type FixPlan, type PlannedFix } from './fix/plan';
 import { adUrl, ensurePublished, publish, updateFile } from './serve';
 import { frameSizes, type FrameSize } from './sizes';
-import { isGwdBackup, missingRuntime, writeZip, type AdPackage } from './zip';
+import { adKey, isGwdBackup, missingRuntime, writeZip, type AdPackage } from './zip';
 
 export interface AuditResult {
   report: StaticReport;
@@ -30,6 +30,8 @@ const encoder = new TextEncoder();
 
 export class Session {
   readonly id = Math.random().toString(36).slice(2, 10);
+  /** What choices about this ad, such as disclaimer marks, are remembered under. */
+  readonly key: string;
   readonly originalHtml: string;
   /** GWD runtime files the ad loads but did not come with; the preview runs a stand-in for them. */
   readonly missingRuntime: string[];
@@ -44,6 +46,7 @@ export class Session {
   private unpublish: () => Promise<void> = async () => undefined;
 
   private constructor(readonly pkg: AdPackage) {
+    this.key = adKey(pkg);
     this.originalHtml = decoder.decode(pkg.files.get(pkg.htmlPath)!);
     this.html = this.originalHtml;
     this.missingRuntime = missingRuntime(pkg);
@@ -159,9 +162,14 @@ export class Session {
     return result;
   }
 
-  async undo(): Promise<void> {
-    this.html = this.originalHtml;
-    this.lastApply = null;
+  undo(): Promise<void> {
+    return this.revert({ html: this.originalHtml, lastApply: null });
+  }
+
+  /** Puts the HTML back as it was at an earlier point, such as when the results on the page were checked. */
+  async revert(to: { html: string; lastApply: ApplyResult | null }): Promise<void> {
+    this.html = to.html;
+    this.lastApply = to.lastApply;
     await updateFile(this.id, this.pkg.htmlPath, encoder.encode(this.html));
     await this.reloadAll();
   }
