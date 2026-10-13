@@ -380,11 +380,12 @@ function applyBanner(a: ApplyResult): string {
     const spacing = p.spacings ? ', and every line spacing is unchanged' : '';
     return `<div class="banner ok">${applied}. ${texts}${spacing}, ${where}.</div>`;
   }
+  // A changed line spacing is usually why texts moved, so it comes first.
   const what = [
-    p.moved.length ? `${plural(p.moved.length, 'text')} moved` : '',
     p.respaced.length ? `${plural(p.respaced.length, 'line spacing')} changed` : '',
+    p.moved.length ? `${plural(p.moved.length, 'text')} moved` : '',
   ].filter(Boolean).join(' and ');
-  const list = [...p.moved, ...p.respaced].slice(0, 12).map((k) => `<li>${esc(k)}</li>`).join('');
+  const list = [...p.respaced, ...p.moved].slice(0, 12).map((k) => `<li>${esc(k)}</li>`).join('');
   return `<div class="banner warn">${applied}, but ${what}. Check them in the preview, or undo.<ul>${list}</ul></div>`;
 }
 

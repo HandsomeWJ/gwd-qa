@@ -80,6 +80,20 @@ test('a failed check after applying puts the file back, so the fixes on the page
   expect(fixed).toContain("setInlineStyle('SA_cta_1', 'opacity: 0.3;')");
 });
 
+test('the apply banner counts changed line spacings and moved texts apart', async ({ page }) => {
+  await page.goto('./');
+  await load(page, 'mock-ad.zip', mockAdZip());
+  // Make the line-height fix give the headline a taller line than it renders.
+  await page.evaluate(() => {
+    const r = (window as unknown as { gwdqa: { result: { plan: { fixes: { edits: { text: string }[] }[] } } } }).gwdqa.result;
+    for (const f of r.plan.fixes) for (const e of f.edits) e.text = e.text.replace(/(\.gwd-p-a \{\s*line-height: )18px/, '$130px');
+  });
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  const banner = page.locator('#fixes .banner.warn');
+  await expect(banner).toContainText('Applied 7 fixes, but 6 line spacings changed and 6 texts moved.', { timeout: 90_000 });
+  await expect(banner.locator('li').first()).toHaveText('300x250 page1 p#SA_headline_1 line-height');
+});
+
 test('disclaimer marks on just the HTML stay with that HTML; a zip keeps them by its name', async ({ page }) => {
   await page.goto('./');
   // Marks an older version saved under a zip's name still apply.
