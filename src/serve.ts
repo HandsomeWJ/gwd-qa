@@ -46,7 +46,9 @@ export function adUrl(id: string, path: string): string {
 
 export async function startWorker(): Promise<void> {
   if (!('serviceWorker' in navigator)) throw new Error('This browser has no service workers, which the preview needs.');
-  const reg = await navigator.serviceWorker.register(`${BASE}sw.js`, { scope: BASE });
+  const reg = await navigator.serviceWorker.register(`${BASE}sw.js`, { scope: BASE }).catch((err) => {
+    throw new Error(`This browser blocked the preview's service worker (${err instanceof Error ? err.message : err}). Open the site in Chrome or Brave.`);
+  });
   // A returning visitor still runs the previous worker. Fetch the current one and wait for it
   // to take over, so no preview is served by stale code (such as one without request blocking).
   await reg.update().catch(() => undefined);

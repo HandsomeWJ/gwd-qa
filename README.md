@@ -6,7 +6,9 @@ Checks a Google Web Designer HTML5 ad against the GWD QA checklist in every serv
 
 Everything runs in your browser. The ad's files are read in the page and served to the preview frames by a service worker, so nothing is uploaded anywhere.
 
-The preview also blocks the ad's own requests to other sites by default. The worker gives the ad's HTML a Content-Security-Policy, so trackers, pixels, ad-server scripts and beacons never fire from the preview, while stylesheets and fonts still load. A switch above the previews lets the ad contact other sites when it needs to; the page lists which hosts the ad's code refers to.
+The preview also blocks the ad's own requests to other sites by default. The worker gives the ad's HTML a Content-Security-Policy, so trackers, pixels, ad-server scripts and beacons never fire from the preview, while stylesheets and fonts still load. A switch above the previews lets the ad contact other sites when it needs to; the page lists which hosts the ad's code refers to. While they are blocked, clicks that an ad server's script handles (such as a `dynamicClick` click-through) do nothing.
+
+Each frame is placed on whole device pixels. GWD draws its pages with 3D transforms, which a browser blurs when a frame sits between pixels. A size wider than the window scrolls sideways inside its card, and says so.
 
 ## Using it
 

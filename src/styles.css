@@ -48,6 +48,8 @@
 
 * { box-sizing: border-box; }
 
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -164,6 +166,7 @@ table.copy td.el { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; 
 .frame { max-width: 100%; }
 .frame header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; font-variant-numeric: tabular-nums; font-weight: 600; }
 .frame .viewport { max-width: 100%; overflow-x: auto; }
+.frame .clipped { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
 .frame iframe { display: block; border: 0; outline: 1px solid var(--line); background: #fff; }
 
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; }

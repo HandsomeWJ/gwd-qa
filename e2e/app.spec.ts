@@ -72,6 +72,30 @@ test('checks every page and both ends of a range, then fixes without moving text
   expect(fixed).toContain('<div id="SA_rule_1" style="opacity: 0.5;"></div>');
 });
 
+test('shows the preview sharp, says when a size is cut off, and replays', async ({ page }) => {
+  await load(page, mockAdZip());
+  await expect(page.locator('#drop')).toBeHidden();
+
+  // GWD's 3D-transformed pages blur between device pixels: a half-pixel shift above must be undone.
+  await page.addStyleTag({ content: '#preview .bar { padding-top: 0.5px; }' });
+  const offGrid = () => page.evaluate(() => [...document.querySelectorAll('#frames iframe')]
+    .map((f) => f.getBoundingClientRect())
+    .flatMap((r) => [r.left + scrollX, r.top + scrollY].map((v) => Math.abs(v * devicePixelRatio - Math.round(v * devicePixelRatio))))
+    .filter((d) => d > 0.01).length);
+  await expect.poll(offGrid).toBe(0);
+
+  const note = page.locator('#frames .frame', { hasText: '300x250' }).first().locator('.clipped');
+  await expect(note).toBeHidden();
+  await page.setViewportSize({ width: 360, height: 800 });
+  await expect(note).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(note).toBeHidden();
+
+  await page.getByRole('button', { name: 'Replay all' }).click();
+  await expect(page.locator('#status')).toBeEmpty({ timeout: 30_000 });
+  await expect(frame(page, '300x250').locator('#SA_headline_1')).toBeVisible();
+});
+
 test('blocks the ad\'s requests to other sites unless they are allowed', async ({ page }) => {
   await load(page, mockAdZip());
   await expect(page.locator('#net')).toContainText('pixel.invalid');

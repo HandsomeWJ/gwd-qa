@@ -45,7 +45,7 @@ app.innerHTML = `
     <section id="copy" class="card" hidden></section>
     <section id="preview" class="card" hidden>
       <div class="bar">
-        <div><h2>Preview</h2><p class="sub" style="margin:0">Every served size at its exact dimensions. Interact with it like the live ad.</p></div>
+        <div><h2>Preview</h2><p class="sub" style="margin:0">Every served size at its exact dimensions, running as it would live.</p></div>
         <button data-action="replay-all">Replay all</button>
       </div>
       <div class="net" id="net"></div>
@@ -96,6 +96,7 @@ async function load(pick: () => Promise<PickedFile[]>) {
     const sizes = staticAudit(session.html).sizes;
     if (!sizes.length) throw new Error('No served sizes found: this does not look like a GWD ad.');
     session.mountFrames($('#frames'), sizes, frameCard);
+    layoutFrames();
     if (!session.frames.length) throw new Error(`None of the served sizes can be previewed: ${sizes.join(', ')}.`);
     $('#drop').hidden = true;
     $('#preview').hidden = false;
@@ -164,9 +165,10 @@ function renderNet() {
   const state = s.allowThirdParty
     ? 'The ad can contact other sites, so its trackers and pixels can fire from this preview.'
     : 'Requests to other sites are blocked, so the ad cannot fire trackers or pixels from this preview. Fonts still load.';
+  const clicks = !s.allowThirdParty && others.length ? ' Clicks that those sites\' scripts handle do nothing until you let the ad contact them.' : '';
   $('#net').innerHTML = `
     <label class="switch"><input type="checkbox" id="allow-net"${s.allowThirdParty ? ' checked' : ''}> Let the ad contact other sites</label>
-    <p class="sub">${esc(state + refers)}</p>`;
+    <p class="sub">${esc(state + refers + clicks)}</p>`;
 }
 
 async function setThirdParty(allow: boolean) {
@@ -194,10 +196,29 @@ async function setThirdParty(allow: boolean) {
 function frameCard(fs: FrameSize, frame: HTMLIFrameElement): HTMLElement {
   const card = document.createElement('div');
   card.className = 'frame';
-  card.innerHTML = `<header><span>${esc(fs.label)}</span><button data-action="replay" data-frame="${esc(fs.label)}">Replay</button></header><div class="viewport"></div>`;
+  card.innerHTML = `<header><span>${esc(fs.label)}</span><button data-action="replay" data-frame="${esc(fs.label)}">Replay</button></header><div class="viewport"></div><p class="clipped" hidden>Wider than this window: scroll sideways in it to see the right edge.</p>`;
   card.querySelector('.viewport')!.appendChild(frame);
   return card;
 }
+
+/**
+ * GWD pages are 3D-transformed, so an ad drawn between device pixels comes out blurred: each frame
+ * is nudged onto whole device pixels whenever the layout around it moves. Frames wider than the
+ * window scroll inside their card, which overlay scrollbars hide, so those say so.
+ */
+function layoutFrames() {
+  for (const frame of $('#frames').querySelectorAll<HTMLIFrameElement>('iframe')) {
+    frame.style.translate = '';
+    const r = frame.getBoundingClientRect();
+    const off = (v: number) => ((v * devicePixelRatio) % 1) / devicePixelRatio;
+    const [x, y] = [off(r.left + scrollX), off(r.top + scrollY)];
+    if (x || y) frame.style.translate = `${-x}px ${-y}px`;
+    const viewport = frame.parentElement!;
+    viewport.nextElementSibling!.toggleAttribute('hidden', viewport.scrollWidth <= viewport.clientWidth);
+  }
+}
+new ResizeObserver(layoutFrames).observe(app);
+addEventListener('resize', layoutFrames);
 
 function render() {
   if (!session || !result) return;
@@ -424,18 +445,32 @@ app.addEventListener('click', async (e) => {
   if (action === 'download-upload') return download(true);
   if (action === 'reset') return reset();
   if (action === 'undo') {
-    setBusy(true);
-    status('Restoring the original file…', 'busy');
-    await session!.undo();
-    await check();
-    setBusy(false);
+    return run('Restoring the original file…', async () => {
+      await session!.undo();
+      await check();
+    });
   }
-  if (action === 'replay-all') await session?.reloadAll();
+  if (action === 'replay-all') return run('Replaying every size…', () => session!.reloadAll());
   if (action === 'replay') {
     const f = session?.frames.find((x) => x.label === btn.dataset.frame);
-    if (f) await session!.reload(f);
+    if (f) return run(`Replaying ${esc(f.label)}…`, () => session!.reload(f));
   }
 });
+
+/** Runs a page action with the buttons disabled, showing its progress and any error. */
+async function run(what: string, action: () => Promise<unknown>) {
+  if (!session) return;
+  setBusy(true);
+  try {
+    status(what, 'busy');
+    await action();
+    if (lastBusy === what) status('');
+  } catch (err) {
+    status(esc(err instanceof Error ? err.message : String(err)), 'err');
+  } finally {
+    setBusy(false);
+  }
+}
 
 const drop = $('#drop');
 const input = $<HTMLInputElement>('#file');
