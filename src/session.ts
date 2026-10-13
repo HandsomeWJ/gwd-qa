@@ -139,7 +139,7 @@ export class Session {
     const report = staticAudit(this.html, css);
     const seen = await observe(this.frames, css); // shows each page in turn, pausing animations
     const findings = [...report.findings, ...renderFindings(seen.boxes)];
-    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety });
+    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, incomplete: seen.incomplete });
     await this.reloadAll();
     return { report, findings, plan, safetyChecked: seen.safetyChecked, pages: seen.pages, skipped: seen.skipped };
   }

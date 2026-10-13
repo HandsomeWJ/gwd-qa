@@ -12,6 +12,17 @@ describe('renderFindings', () => {
     expect(note).toMatchObject({ check: 'type', level: 'note' });
   });
 
+  it('notes, rather than passes, text GWD fits to its box when its fitting could not run', () => {
+    const type = { fontSize: 12, scale: 1, onScreen: true, moves: false, hidden: false };
+    const [fits] = renderFindings([box({ text: 'Fit me', declared: { lineHeight: '9px' }, fit: 'missing', type })]);
+    expect(fits).toMatchObject({ check: 'type', level: 'note' });
+    expect(fits.message).toBe('"Fit me" is 12.00px as written, but GWD fits this text to its box when the ad runs, which needs its gwd-text-fitting.js, so its size is not known here: check the whole folder or zip.');
+    // fitting only ever shrinks text, so text below 8px still fails
+    expect(renderFindings([box({ declared: { lineHeight: '9px' }, fit: 'missing', type: { ...type, fontSize: 6 } })])[0].level).toBe('fail');
+    expect(renderFindings([box({ declared: { lineHeight: '9px' }, fit: 'runs', type })])).toEqual([]);
+    expect(renderFindings([box({ declared: { lineHeight: '9px' }, fit: 'missing', type: { ...type, onScreen: false } })])).toEqual([]);
+  });
+
   it('skips declaration checks on word spans a text effect makes at runtime', () => {
     expect(renderFindings([box({ tag: 'span', runtime: true, declared: { marginBlockStart: '' } })])).toEqual([]);
   });

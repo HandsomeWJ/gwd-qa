@@ -86,6 +86,16 @@ describe('edits', () => {
     expect(parseCss(out).rules.filter((r) => r.selector === '.gwd-p-swap')).toHaveLength(3);
   });
 
+  it('keeps the rules of a block written on one line when it adds one', () => {
+    const src = '<style>\n    @media (width: 300px) and (height: 600px) { .gwd-p-swap { font-size: 20px; top: 40px; } }\n</style>';
+    const out = applyEdits(src, [insertRule(src, parseCss(src).media[0], '.gwd-p-head', ['line-height: 19.5px;'])]);
+    expect(out).toContain('{ .gwd-p-swap { font-size: 20px; top: 40px; } \n      .gwd-p-head {\n        line-height: 19.5px;\n      }\n    }');
+    expect(parseCss(out).rules.map((r) => r.selector)).toEqual(['.gwd-p-swap', '.gwd-p-head']);
+    const style = '  <style>.a { color: red; }</style>';
+    const added = applyEdits(style, [insertRule(style, parseCss(style).styleBlocks[0], '.b', ['margin-block: 0px auto;'], true)]);
+    expect(parseCss(added).rules.map((r) => r.selector)).toEqual(['.a', '.b']);
+  });
+
   it('adds a rule at the end of a style element', () => {
     const block = parseCss(html).styleBlocks[1];
     const out = applyEdits(html, [insertRule(html, block, '.gwd-new', ['margin-block: 0px auto;'], true)]);

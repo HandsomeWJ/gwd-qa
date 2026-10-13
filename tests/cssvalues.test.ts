@@ -164,10 +164,10 @@ describe('staticAudit', () => {
 });
 
 describe('fixing CSS values', () => {
-  function plan(html: string, boxes: Box[] = []) {
+  function plan(html: string, boxes: Box[] = [], media: Record<string, string[]> = {}) {
     const css = parseCss(html);
     const report = staticAudit(html, css, valid);
-    return planFixes({ html, css, boxes, media: new Map(), report, safety: [] });
+    return planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report, safety: [] });
   }
 
   const html = page(`${HANDLERS}
@@ -208,5 +208,26 @@ describe('fixing CSS values', () => {
     const p = plan(padded, [button]);
     expect(p.fixes.map((f) => f.check)).toEqual(['buttonPadding']);
     expect(() => applyEdits(padded, mergeEdits(p.fixes.flatMap((f) => f.edits)))).not.toThrow();
+  });
+
+  it('still fixes a value in a size block written on one line that the line-height fix adds a rule to', () => {
+    const M600 = '(width: 300px) and (height: 600px)';
+    const oneLine = page(`  <style type="text/css">
+    .gwd-p-a {
+      position: absolute;
+      font-size: 16px;
+    }
+    .gwd-img-b {
+      position: absolute;
+    }
+    @media ${M600} { .gwd-img-b { left: 1,5px; top: 40px; } }
+  </style>`, '  <p class="gwd-p-a" id="SA_headline_1">Text</p>');
+    const p = plan(oneLine, [box({ classes: ['gwd-p-a'], frame: '300x600', normalLineHeight: 18.5 })], { '300x600': [M600] });
+    expect(p.fixes.map((f) => [f.check, f.detail])).toEqual([
+      ['lineHeight', '.gwd-p-a in 300x600: 18.5px'],
+      ['cssValues', '.gwd-img-b in 300x600 left: 1,5px -> 1.5px'],
+    ]);
+    const out = applyEdits(oneLine, mergeEdits(p.fixes.flatMap((f) => f.edits)));
+    expect(out).toContain(`@media ${M600} { .gwd-img-b { left: 1.5px; top: 40px; } \n      .gwd-p-a {\n        line-height: 18.5px;\n      }\n    }`);
   });
 });
