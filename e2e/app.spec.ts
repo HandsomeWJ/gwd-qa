@@ -36,6 +36,14 @@ test('checks every page and both ends of a range, then fixes without moving text
   await expect(type.locator('summary .pill')).toHaveText('Pass');
   await expect(type.locator('summary .count')).toHaveText('2 disclaimers exempt');
 
+  // A decimal comma in an event handler and in a style attribute: browsers ignore both values.
+  const cssValues = row(page, 'cssValues');
+  await expect(cssValues.locator('summary .pill')).toHaveText('Fail');
+  await expect(cssValues.locator('summary .count')).toHaveText('2 items · auto-fix ready');
+  const cssFix = page.locator('#fixes .fixlist li', { hasText: 'Write decimal points in CSS values' });
+  await expect(cssFix).toContainText('SA_cta_1 opacity: 0,3 -> 0.3 (in gwd.framechange_savings), div#SA_rule_1 opacity: 0,5 -> 0.5');
+  await expect(cssFix.locator('input[type="checkbox"]')).toBeChecked();
+
   // Each fix shows its edits before it is applied.
   const lhFix = page.locator('#fixes .fixlist li', { hasText: 'Declare line-height' });
   await lhFix.locator('details.edits summary').click();
@@ -45,6 +53,7 @@ test('checks every page and both ends of a range, then fixes without moving text
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   await expect(page.locator('#fixes .banner')).toContainText('exactly where they were, in every size and on every page', { timeout: 90_000 });
   await expect(page.locator('#summary')).toContainText('Every check passes', { timeout: 90_000 });
+  await expect(cssValues.locator('summary .pill')).toHaveText('Pass');
   await expect(page.locator('#summary details.edits summary')).toContainText('Review the changes to Responsive.html');
 
   const zipOf = async (button: string) => {
@@ -57,7 +66,10 @@ test('checks every page and both ends of a range, then fixes without moving text
   const upload = await zipOf('Download for upload');
   expect(upload.name).toBe('mock-ad-upload.zip');
   expect(Object.keys(upload.files)).toEqual(['Mock Ad/', 'Mock Ad/Responsive.html', 'Mock Ad/mock-gwd.js']);
-  expect(strFromU8(upload.files['Mock Ad/Responsive.html'])).toContain('margin-block: 0px auto;');
+  const fixed = strFromU8(upload.files['Mock Ad/Responsive.html']);
+  expect(fixed).toContain('margin-block: 0px auto;');
+  expect(fixed).toContain("setInlineStyle('SA_cta_1', 'opacity: 0.3;')");
+  expect(fixed).toContain('<div id="SA_rule_1" style="opacity: 0.5;"></div>');
 });
 
 test('blocks the ad\'s requests to other sites unless they are allowed', async ({ page }) => {

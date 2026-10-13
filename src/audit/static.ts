@@ -1,6 +1,7 @@
 // Source-level checks: what the HTML alone can prove, plus the copy list for a typo review.
 
 import { frameOffset, lastCompound, parseCss, type CssModel, type Decl, type KeyframesRule } from '../css/parse';
+import { cssSupports, cssValueIssues, describeIssue, type CssValidator, type CssValueIssue } from './cssvalues';
 import type { CopyItem, Finding } from './types';
 
 const POSITION = ['top', 'left', 'right', 'bottom'];
@@ -15,6 +16,8 @@ export interface StaticReport {
   fadeDecls: Decl[];
   /** Keyframes properties that never change, per block; removable once checked safe. */
   unchanged: { block: KeyframesRule; props: string[] }[];
+  /** CSS values the browser ignores; the ones that only need decimal points are fixable. */
+  cssValues: CssValueIssue[];
 }
 
 export function label(el: Element): string {
@@ -60,11 +63,15 @@ export function servedSizes(doc: Document, css: CssModel): string[] {
   return w && h ? [`${parseFloat(w)}x${parseFloat(h)}`] : [];
 }
 
-export function staticAudit(html: string, css: CssModel = parseCss(html)): StaticReport {
+export function staticAudit(html: string, css: CssModel = parseCss(html), valid: CssValidator = cssSupports): StaticReport {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const findings: Finding[] = [];
   const fadeDecls: Decl[] = [];
   const unchanged: StaticReport['unchanged'] = [];
+  const cssValues = cssValueIssues(html, css, valid);
+  // The browser ignores an invalid opacity, so it never starts a fade at 0.
+  const ignored = new Set(cssValues.map((v) => v.start));
+  const opacityOf = (decls: Decl[]) => decls.find((d) => d.prop === 'opacity' && !ignored.has(d.valueStart));
 
   const environment = doc.querySelector('meta[name="environment"]')?.getAttribute('content') ?? null;
   if (environment !== 'gwd-genericad' || !doc.querySelector('gwd-genericad')) {
@@ -105,7 +112,7 @@ export function staticAudit(html: string, css: CssModel = parseCss(html)): Stati
       }
     }
     const first = [...block.frames].sort((a, b) => frameOffset(a.selector) - frameOffset(b.selector))[0];
-    const opacity = first?.decls.find((d) => d.prop === 'opacity');
+    const opacity = first && opacityOf(first.decls);
     if (opacity && parseFloat(opacity.value) === 0) {
       const textRunners = (runners.get(block.name) ?? []).flatMap((s) => query(doc, lastCompound(s))).filter(holdsText);
       if (textRunners.length) {
@@ -122,7 +129,7 @@ export function staticAudit(html: string, css: CssModel = parseCss(html)): Stati
 
   // Text whose own rules start it at opacity 0 (fade-ins driven by script or transitions).
   for (const rule of css.rules) {
-    const opacity = rule.decls.find((d) => d.prop === 'opacity');
+    const opacity = opacityOf(rule.decls);
     if (!opacity || parseFloat(opacity.value) !== 0) continue;
     const text = query(doc, lastCompound(rule.selector)).filter((el) => (TEXT_TAGS.has(el.tagName) || hasDirectText(el)) && (el.textContent ?? '').trim() !== '');
     if (!text.length) continue;
@@ -135,7 +142,11 @@ export function staticAudit(html: string, css: CssModel = parseCss(html)): Stati
     });
   }
 
-  return { sizes: servedSizes(doc, css), environment, findings, copy: copyList(doc), fadeDecls, unchanged };
+  for (const v of cssValues) {
+    findings.push({ check: 'cssValues', level: 'fail', target: v.target, message: describeIssue(v), ...(v.fixed ? {} : { hint: 'Correct the value in GWD.' }) });
+  }
+
+  return { sizes: servedSizes(doc, css), environment, findings, copy: copyList(doc), fadeDecls, unchanged, cssValues };
 }
 
 function copyList(doc: Document): CopyItem[] {

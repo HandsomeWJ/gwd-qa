@@ -36,6 +36,7 @@ Each open tab keeps its ad in its own cache, so several ads can be checked side 
 | Position animation | Keyframes move elements with `transform: translate3d`, never `top`/`left` | No |
 | Text fade-in | Text starts at `opacity: 0.001`, not `0` | Yes |
 | Keyframes | Keyframes hold only properties that change | Yes, after checking each unchanged value equals the element's own style in every size |
+| CSS values | Every CSS value is valid, including the styles that events and scripts set (`opacity: 0.3`, not `0,3`): in `<style>`, `style=""`, `setInlineStyle`, `style.cssText`, `setAttribute('style')` and `style.<property>` | Yes, for decimal commas; unticked where the value sizes or places something. Other invalid values are listed for you to correct in GWD |
 
 Fixes are text edits on the original HTML that keep GWD's layout (one declaration per line, same indentation), so the file still opens in GWD.
 
@@ -50,7 +51,7 @@ npx playwright install chromium   # once, for the browser tests
 npm run test:e2e # the built site in Chromium (Playwright)
 ```
 
-The browser tests load a small GWD-style ad built in `e2e/mock-ad.ts`: two pages, a range size, a disclaimer, a backup copy and a request to another site. A mock stands in for GWD's runtime, which is not ours to publish. They check every page and both ends of a range, the disclaimer exemption, the edits view, that applying fixes moves no text, both downloads, request blocking, and two tabs side by side.
+The browser tests load a small GWD-style ad built in `e2e/mock-ad.ts`: two pages, a range size, a disclaimer, a backup copy, a request to another site, and decimal commas in an event handler and a style attribute. A mock stands in for GWD's runtime, which is not ours to publish. They check every page and both ends of a range, the disclaimer exemption, the edits view, that applying fixes moves no text, both downloads, request blocking, and two tabs side by side.
 
 `?zip=<path>` loads an ad straight away, for example `?zip=/gwd-qa/local-fixtures/my-ad.zip` in development. It only accepts zips stored on this site under `/gwd-qa/`: any other URL could run someone else's HTML on this origin, which every GitHub Pages site of the account shares. Put real ads in `local-fixtures/`, which git ignores: client files must never reach this repo.
 
@@ -62,6 +63,7 @@ Pushing to `main` runs both test suites and, when they pass, deploys to GitHub P
 |---|---|
 | `src/css/parse.ts`, `src/css/edit.ts` | CSS parser that keeps source offsets, and formatting-preserving edits |
 | `src/audit/static.ts` | Source checks: environment, keyframes, text fading from 0, copy list |
+| `src/audit/cssvalues.ts` | Invalid CSS values in style blocks, style attributes and the styles scripts set, checked with the browser's `CSS.supports` |
 | `src/audit/observe.ts` | Reads each frame on each GWD page into plain data; position snapshots |
 | `src/audit/render.ts` | Rendered checks on that data: type size, line-height, buttons, margin-block |
 | `src/fix/plan.ts` | Turns failures into safe edits, from that data |

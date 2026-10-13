@@ -182,6 +182,11 @@ export function parseCss(html: string): CssModel {
   return out;
 }
 
+/** Declarations in a bare declaration list, such as a style="" value; offsets are into `text`. */
+export function parseDeclList(text: string): Decl[] {
+  return parseDecls(mask(text), text, 0, text.length, 0);
+}
+
 /**
  * The served size key GWD wrote a media condition for: "(width: 300px) and (height: 250px)" ->
  * "300x250", and a min/max range (with its orientation) -> "300x250:320x480:l". Null otherwise.
