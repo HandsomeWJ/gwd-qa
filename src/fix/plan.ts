@@ -32,6 +32,8 @@ export interface PlanInput {
   report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues'>;
   /** Keyframes whose unchanged values differ from the element's own style. */
   safety: { animation: string }[];
+  /** Labels of the frames where a page never showed. */
+  incomplete?: Set<string>;
 }
 
 const PADDING = /^padding(-(top|right|bottom|left|block|inline)(-(start|end))?)?$/;
@@ -49,6 +51,7 @@ class Planner {
   readonly manual: FixPlan['manual'] = [];
   /** Declarations some fix deletes; new lines never anchor to them. */
   private readonly deleted = new Set<Decl>();
+  private readonly blockRules = new Map<string, StyleRule[]>();
   private readonly html: string;
   private readonly css: CssModel;
 
@@ -229,126 +232,200 @@ class Planner {
   }
 
   /**
-   * A line-height added to a class's base rule also reaches every size whose own rule changes the
-   * font-size but not the line-height. Where such a size was not measured (its text was hidden, or
-   * the size has no preview), give its rule the value the font's ratio says it renders.
+   * The size block that wins in a frame: the last GWD size block whose media applies there (GWD
+   * writes ranges before exact sizes, so an exact size overrides the range that contains it). None
+   * for the design's base size.
    */
-  coverUnmeasuredSizes(planned: Map<StyleRule, number>, ratios: Map<string, number[]>) {
-    const measured = new Map<string, Set<string>>(); // class -> frames where it was measured
-    for (const b of this.input.boxes) {
-      const cls = this.mainClass(b.classes);
-      if (cls) measured.set(cls, (measured.get(cls) ?? new Set()).add(b.frame));
+  sizeBlock(frame: string, size?: string): MediaBlock | undefined {
+    const applies = this.input.media.get(frame);
+    const blocks = this.css.media.filter((m) => sizeOfMedia(m.media) !== null);
+    if (applies) return blocks.filter((m) => applies.has(m.media)).pop();
+    return size ? blocks.filter((m) => sizeOfMedia(m.media) === size).pop() : undefined;
+  }
+
+  /** The rules for a class inside a media block, in source order. */
+  rulesIn(block: MediaBlock, cls: string): readonly StyleRule[] {
+    const key = `${block.start}|${cls}`;
+    if (!this.blockRules.has(key)) {
+      this.blockRules.set(key, this.css.rules.filter((r) => r.start > block.open && r.start < block.close && singleClass(r.selector) === cls));
     }
-    for (const [rule] of [...planned]) {
-      const cls = rule.media === null ? singleClass(rule.selector) : null;
-      if (!cls) continue;
-      const rs = [...ratios].filter(([k]) => k.startsWith(`${cls}|`)).flatMap(([, v]) => v).sort((a, b) => a - b);
-      if (!rs.length) continue;
-      const ratio = rs[Math.floor(rs.length / 2)];
-      for (const r of this.css.rules) {
-        if (r.media === null || singleClass(r.selector) !== cls || planned.has(r)) continue;
-        const fs = r.decls.find((d) => d.prop === 'font-size');
-        if (!fs || r.decls.some((d) => d.prop === 'line-height')) continue;
-        const frames = [...this.input.media].filter(([, m]) => m.has(r.media!)).map(([f]) => f);
-        if (frames.some((f) => measured.get(cls)?.has(f))) continue; // measured there: handled above
-        const size = /^([\d.]+)px$/.exec(fs.value.trim());
-        if (!size || r.decls.some((d) => d.prop === 'font-family')) {
-          this.manualNote('lineHeight', `.${cls} in ${describeSize(sizeOfMedia(r.media) ?? r.media)} was not measured; set its line-height there in GWD.`);
-          continue;
-        }
-        planned.set(r, Math.round(ratio * parseFloat(size[1]) * 100) / 100);
-      }
-    }
+    return this.blockRules.get(key)!;
   }
 
   /**
-   * The size block that wins in a box's frame: the last GWD size block whose media applies there
-   * (GWD writes ranges before exact sizes, so an exact size overrides the range that contains it).
-   * None for the design's base size.
+   * Declares the line-height each <p>, <span> and <button> renders now, in every size, so that no
+   * text moves in any size, including sizes no frame shows. A class is left to you, in every size,
+   * where one value cannot keep everything it reaches as it is.
    */
-  sizeBlock(b: Box): MediaBlock | undefined {
-    const applies = this.input.media.get(b.frame);
-    const blocks = this.css.media.filter((m) => sizeOfMedia(m.media) !== null);
-    if (applies) return blocks.filter((m) => applies.has(m.media)).pop();
-    return b.size ? blocks.filter((m) => sizeOfMedia(m.media) === b.size).pop() : undefined;
-  }
-
   lineHeight() {
-    // Normal line-height comes from the font's metrics; a web font that had not loaded measures as
-    // its fallback, and writing that value would change the spacing once the real font arrives.
+    const same = (a: number, b: number) => Math.abs(a - b) < 0.005;
+    // What it renders now: the px it inherits from a parent's declaration, else its font's normal.
+    const rendered = (b: Box) => (b.computed.lineHeight === 'normal' ? b.normalLineHeight : Math.round(parseFloat(b.computed.lineHeight) * 100) / 100);
+    const where = (m: MediaBlock) => describeSize(sizeOfMedia(m.media) ?? m.media);
+    const declares = (r?: StyleRule) => !!r?.decls.some((d) => d.prop === 'line-height' || d.prop === 'font');
     const open = this.input.boxes.filter((b) => TEXT_TAGS.includes(b.tag) && !b.declared.lineHeight && !b.runtime);
-    const ratios = new Map<string, number[]>();
-    const unreliable = new Set<string>();
+    const planned = new Set(open);
+    const byCls = new Map<string, Box[]>();
     for (const b of open) {
       const cls = this.mainClass(b.classes);
-      if (!cls || b.normalLineHeight === undefined) continue;
-      if (b.fontLoaded === false) unreliable.add(cls);
-      else if (b.computed.fontSize) {
-        const key = `${cls}|${b.computed.fontFamily}`;
-        ratios.set(key, [...(ratios.get(key) ?? []), b.normalLineHeight / b.computed.fontSize]);
+      if (!cls) this.manualNote('lineHeight', `${b.frame} ${b.target} has no styled class; set its line-height in GWD.`);
+      else byCls.set(cls, [...(byCls.get(cls) ?? []), b]);
+    }
+
+    const refused = new Map<string, string>(); // class -> why it is left to you
+    const refuse = (cls: string, why: string) => !refused.has(cls) && !!refused.set(cls, why);
+    for (const [cls, seen] of byCls) {
+      const fit = seen.find((b) => b.fit)?.fit;
+      if (fit === 'missing') {
+        refuse(cls, `.${cls}: GWD fits this text when the ad runs, which needs its gwd-text-fitting.js; check the whole folder or zip.`);
+      } else if (fit) {
+        refuse(cls, `.${cls}: GWD fits this text to its box when the ad runs, and a fixed line-height would change how it fits; set its line-height in GWD.`);
+      } else if (seen.some((b) => b.computed.lineHeight === 'normal' && b.fontLoaded === false)) {
+        // Normal line-height comes from the font's metrics: a web font that had not loaded measures as
+        // its fallback, and that value would change the spacing once the real font arrives.
+        refuse(cls, `.${cls}: its web font was missing or still loading when it was measured, so its line-height is not fixed automatically. Check the whole ad folder or zip so its fonts load, or set it in GWD.`);
       }
     }
-    unreliable.forEach((cls) => this.manualNote('lineHeight',
-      `.${cls}: its web font was missing or still loading when it was measured, so its line-height is not fixed automatically. Check the whole ad folder or zip so its fonts load, or set it in GWD.`));
 
-    // A span takes its text parent's line-height only when that equals its own in every size: a span
-    // in a bigger or different font would otherwise get a smaller line box and pull the lines together.
-    const inheritOk = new Map<string, boolean>();
+    // Size blocks that win in no frame the class was measured in: a value in its base rule reaches
+    // them unseen. A frame where a page never showed may have had the class on that page.
+    const seenIn = new Map<string, Set<string>>();
+    for (const b of this.input.boxes) {
+      const cls = this.mainClass(b.classes);
+      if (cls && !b.runtime) seenIn.set(cls, (seenIn.get(cls) ?? new Set()).add(b.frame));
+    }
+    const frames = new Map(this.input.boxes.map((b) => [b.frame, b.size]));
+    for (const f of this.input.media.keys()) if (!frames.has(f)) frames.set(f, undefined);
+    const unmeasured = (cls: string) => {
+      const covered = new Set([...frames]
+        .filter(([f]) => seenIn.get(cls)?.has(f) || !this.input.incomplete?.has(f))
+        .map(([f, size]) => this.sizeBlock(f, size)));
+      return this.css.media.filter((m) => sizeOfMedia(m.media) !== null && !covered.has(m));
+    };
+
+    // A span takes its text parent's line-height where that is what it renders now, in every size;
+    // not where a size no frame shows changes its font or its parent's, which could part them there.
+    const inherit = new Set<string>();
+    for (const [cls, seen] of byCls) {
+      const spans = seen.filter((b) => b.tag === 'span' && b.inTextParent);
+      if (refused.has(cls) || !spans.length) continue;
+      const followsParent = spans.every((b) => rendered(b) !== undefined && b.parentLineHeight !== undefined && same(rendered(b)!, b.parentLineHeight));
+      const unseen = unmeasured(cls).map((m) => m.start);
+      if (followsParent && !seen.some((b) => unseen.some((s) => b.probes?.[s] !== undefined))) inherit.add(cls);
+    }
+
+    // Every size gets its own value in its own size block (the base size, which has none, in the base
+    // rule), so no value reaches a size with another font.
+    type Write = { cls: string; px: number; rule?: StyleRule; block?: MediaBlock; base: boolean; where: string };
+    const keyOf = (cls: string, block?: MediaBlock) => {
+      const rule = block ? this.rulesIn(block, cls).at(-1) : this.baseRule(cls);
+      return { rule, key: rule ? `r${rule.start}` : block ? `b${block.start}|${cls}` : `base|${cls}` };
+    };
+    const writes = new Map<string, Write>();
     for (const b of open) {
       const cls = this.mainClass(b.classes);
-      if (!cls || b.tag !== 'span' || !b.inTextParent) continue;
-      const same = b.normalLineHeight !== undefined && b.parentLineHeight !== undefined && Math.abs(b.normalLineHeight - b.parentLineHeight) < 0.05;
-      inheritOk.set(cls, (inheritOk.get(cls) ?? true) && same);
+      const px = rendered(b);
+      if (!cls || refused.has(cls) || inherit.has(cls) || px === undefined) continue;
+      const block = this.sizeBlock(b.frame, b.size);
+      const { rule, key } = keyOf(cls, block);
+      const prior = writes.get(key);
+      if (prior && !same(prior.px, px)) {
+        refuse(cls, `.${cls} renders ${prior.px}px and ${px}px${block ? ` in ${where(block)}` : ''}; set its line-height in GWD.`);
+      } else if (!prior) {
+        writes.set(key, { cls, px, rule, block: rule ? undefined : block, base: !block, where: block ? where(block) : '' });
+      }
     }
 
-    // Every size gets its own value in its own media block (the base size, which has none, in the
-    // base rule). A value in a base rule would otherwise reach sizes with another font-size.
-    type Target = { rule?: StyleRule; block?: MediaBlock; cls: string; px: number; where: string };
-    const targets = new Map<string, Target>();
-    const conflicts = new Set<string>();
-    for (const b of open) {
-      const cls = this.mainClass(b.classes);
-      if (!cls) {
-        this.manualNote('lineHeight', `${b.frame} ${b.target} has no styled class; set its line-height in GWD.`);
-        continue;
+    // A base value reaches the size blocks no frame measured the class in. Where such a block changes
+    // its font, the block gets the value measured in that font; where that cannot be measured exactly,
+    // the base rule gets nothing.
+    const noBase = new Map<string, string>(); // class -> why its base size gets nothing
+    for (const base of [...writes.values()].filter((w) => w.base && !refused.has(w.cls))) {
+      const cls = base.cls;
+      const added: Write[] = [];
+      for (const m of unmeasured(cls)) {
+        const rules = this.rulesIn(m, cls);
+        if (rules.some(declares)) continue;
+        const probed = byCls.get(cls)!.filter((b) => b.probes?.[m.start] !== undefined);
+        const values = probed.map((b) => b.probes![m.start]);
+        if (!probed.length && !rules.some((r) => r.decls.some((d) => /^font(-|$)/.test(d.prop)))) continue; // same font as the base size
+        // What a text that inherits a px renders there depends on its parent, which was not measured there.
+        if (!probed.length || probed.some((b) => b.computed.lineHeight !== 'normal') || !values.every((v) => v !== null && same(v, values[0]!))) {
+          noBase.set(cls, `.${cls} in ${where(m)} was not measured, and a value in its base rule would reach it there, so its base size gets none; set its line-height in GWD.`);
+          break;
+        }
+        const rule = rules.at(-1);
+        if (!same(values[0]!, base.px)) added.push({ cls, px: values[0]!, rule, block: rule ? undefined : m, base: false, where: where(m) });
       }
-      if (unreliable.has(cls) || inheritOk.get(cls) || b.normalLineHeight === undefined) continue;
-      const block = this.sizeBlock(b);
-      let t: Target;
-      if (block) {
-        const rule = this.css.rules.filter((r) => r.start > block.open && r.start < block.close && singleClass(r.selector) === cls).pop();
-        t = { rule, block: rule ? undefined : block, cls, px: b.normalLineHeight, where: describeSize(sizeOfMedia(block.media) ?? block.media) };
-      } else {
-        t = { rule: this.baseRule(cls), cls, px: b.normalLineHeight, where: '' };
-      }
-      const key = t.rule ? `r${t.rule.start}` : t.block ? `b${t.block.start}|${cls}` : `base|${cls}`;
-      const prior = targets.get(key);
-      if (prior && prior.px !== t.px) {
-        conflicts.add(key);
-        this.manualNote('lineHeight', `.${cls} renders ${prior.px}px and ${t.px}px${t.where ? ` in ${t.where}` : ''}; set its line-height in GWD.`);
-        continue;
-      }
-      targets.set(key, t);
+      if (!noBase.has(cls)) added.forEach((w) => writes.set(`u${(w.rule ?? w.block)!.start}|${cls}`, w));
     }
-    conflicts.forEach((key) => targets.delete(key));
 
+    // The line-height a class's own rules give in a frame once the fix is in: a px, 'inherit', or
+    // 'declared' where a declaration it already has wins there; undefined where they give none.
+    const valueIn = (cls: string, frame: string, size?: string): number | 'inherit' | 'declared' | undefined => {
+      if (refused.has(cls) || !byCls.has(cls)) return undefined;
+      const base = keyOf(cls);
+      let v: number | 'inherit' | 'declared' | undefined = declares(base.rule) ? 'declared' : undefined;
+      if (inherit.has(cls)) v = 'inherit';
+      else if (!noBase.has(cls)) v = writes.get(base.key)?.px ?? v;
+      const applies = this.input.media.get(frame);
+      for (const m of this.css.media) {
+        if (sizeOfMedia(m.media) === null || !(applies ? applies.has(m.media) : sizeOfMedia(m.media) === size)) continue;
+        if (this.rulesIn(m, cls).some(declares)) v = 'declared';
+        const { key, rule } = keyOf(cls, m);
+        v = writes.get(key)?.px ?? writes.get(`u${(rule ?? m).start}|${cls}`)?.px ?? v;
+      }
+      return v;
+    };
+
+    // Leaving one class to you can expose text it shielded to another class's value: check until settled.
+    for (let changed = true; changed;) {
+      changed = false;
+      // A class's value reaches every element that carries it, not only the texts it was planned from.
+      for (const g of this.input.boxes) {
+        if (g.runtime) continue;
+        const main = this.mainClass(g.classes);
+        for (const cls of g.classes) {
+          if (!byCls.has(cls) || refused.has(cls) || (cls === main && planned.has(g))) continue;
+          const v = valueIn(cls, g.frame, g.size);
+          if (v === undefined || v === 'declared') continue;
+          const now = rendered(g);
+          const after = v === 'inherit' ? g.parentLineHeight : v;
+          if (now !== undefined && after !== undefined && same(now, after)) continue;
+          changed = refuse(cls, `.${cls} is also on ${g.target}${g.declared.lineHeight ? ', which declares its own line-height' : ''}, whose spacing its line-height would change in ${g.frame}; set it in GWD.`) || changed;
+        }
+      }
+      // A value reaches the texts inside that get none of their own (an 'inherit' passes it on).
+      for (const b of open) {
+        const cls = this.mainClass(b.classes);
+        const px = cls ? valueIn(cls, b.frame, b.size) : undefined;
+        if (!cls || typeof px !== 'number') continue;
+        const passes = (e: { classes: string[] }) => {
+          const own = this.mainClass(e.classes);
+          const v = own ? valueIn(own, b.frame, b.size) : undefined;
+          return v === undefined || v === 'inherit';
+        };
+        const d = (b.inherits ?? []).find((t) => t.path.every(passes) && (!t.fontLoaded || !same(t.normal, px)));
+        if (!d) continue;
+        const change = d.fontLoaded ? `would go from ${d.normal}px to ${px}px` : 'renders in a web font that had not loaded, so what it needs is not known';
+        changed = refuse(cls, `.${cls}: ${d.target} inside it takes its line-height and ${change} in ${b.frame}; set their line-heights in GWD.`) || changed;
+      }
+    }
+
+    const kept = [...writes.values()].filter((w) => !refused.has(w.cls) && !(w.base && noBase.has(w.cls)));
     const edits: Edit[] = [];
     const baseAdds = new Map<string, string[]>();
-    const planned = new Map<StyleRule, number>();
-    for (const t of targets.values()) {
-      if (t.rule) planned.set(t.rule, t.px);
-      else if (t.block) edits.push(insertRule(this.html, t.block, `.${t.cls}`, [`line-height: ${t.px}px;`]));
-      else baseAdds.set(t.cls, [`line-height: ${t.px}px;`]);
+    for (const w of kept) {
+      if (w.rule) edits.push(insertDecl(this.html, w.rule, `line-height: ${w.px}px;`, this.deleted));
+      else if (w.block) edits.push(insertRule(this.html, w.block, `.${w.cls}`, [`line-height: ${w.px}px;`]));
+      else baseAdds.set(w.cls, [`line-height: ${w.px}px;`]);
     }
-    this.coverUnmeasuredSizes(planned, ratios);
-    edits.push(...[...planned].map(([rule, lh]) => insertDecl(this.html, rule, `line-height: ${lh}px;`, this.deleted)));
-    const inherit = new Map([...inheritOk].filter(([, ok]) => ok).map(([cls]) => [cls, ['line-height: inherit;']]));
-    edits.push(...this.addToBase(new Map([...baseAdds, ...inherit])));
-    const notes = [
-      ...[...targets.values()].map((t) => `.${t.cls}${t.where ? ` in ${t.where}` : ''}: ${t.px}px`),
-      ...[...planned].filter(([r]) => ![...targets.values()].some((t) => t.rule === r)).map(([r, lh]) => `${r.selector} in ${describeSize(sizeOfMedia(r.media) ?? String(r.media))}: ${lh}px`),
-      ...[...inherit.keys()].map((c) => `.${c}: inherit`),
-    ];
+    const inherits = [...inherit].filter((cls) => !refused.has(cls));
+    inherits.forEach((cls) => baseAdds.set(cls, ['line-height: inherit;']));
+    edits.push(...this.addToBase(baseAdds));
+    refused.forEach((why) => this.manualNote('lineHeight', why));
+    noBase.forEach((why, cls) => { if (!refused.has(cls)) this.manualNote('lineHeight', why); });
+    const notes = [...kept.map((w) => `.${w.cls}${w.where ? ` in ${w.where}` : ''}: ${w.px}px`), ...inherits.map((c) => `.${c}: inherit`)];
     this.add('lineHeight', 'Declare line-height (the value it renders now)', notes.join(', '), edits);
   }
 

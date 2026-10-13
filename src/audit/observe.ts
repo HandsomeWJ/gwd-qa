@@ -2,9 +2,9 @@
 // in it is shown in turn, since GWD keeps inactive pages out of the DOM. The result is plain data
 // (Box) that the rendered checks and the fix planner read.
 
-import type { CssModel } from '../css/parse';
+import { sizeOfMedia, type CssModel, type MediaBlock, type StyleRule } from '../css/parse';
 import { hasDirectText, label } from './static';
-import type { Box } from './types';
+import type { Box, Inheritor } from './types';
 
 export interface AdFrame {
   size: string; // served size key
@@ -36,6 +36,8 @@ export interface Observation {
   safetyChecked: number;
   pages: number; // pages in the ad
   skipped: string[]; // pages that never showed, so were not checked
+  /** Labels of the frames where a page never showed. */
+  incomplete: Set<string>;
 }
 
 const KEYFRAME_META = ['offset', 'computedOffset', 'easing', 'composite'];
@@ -226,41 +228,214 @@ function moves(el: Element): boolean {
   return false;
 }
 
-/** The px line-height a browser renders for `normal` in this element's font. */
+interface Font {
+  family: string;
+  size: string;
+  weight: string;
+  style: string;
+}
+
+const fontOf = (cs: CSSStyleDeclaration): Font => ({ family: cs.fontFamily, size: cs.fontSize, weight: cs.fontWeight, style: cs.fontStyle });
+const fontText = (f: Font) => `${f.style} ${f.weight} ${f.size} ${f.family}`;
+
 /**
  * Whether text renders in its own font. A web font that failed to load (missing from the upload)
  * or has not loaded yet leaves a fallback font in its place, whose spacing is not the design's.
  */
-function fontReady(doc: Document, cs: CSSStyleDeclaration, text: string): boolean {
+function fontReady(doc: Document, font: Font, text: string): boolean {
   const fonts = doc.fonts;
   if (!fonts) return true;
   const unquote = (f: string) => f.trim().replace(/^["']|["']$/g, '');
-  const family = unquote(cs.fontFamily.split(',')[0]);
+  const family = unquote(font.family.split(',')[0]);
   const faces: FontFace[] = [];
   fonts.forEach((f) => { if (unquote(f.family) === family) faces.push(f); });
   if (faces.some((f) => f.status === 'error') && !faces.some((f) => f.status === 'loaded')) return false;
-  return fonts.check(`${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`, text || 'Xg');
+  try {
+    return fonts.check(fontText(font), text || 'Xg');
+  } catch {
+    return false; // not a font it can read, such as a size block's "font-weight: inherit"
+  }
 }
 
-export function normalLineHeight(win: Window, el: Element): number {
-  const cs = win.getComputedStyle(el);
-  const doc = el.ownerDocument;
+/** The px line-height a browser renders for `normal` in this font. */
+function measureNormal(doc: Document, font: Font, text: string): number {
   const probe = doc.createElement('div');
   probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;line-height:normal;'
-    + `font-family:${cs.fontFamily};font-size:${cs.fontSize};font-weight:${cs.fontWeight};font-style:${cs.fontStyle}`;
-  probe.textContent = (el.textContent ?? '').trim() || 'Xg';
+    + `font-family:${font.family};font-size:${font.size};font-weight:${font.weight};font-style:${font.style}`;
+  probe.textContent = text.trim() || 'Xg';
   doc.body.appendChild(probe);
   const px = probe.getBoundingClientRect().height;
   probe.remove();
   return Math.round(px * 100) / 100;
 }
 
+/** The px line-height a browser renders for `normal` in this element's font. */
+export function normalLineHeight(win: Window, el: Element): number {
+  return measureNormal(el.ownerDocument, fontOf(win.getComputedStyle(el)), el.textContent ?? '');
+}
+
 const pageOf = (el: Element, multi: boolean) => (multi ? el.closest('gwd-page')?.id ?? '' : '');
 
+// GWD's text helper (gwdtexthelper_min.js) has gwd-text-fitting.js shrink the text that matches
+// its fit-font-size-for-selector until it fits its box, when the ad starts and on each page.
+interface Fitting {
+  helper: Element;
+  selector: string;
+  reduce: boolean; // the helper's default: shrink, unless its data-gwd-fit-font-size is "false"
+  min: number; // px it never shrinks below
+  runs: boolean; // GWD's own fitting ran in this frame
+}
+
+function fittingOf(doc: Document, win: Window): Fitting | null {
+  const helper = doc.querySelector('gwd-text-helper');
+  if (!helper) return null;
+  const min = parseInt(helper.getAttribute('gwd-min-font-size-px') ?? '', 10);
+  const gwd = (win as unknown as { gwd?: { textfitting?: { fit?: unknown } } }).gwd;
+  return {
+    helper,
+    selector: helper.getAttribute('fit-font-size-for-selector') || ':not(*)',
+    reduce: helper.getAttribute('data-gwd-fit-font-size') !== 'false',
+    min: Number.isNaN(min) ? 10 : min,
+    runs: typeof gwd?.textfitting?.fit === 'function' && typeof (helper as unknown as { fit?: unknown }).fit === 'function',
+  };
+}
+
+const matches = (el: Element, selector: string) => {
+  try {
+    return el.matches(selector);
+  } catch {
+    return false; // a selector this browser cannot match
+  }
+};
+
+/**
+ * Whether GWD's fitting sets the font-size of this element or of the text it sits in (fitting
+ * turns the px font-sizes inside a fitted element into em, so they shrink with it).
+ */
+function fitted(fit: Fitting, win: Window, el: Element): boolean {
+  for (let n: Element | null = el; n; n = n.parentElement) {
+    if (n === fit.helper || n.hasAttribute('gwd-dont-fit') || !matches(n, fit.selector)) continue;
+    const own = n.getAttribute('data-gwd-fit-font-size');
+    if (!(own === null ? fit.reduce : own !== 'false')) continue;
+    // With GWD's fitting running, what was measured may already be fitted.
+    if (fit.runs) return true;
+    const min = parseInt(n.getAttribute('gwd-min-font-size-px') ?? '', 10);
+    if (parseFloat(win.getComputedStyle(n).fontSize) > (Number.isFinite(min) ? min : fit.min)) return true;
+  }
+  return false;
+}
+
+/** Texts inside `el` that take its line-height today; `byEl` holds every box in its scope. */
+function inheritors(win: Window, el: Element, byEl: Map<Element, Box>): Inheritor[] {
+  const out: Inheritor[] = [];
+  for (const d of el.querySelectorAll('*')) {
+    const box = byEl.get(d);
+    if (!box?.type || box.declared.lineHeight || box.computed.lineHeight !== 'normal') continue;
+    const path: Inheritor['path'] = [];
+    for (let n: Element | null = d; n && n !== el; n = n.parentElement) {
+      if (TEXT_TAGS.has(n.localName)) path.unshift({ tag: n.localName, classes: [...n.classList] });
+    }
+    out.push({
+      target: box.target,
+      tag: box.tag,
+      path,
+      normal: box.normalLineHeight ?? normalLineHeight(win, d),
+      fontLoaded: box.fontLoaded ?? fontReady(d.ownerDocument, fontOf(win.getComputedStyle(d)), box.text),
+    });
+  }
+  return out;
+}
+
+const FONT_PROPS: [string, keyof Font][] = [['font-family', 'family'], ['font-size', 'size'], ['font-weight', 'weight'], ['font-style', 'style']];
+const FONT_DECL = /^font(-family|-size|-weight|-style)?$/;
+
+/** A size block and its rules that set a font property, in source order. */
+interface FontBlock {
+  block: MediaBlock;
+  rules: StyleRule[];
+}
+
+interface ProbeSpec {
+  box: Box;
+  start: number; // the block's start offset
+  font: Font | null; // null: it cannot be measured exactly
+  text: string;
+}
+
+/** What boxesIn needs besides the frame: the stylesheet, and the probes it asks for. */
+interface Context {
+  css: CssModel;
+  fonts: FontBlock[];
+  fit: Fitting | null;
+  claimed: Set<string>; // element and block pairs a frame already probes
+  specs: ProbeSpec[];
+}
+
+/**
+ * Asks for the element's normal line-height under every size block that changes its font (or an
+ * ancestor's, which it inherits) but does not apply in this frame, so that a line-height given to
+ * its base rule can be checked in sizes no frame shows. Only from a frame whose own size blocks
+ * leave its font alone: its font here is then the base one, and the block's declarations go on top.
+ */
+function askProbes(win: Window, el: Element, box: Box, ctx: Context) {
+  if (!box.classes.length || !ctx.fonts.length) return;
+  const chain: Element[] = [];
+  for (let n: Element | null = el; n; n = n.parentElement) chain.push(n);
+  const touches = (fb: FontBlock) => fb.rules.some((r) => chain.some((n) => matches(n, r.selector)));
+  const applying = ctx.fonts.filter((fb) => win.matchMedia(fb.block.media).matches);
+  if (applying.some(touches)) return;
+  // Texts that take its line-height: a block that changes their font leaves what they need unknown.
+  const below = box.inherits?.length ? [...el.querySelectorAll('*')] : [];
+  for (const fb of ctx.fonts) {
+    if (applying.includes(fb)) continue;
+    const key = `${box.target}|${box.page}|${fb.block.start}`;
+    if (ctx.claimed.has(key)) continue;
+    const inside = fb.rules.some((r) => below.some((n) => matches(n, r.selector)));
+    if (!inside && !touches(fb)) continue;
+    ctx.claimed.add(key);
+    ctx.specs.push({ box, start: fb.block.start, font: inside ? null : fontUnder(win, chain, fb, ctx.css), text: el.textContent ?? '' });
+  }
+}
+
+/** The font of chain[0] under a size block: its own, with what the block sets for it or for an ancestor it inherits from. */
+function fontUnder(win: Window, chain: Element[], fb: FontBlock, css: CssModel): Font | null {
+  const font = fontOf(win.getComputedStyle(chain[0]));
+  const sets = (r: StyleRule, prop: string) => r.decls.some((d) => d.prop === prop || d.prop === 'font');
+  for (const [prop, key] of FONT_PROPS) {
+    for (const n of chain) {
+      const rule = fb.rules.filter((r) => sets(r, prop) && matches(n, r.selector)).pop();
+      if (rule) {
+        const d = rule.decls.filter((x) => x.prop === prop || x.prop === 'font').pop()!;
+        // The shorthand also sets line-height, and a relative size depends on what it sits in.
+        if (d.prop === 'font' || (prop === 'font-size' && !/^\d*\.?\d+px$/.test(d.value))) return null;
+        font[key] = d.value;
+        break;
+      }
+      // Declared here for every size: the element keeps what it has now.
+      if ((n as HTMLElement).style?.getPropertyValue(prop) || css.rules.some((r) => r.media === null && sets(r, prop) && matches(n, r.selector))) break;
+    }
+  }
+  return font;
+}
+
+/** Measures what askProbes asked for, loading each font first. */
+async function runProbes(doc: Document, specs: ProbeSpec[]): Promise<void> {
+  const fonts = doc.fonts;
+  if (fonts) {
+    const loads = specs.filter((s) => s.font).map((s) => fonts.load(fontText(s.font!), s.text.trim() || 'Xg').catch(() => []));
+    await Promise.race([Promise.all(loads), sleep(8000)]);
+  }
+  for (const s of specs) {
+    const px = s.font && fontReady(doc, s.font, s.text.trim()) ? measureNormal(doc, s.font, s.text) : null;
+    s.box.probes = { ...s.box.probes, [s.start]: px };
+  }
+}
+
 /** Every text element and every <p>, <span> and <button> in `scope`. */
-function boxesIn(f: AdFrame, scope: Element, multi: boolean): Box[] {
+function boxesIn(f: AdFrame, scope: Element, multi: boolean, ctx: Context): Box[] {
   const { win } = frameParts(f);
   const out: Box[] = [];
+  const byEl = new Map<Element, Box>();
   for (const el of scope.querySelectorAll('*')) {
     const tag = el.tagName.toLowerCase();
     const typed = hasDirectText(el) && el.getClientRects().length > 0;
@@ -307,14 +482,21 @@ function boxesIn(f: AdFrame, scope: Element, multi: boolean): Box[] {
     }
     if (TEXT_TAGS.has(tag) && !box.declared.lineHeight) {
       box.normalLineHeight = normalLineHeight(win, el);
-      box.fontLoaded = fontReady(el.ownerDocument, cs, box.text);
+      box.fontLoaded = fontReady(el.ownerDocument, fontOf(cs), box.text);
     }
     if (box.inTextParent) {
       const parent = el.parentElement!.closest(TEXT_PARENT)!;
       const lh = win.getComputedStyle(parent).lineHeight;
       box.parentLineHeight = lh === 'normal' ? normalLineHeight(win, parent) : parseFloat(lh);
     }
+    if (ctx.fit && fitted(ctx.fit, win, el)) box.fit = ctx.fit.runs ? 'runs' : 'missing';
+    byEl.set(el, box);
     out.push(box);
+  }
+  for (const [el, box] of byEl) {
+    if (!TEXT_TAGS.has(box.tag) || box.declared.lineHeight || box.runtime) continue;
+    box.inherits = inheritors(win, el, byEl);
+    askProbes(win, el, box, ctx);
   }
   return out;
 }
@@ -353,17 +535,27 @@ function keyframeSafety(f: AdFrame, scope: Element): { checked: number; mismatch
 /** Reads every frame, showing each GWD page in turn. Leaves the frames on their last page. */
 export async function observe(frames: AdFrame[], css: CssModel): Promise<Observation> {
   const conditions = [...new Set(css.media.map((m) => m.media))];
+  const fonts = css.media
+    .filter((block) => sizeOfMedia(block.media) !== null)
+    .map((block) => ({
+      block,
+      rules: css.rules.filter((r) => r.start > block.open && r.start < block.close && r.decls.some((d) => FONT_DECL.test(d.prop))),
+    }))
+    .filter((fb) => fb.rules.length);
+  const claimed = new Set<string>();
   const results = await Promise.all(frames.map(async (f) => {
-    const { win } = frameParts(f);
+    const { doc, win } = frameParts(f);
     const boxes: Box[] = [];
     const safety: SafetyMismatch[] = [];
     let checked = 0;
+    const ctx: Context = { css, fonts, fit: fittingOf(doc, win), claimed, specs: [] };
     const visit = await visitPages(f, (scope, multi) => {
-      boxes.push(...boxesIn(f, scope, multi));
+      boxes.push(...boxesIn(f, scope, multi, ctx));
       const s = keyframeSafety(f, scope); // pauses animations, so it goes after the boxes
       checked += s.checked;
       safety.push(...s.mismatches);
     });
+    await runProbes(doc, ctx.specs);
     return { f, media: new Set(conditions.filter((c) => win.matchMedia(c).matches)), boxes, safety, checked, visit };
   }));
   return {
@@ -373,6 +565,7 @@ export async function observe(frames: AdFrame[], css: CssModel): Promise<Observa
     safetyChecked: results.reduce((n, r) => n + r.checked, 0),
     pages: Math.max(1, ...results.map((r) => r.visit.pages)),
     skipped: results.flatMap((r) => r.visit.skipped),
+    incomplete: new Set(results.filter((r) => r.visit.skipped.length).map((r) => r.f.label)),
   };
 }
 

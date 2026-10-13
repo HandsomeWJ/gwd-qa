@@ -83,6 +83,36 @@ export interface Box {
   inTextParent: boolean;
   /** For such a span: the px line-height its text parent renders (normal resolved to px). */
   parentLineHeight?: number;
+  /**
+   * For a <p>, <span> or <button> with no line-height of its own: the texts inside it that take
+   * its line-height today (they render line-height: normal and declare none), which a value
+   * given to it would reach.
+   */
+  inherits?: Inheritor[];
+  /**
+   * For such an element: its normal line-height in the size blocks that change its font (or an
+   * ancestor's) but do not apply in this frame, measured in its font with that block's font
+   * declarations applied. Keyed by the block's start offset; null where it cannot be measured
+   * exactly. Only measured in a frame whose own size blocks leave its font alone.
+   */
+  probes?: Record<number, number | null>;
+  /**
+   * GWD's text helper fits this text (or the text it sits in) to its box when the ad runs:
+   * 'runs' when GWD's text fitting ran in the preview, 'missing' when it could not (the stand-in
+   * has no gwd-text-fitting.js), so the size measured is the size before fitting.
+   */
+  fit?: 'runs' | 'missing';
+}
+
+/** Text inside an element that takes that element's line-height. */
+export interface Inheritor {
+  target: string; // label(el)
+  tag: string;
+  /** The <p>, <span> and <button> elements from just inside the element down to this text, itself included when it is one. */
+  path: { tag: string; classes: string[] }[];
+  /** The px a browser renders for line-height: normal in its font. */
+  normal: number;
+  fontLoaded: boolean;
 }
 
 export interface CopyItem {
