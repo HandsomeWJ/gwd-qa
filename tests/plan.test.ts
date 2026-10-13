@@ -170,6 +170,27 @@ describe('line-height', () => {
     expect(probed.applied('lineHeight')).toContain('        font-size: 10px;\n        line-height: 11.5px;\n      }');
   });
 
+  it('leaves a class to you where its value in a range reaches a size inside it that no frame measured', () => {
+    // R2 sits inside R1 and comes after it; both its ends are exact sizes, so no frame shows R2's 30px.
+    const R1 = '(min-width: 300px) and (max-width: 336px) and (min-height: 250px) and (max-height: 480px)';
+    const R2 = '(min-width: 310px) and (max-width: 320px) and (min-height: 300px) and (max-height: 400px)';
+    const E1 = '(width: 310px) and (height: 300px)';
+    const E2 = '(width: 320px) and (height: 400px)';
+    const blocks = ([[R1, 16], [R2, 30], [E1, 12], [E2, 14]] as const).map(([m, px]) => `    @media ${m} {\n      .gwd-p-head {\n        font-size: ${px}px;\n      }\n    }\n`).join('');
+    const nested = `<!DOCTYPE html>\n<html>\n<head>\n  <style type="text/css">\n    .gwd-p-head {\n      position: absolute;\n      font-family: Arial;\n      font-size: 16px;\n    }\n${blocks}  </style>\n</head>\n<body>\n  <script gwd-served-sizes="" type="application/json">["300x250:336x480", "310x300:320x400", "310x300", "320x400"]</script>\n  <p class="gwd-p-head" id="SA_headline_1">Text</p>\n</body>\n</html>\n`;
+    const frames: [string, string, string[], number][] = [
+      ['300x250 (range 300x250 to 336x480)', '300x250:336x480', [R1], 18.5],
+      ['336x480 (range 300x250 to 336x480)', '300x250:336x480', [R1], 18.5],
+      ['310x300 (range 310x300 to 320x400)', '310x300:320x400', [R1, R2, E1], 14],
+      ['320x400 (range 310x300 to 320x400)', '310x300:320x400', [R1, R2, E2], 16],
+      ['310x300', '310x300', [R1, R2, E1], 14],
+      ['320x400', '320x400', [R1, R2, E2], 16],
+    ];
+    const { fix, p } = plan(nested, frames.map(([frame, size, , lh]) => box({ ...head, frame, size, normalLineHeight: lh })), Object.fromEntries(frames.map(([f, , m]) => [f, m])));
+    expect(fix('lineHeight')).toBeUndefined();
+    expect(p.manual.map((m) => m.detail)).toContain('.gwd-p-head in 310x300 to 320x400 was not measured, and its value in 300x250 to 336x480 would reach it there; set its line-height in GWD.');
+  });
+
   it('declares what a text renders now: a px it inherits from a parent\'s declaration', () => {
     // A span in a p that declares 14px renders 14px, whatever its own normal; so does text in a div that declares 20px.
     const { fix } = plan(html, [

@@ -6,7 +6,7 @@ import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } f
 import { singleClass, sizeOfMedia, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
 import type { StaticReport } from '../audit/static';
 import type { Box, CheckId } from '../audit/types';
-import { describeSize } from '../sizes';
+import { describeSize, parseSize } from '../sizes';
 
 export interface PlannedFix {
   check: CheckId;
@@ -358,6 +358,36 @@ class Planner {
         if (!same(values[0]!, base.px)) added.push({ cls, px: values[0]!, rule, block: rule ? undefined : m, base: false, where: where(m) });
       }
       if (!noBase.has(cls)) added.forEach((w) => writes.set(`u${(w.rule ?? w.block)!.start}|${cls}`, w));
+    }
+
+    // A value in a size block also reaches the other size blocks that apply in some of its sizes.
+    // Where no frame measured such a block and it changes the font there, the value is right only if
+    // the block comes later and gives the class a line-height of its own, or comes earlier and the
+    // home block sets every font property it changes. Otherwise the class is left to you.
+    const overlap = (a: MediaBlock, b: MediaBlock) => {
+      const [x, y] = [parseSize(sizeOfMedia(a.media)!), parseSize(sizeOfMedia(b.media)!)];
+      if (!x || !y) return true;
+      if (x.orientation && y.orientation && x.orientation !== y.orientation) return false;
+      return Math.max(x.min[0], y.min[0]) <= Math.min(x.max[0], y.max[0]) && Math.max(x.min[1], y.min[1]) <= Math.min(x.max[1], y.max[1]);
+    };
+    for (const w of [...writes.values()].filter((x) => !x.base && !refused.has(x.cls))) {
+      const home = w.block ?? this.css.media.find((m) => w.rule!.start > m.open && w.rule!.start < m.close);
+      const size = home && parseSize(sizeOfMedia(home.media)!);
+      // An exact size was measured with every block that applies there.
+      if (!home || (size && size.min[0] === size.max[0] && size.min[1] === size.max[1] && !size.orientation)) continue;
+      const fontProps = (m: MediaBlock) => new Set(this.rulesIn(m, w.cls).flatMap((r) => r.decls.map((d) => d.prop).filter((p) => /^font(-|$)/.test(p))));
+      // A probe means the block changes its font, perhaps through an element it sits in.
+      const probed = (m: MediaBlock) => byCls.get(w.cls)!.some((b) => b.probes?.[m.start] !== undefined);
+      const ownValue = (m: MediaBlock) => this.rulesIn(m, w.cls).some(declares) || writes.has(`u${(this.rulesIn(m, w.cls).at(-1) ?? m).start}|${w.cls}`);
+      const yields = (m: MediaBlock) => {
+        const mine = fontProps(home);
+        if (mine.has('font')) return true;
+        const theirs = fontProps(m);
+        return (theirs.size || !probed(m) ? [...theirs] : ['font-family', 'font-size', 'font-weight', 'font-style']).every((p) => mine.has(p));
+      };
+      const loose = unmeasured(w.cls).find((m) => m !== home && overlap(m, home) && (fontProps(m).size > 0 || probed(m))
+        && !(m.start > home.start ? ownValue(m) : yields(m)));
+      if (loose) refuse(w.cls, `.${w.cls} in ${where(loose)} was not measured, and its value in ${w.where} would reach it there; set its line-height in GWD.`);
     }
 
     // The line-height a class's own rules give in a frame once the fix is in: a px, 'inherit', or
