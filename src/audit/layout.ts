@@ -30,9 +30,11 @@ export interface LayoutDiff {
 }
 
 const TEXT_TAGS = new Set(['p', 'span', 'button']);
-// As in the previews, requests to other sites are blocked, except stylesheets and fonts. The sandbox
-// already keeps every script from running.
-const CSP = "default-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:";
+// As in the previews, requests to other sites are blocked, except stylesheets and fonts. Of scripts,
+// only the stand-in runs, in its layout mode, to fill GWD's groups: none of the ad's own.
+const NONCE = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
+const CSP = `default-src 'self' data: blob:; script-src 'nonce-${NONCE}'; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:`;
+const GROUPS = `${import.meta.env.BASE_URL}gwd-standin.js?layout`;
 // At rest: no animation or transition, which two layouts would catch at different moments; and
 // <noscript>, which only shows without scripts, stays hidden as it is in the ad.
 const AT_REST = 'noscript{display:none!important}*,*::before,*::after{animation:none!important;transition:none!important}';
@@ -121,7 +123,7 @@ function atRest(html: string, url: string): string {
     break;
   }
   const attr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-  return `${html.slice(0, at)}<base href="${attr(url)}"><meta http-equiv="Content-Security-Policy" content="${attr(CSP)}"><style>${AT_REST}</style>${html.slice(at)}`;
+  return `${html.slice(0, at)}<base href="${attr(url)}"><meta http-equiv="Content-Security-Policy" content="${attr(CSP)}"><style>${AT_REST}</style><script nonce="${NONCE}" src="${attr(new URL(GROUPS, location.href).href)}"></script>${html.slice(at)}`;
 }
 
 interface Font {
@@ -254,7 +256,7 @@ export class LayoutNet {
     host.style.cssText = 'position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none';
     host.setAttribute('aria-hidden', 'true');
     const frame = document.createElement('iframe');
-    frame.setAttribute('sandbox', 'allow-same-origin'); // without allow-scripts: none of the ad's scripts run
+    frame.setAttribute('sandbox', 'allow-same-origin allow-scripts'); // its CSP lets only the stand-in run
     frame.setAttribute('scrolling', 'no');
     frame.tabIndex = -1;
     frame.style.cssText = 'border:0;display:block';

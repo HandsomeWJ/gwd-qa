@@ -132,7 +132,7 @@
   // definitions, each instance that leads back to a definition still being walked; so does this.
   const GROUP = 'data-gwd-group';
   const GROUP_DEF = 'data-gwd-group-def';
-  const groupsRuntime = () => state.scripts.some((name) => /^groups_runtime/i.test(name));
+  const groupsRuntime = () => state.layout || state.scripts.some((name) => /^groups_runtime/i.test(name));
   const filledGroups = new WeakSet(); // filled once, as GWD fills each instance once
   const clear = (el) => {
     for (const n of [...el.childNodes]) if (n.nodeType !== Node.COMMENT_NODE) n.remove();
@@ -500,6 +500,16 @@
 
   // Everything else GWD writes (tap areas, gestures, reveals, image effects...) does nothing here.
   const INERT = ['gwd-taparea', 'gwd-gesture', 'gwd-reveal', 'gwd-image-effect', 'gwd-attached', 'gwd-text-helper'];
+
+  // In the frames that lay the fixes out (src/audit/layout.ts), where no other script may run: fill the
+  // groups, so that the texts in them are laid out too, and start nothing.
+  if (new URL(document.currentScript?.src || location.href, location.href).searchParams.has('layout')) {
+    state.layout = true;
+    const fill = () => fillGroups(document);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fill, { once: true });
+    else fill();
+    return;
+  }
 
   const setUp = () => {
     // A core element that no file defined after all, for example as the ad includes GWD's file for it

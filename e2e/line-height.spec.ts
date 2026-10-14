@@ -99,6 +99,29 @@ test('leaves a class to you whose line-height would change the spacing in a size
   }
 });
 
+test('lays out the texts in GWD groups too, where only the layout without scripts would see a change', async ({ page }) => {
+  // The same media query, on text that GWD's groups runtime (here its stand-in) copies into the page.
+  const html = mockAdHtml('Headline', ['mock-gwd.js', 'groups_runtime.min.1.0.js'])
+    .replace('<body>', '<body>\n  <template id="gwd-group-definitions">\n    <div data-gwd-group-def="Note" data-gwd-group-class="gwd-grp-n" style="display: none;">\n      <p data-gwd-grp-id="text" class="gwd-grp-n gwd-p-g">Grouped text</p>\n    </div>\n  </template>')
+    .replace('  </style>', '    .gwd-p-g {\n      position: absolute;\n      left: 0px;\n      top: 0px;\n      margin: 0px;\n      font-family: Arial;\n      font-size: 16px;\n    }\n    .gwd-div-n {\n      position: absolute;\n      left: 10px;\n      top: 200px;\n      width: 200px;\n      height: 40px;\n    }\n    @media (max-width: 310px) {\n      .gwd-p-g {\n        font-size: 10px;\n      }\n    }\n  </style>')
+    .replace('<button class="gwd-button-b"', '<div id="SA_note_g" class="gwd-div-n" data-gwd-group="Note"></div>\n        <button class="gwd-button-b"')
+    .replace(/(@media \(min-width[^{]*\{)/, '$1\n      .gwd-p-g {\n        font-size: 12px;\n      }');
+  await load(page, 'group.zip', mockZip(html));
+  await expect(page.frameLocator('#frames iframe[title="300x250 ad"]').locator('#SA_note_g .gwd-p-g')).toHaveText('Grouped text');
+  await expect(page.locator('#fixes .manual')).toContainText(/\.gwd-p-g: its line-height would change the spacing at \d+x\d+, which no preview shows; set it in GWD\./);
+  await expect(lineHeightFix(page).locator('.detail').first()).not.toContainText('.gwd-p-g');
+});
+
+test('runs none of the ad\'s own scripts in the frames that lay the fixes out', async ({ page }) => {
+  // Only those frames are srcdoc documents; the previews load the ad from its own URL.
+  const html = mockAdHtml().replace('</head>', '  <script src="probe.js"></script>\n</head>');
+  const probe = 'if (location.href === "about:srcdoc") parent.document.documentElement.dataset.layoutRan = "yes";';
+  await load(page, 'scripted.zip', Buffer.from(zipSync({ 'Mock Ad/Responsive.html': strToU8(html), 'Mock Ad/mock-gwd.js': strToU8(MOCK_RUNTIME), 'Mock Ad/probe.js': strToU8(probe) })));
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#fixes .banner')).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator('html')).not.toHaveAttribute('data-layout-ran', 'yes');
+});
+
 test('offers another fix unticked where, laid out without scripts, it moves text in a size no frame shows', async ({ page }) => {
   // Only inside the range does a paragraph whose class sets no margin get one, from a rule for every <p>;
   // margin-block on its class would take it away there.
