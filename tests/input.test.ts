@@ -62,6 +62,16 @@ describe('adPackage', () => {
     expect(adPackage(one).htmlPath).toBe('Ad/Responsive.html');
   });
 
+  it('refuses files with the same name from different folders rather than keeping one of them', () => {
+    const same = [{ path: 'Responsive.html', data: strToU8(gwd) }, { path: 'Responsive.html', data: strToU8(gwd.replace('16', '17')) }];
+    expect(() => adPackage(same)).toThrow('Files with the same name came from different folders: Responsive.html. They may be different ads. Check one ad at a time');
+    // Two dropped folders of the same name, and the same bytes twice: still two places.
+    expect(() => adPackage([...picked({ 'Ad/Responsive.html': gwd, 'Ad/a.png': 'a' }), ...picked({ 'Ad/Responsive.html': gwd })])).toThrow('came from different folders: Ad/Responsive.html.');
+    // macOS junk is dropped before it is counted.
+    expect(adPackage(picked({ 'Responsive.html': gwd, '.DS_Store': 'x' })).kind).toBe('folder');
+    expect(adPackage([...picked({ 'A/Responsive.html': gwd, 'A/.DS_Store': 'x' }), ...picked({ 'A/.DS_Store': 'y' })]).htmlPath).toBe('A/Responsive.html');
+  });
+
   it('refuses several zips, or a zip with other files, saying so', () => {
     const zip = zipSync({ 'Ad/Responsive.html': strToU8(gwd) });
     expect(() => adPackage([{ path: 'a.zip', data: zip }, { path: 'b.zip', data: zip }])).toThrow('Check one zip at a time: a.zip and b.zip came together.');

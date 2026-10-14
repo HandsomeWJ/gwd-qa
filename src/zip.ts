@@ -35,10 +35,19 @@ export function readZip(zipName: string, bytes: Uint8Array): AdPackage {
  */
 export function readFolder(picked: { path: string; data: Uint8Array }[]): AdPackage {
   const files = new Map<string, Uint8Array>();
+  const twice = new Set<string>();
   for (const f of [...picked].sort((a, b) => (a.path < b.path ? -1 : 1))) {
-    if (!JUNK.test(f.path)) files.set(f.path, f.data);
+    if (JUNK.test(f.path)) continue;
+    if (files.has(f.path)) twice.add(f.path);
+    files.set(f.path, f.data);
   }
   if (!files.size) throw new Error('The folder is empty.');
+  // Files dragged from search results, or from two folders at once, come without their folder:
+  // one of two Responsive.html files would be dropped unseen, and the other checked as the ad.
+  if (twice.size) {
+    const list = [...twice].slice(0, 3).join(', ') + (twice.size > 3 ? ` and ${twice.size - 3} more` : '');
+    throw new Error(`Files with the same name came from different folders: ${list}. They may be different ads. Check one ad at a time: its zip, its folder, or just its HTML.`);
+  }
   const entries: string[] = [];
   const dirs = new Set<string>();
   for (const path of files.keys()) {
