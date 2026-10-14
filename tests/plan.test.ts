@@ -4,7 +4,7 @@ import { parseCss } from '../src/css/parse';
 import type { CssValidator } from '../src/audit/cssvalues';
 import { staticAudit } from '../src/audit/static';
 import type { Box, Inheritor } from '../src/audit/types';
-import { planFixes } from '../src/fix/plan';
+import { planFixes, withoutPart } from '../src/fix/plan';
 import { box } from './boxes';
 import { fixture } from './fixture';
 
@@ -146,6 +146,26 @@ describe('line-height', () => {
       box({ tag: 'span', classes: ['gwd-span-hl'], frame: '320x480', inTextParent: true, normalLineHeight: 19.5, parentLineHeight: 19.5, probes: { [m250]: 19.5 } }),
     ], { '320x480': [] });
     expect(fix('lineHeight')?.detail).toBe('.gwd-p-head: 19.5px, .gwd-span-hl: 19.5px, .gwd-p-head in 300x250: 15px');
+  });
+
+  it('keeps each class\'s edits apart, so one class can be left out alone', () => {
+    const ownSize = html.replace('      color: rgb(255, 210, 0);\n', '      color: rgb(255, 210, 0);\n      font-size: 16px;\n');
+    const m250 = parseCss(ownSize).media[0].start;
+    const { fix } = plan(ownSize, [
+      box({ ...head, frame: '320x480', normalLineHeight: 19.5, probes: { [m250]: 15 } }),
+      box({ tag: 'span', classes: ['gwd-span-hl'], frame: '320x480', inTextParent: true, normalLineHeight: 19.5, parentLineHeight: 19.5, probes: { [m250]: 19.5 } }),
+    ], { '320x480': [] });
+    const lh = fix('lineHeight')!;
+    const [headPart, spanPart] = lh.parts!;
+    expect([headPart.name, spanPart.name]).toEqual(['.gwd-p-head', '.gwd-span-hl']);
+    expect([...headPart.edits, ...spanPart.edits].sort((a, b) => a.start - b.start)).toEqual([...lh.edits].sort((a, b) => a.start - b.start));
+    expect(applyEdits(ownSize, spanPart.edits)).toContain('      font-size: 16px;\n      line-height: 19.5px;\n    }');
+
+    const headOnly = withoutPart(lh, '.gwd-span-hl')!;
+    expect(headOnly.detail).toBe('.gwd-p-head: 19.5px, .gwd-p-head in 300x250: 15px');
+    expect(headOnly.edits).toEqual(lh.edits.filter((e) => headPart.edits.includes(e)));
+    expect(withoutPart(lh, '.gwd-p-head')!.detail).toBe('.gwd-span-hl: 19.5px');
+    expect(withoutPart(headOnly, '.gwd-p-head')).toBeNull();
   });
 
   it('treats a range whose two ends are exact sizes as never measured', () => {

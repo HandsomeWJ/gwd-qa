@@ -15,6 +15,14 @@ export interface PlannedFix {
   edits: Edit[];
   /** Set when the fix will visibly move something; the page offers it unticked. */
   moves?: string;
+  /** For a fix made of independent parts, such as one per class: each can be left out alone (withoutPart). */
+  parts?: FixPart[];
+}
+
+export interface FixPart {
+  name: string; // such as '.gwd-p-a'
+  edits: Edit[]; // its edits, which are also the fix's
+  notes: { at: number; text: string }[]; // its items in the fix's detail, and their places there
 }
 
 export interface FixPlan {
@@ -136,24 +144,31 @@ class Planner {
     if (!this.manual.some((m) => m.detail === detail)) this.manual.push({ check, detail });
   }
 
-  /** Edits that add declarations to classes' base rules, creating missing rules in the main <style>. */
-  addToBase(adds: Map<string, string[]>): Edit[] {
+  /**
+   * Edits that add declarations to classes' base rules, creating missing rules in the main <style>.
+   * `owner` learns the class each edit is for.
+   */
+  addToBase(adds: Map<string, string[]>, owner?: Map<Edit, string>): Edit[] {
     const edits: Edit[] = [];
     const missing: [string, string[]][] = [];
+    const push = (cls: string, e: Edit) => {
+      edits.push(e);
+      owner?.set(e, cls);
+    };
     for (const [cls, decls] of adds) {
       const rule = this.baseRule(cls);
-      if (rule) decls.forEach((d) => edits.push(insertDecl(this.html, rule, d, this.deleted)));
+      if (rule) decls.forEach((d) => push(cls, insertDecl(this.html, rule, d, this.deleted)));
       else missing.push([cls, decls]);
     }
     if (missing.length) {
       const block = [...this.css.styleBlocks].sort((a, b) => b.close - b.open - (a.close - a.open))[0];
-      for (const [cls, decls] of missing) edits.push(insertRule(this.html, block, `.${cls}`, decls, true));
+      for (const [cls, decls] of missing) push(cls, insertRule(this.html, block, `.${cls}`, decls, true));
     }
     return edits;
   }
 
-  add(check: CheckId, title: string, detail: string, edits: Edit[], moves?: string) {
-    if (edits.length) this.fixes.push({ check, title, detail, edits, ...(moves ? { moves } : {}) });
+  add(check: CheckId, title: string, detail: string, edits: Edit[], moves?: string, parts?: FixPart[]) {
+    if (edits.length) this.fixes.push({ check, title, detail, edits, ...(moves ? { moves } : {}), ...(parts ? { parts } : {}) });
   }
 
   buttonPadding() {
@@ -528,19 +543,33 @@ class Planner {
 
     const kept = [...writes.values()].filter((w) => !refused.has(w.cls) && !(w.base && noBase.has(w.cls)));
     const edits: Edit[] = [];
+    const owner = new Map<Edit, string>(); // the class each edit is for
+    const own = (cls: string, e: Edit) => {
+      owner.set(e, cls);
+      return e;
+    };
     const baseAdds = new Map<string, string[]>();
     for (const w of kept) {
-      if (w.rule) edits.push(insertDecl(this.html, w.rule, `line-height: ${w.px}px;`, this.deleted));
-      else if (w.block) edits.push(insertRule(this.html, w.block, `.${w.cls}`, [`line-height: ${w.px}px;`]));
+      if (w.rule) edits.push(own(w.cls, insertDecl(this.html, w.rule, `line-height: ${w.px}px;`, this.deleted)));
+      else if (w.block) edits.push(own(w.cls, insertRule(this.html, w.block, `.${w.cls}`, [`line-height: ${w.px}px;`])));
       else baseAdds.set(w.cls, [`line-height: ${w.px}px;`]);
     }
     const inherits = [...inherit].filter((cls) => !refused.has(cls));
     inherits.forEach((cls) => baseAdds.set(cls, ['line-height: inherit;']));
-    edits.push(...this.addToBase(baseAdds));
+    edits.push(...this.addToBase(baseAdds, owner));
     refused.forEach((why) => this.manualNote('lineHeight', why));
     noBase.forEach((why, cls) => { if (!refused.has(cls)) this.manualNote('lineHeight', why); });
-    const notes = [...kept.map((w) => `.${w.cls}${w.where ? ` in ${w.where}` : ''}: ${w.px}px`), ...inherits.map((c) => `.${c}: inherit`)];
-    this.add('lineHeight', 'Declare line-height (the value it renders now)', notes.join(', '), edits);
+    const notes = [
+      ...kept.map((w) => ({ cls: w.cls, text: `.${w.cls}${w.where ? ` in ${w.where}` : ''}: ${w.px}px` })),
+      ...inherits.map((cls) => ({ cls, text: `.${cls}: inherit` })),
+    ];
+    // One part per class, so a class whose value turns out to move text can be left out alone.
+    const parts = [...new Set(notes.map((n) => n.cls))].map((cls) => ({
+      name: `.${cls}`,
+      edits: edits.filter((e) => owner.get(e) === cls),
+      notes: notes.flatMap((n, at) => (n.cls === cls ? [{ at, text: n.text }] : [])),
+    }));
+    this.add('lineHeight', 'Declare line-height (the value it renders now)', notes.map((n) => n.text).join(', '), edits, undefined, parts);
   }
 
   textFade() {
@@ -602,6 +631,16 @@ class Planner {
       'Browsers ignore these values today, so once valid they size or place what they style. Check the result in the preview.',
     );
   }
+}
+
+/** The fix without one of its parts and that part's edits, or null when nothing is left of it. */
+export function withoutPart(fix: PlannedFix, name: string): PlannedFix | null {
+  const part = fix.parts?.find((p) => p.name === name);
+  if (!part) return fix;
+  const parts = fix.parts!.filter((p) => p !== part);
+  if (!parts.length) return null;
+  const detail = parts.flatMap((p) => p.notes).sort((a, b) => a.at - b.at).map((n) => n.text).join(', ');
+  return { ...fix, detail, edits: fix.edits.filter((e) => !part.edits.includes(e)), parts };
 }
 
 export function planFixes(input: PlanInput): FixPlan {

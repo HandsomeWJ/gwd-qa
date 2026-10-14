@@ -375,22 +375,48 @@ function renderChecklist() {
   box.innerHTML = `<h2>QA checklist</h2><p class="sub">Open a row for the details. Each size is checked as it renders${pages}.</p>${warnings.length ? `<div class="banner warn"><ul>${warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}<ul class="checks">${rows}</ul>`;
 }
 
+/** "a, b and c", or the first few and how many more. */
+function listed(items: string[], most = 6): string {
+  const shown = items.length > most ? [...items.slice(0, most - 1), `${items.length - most + 1} more`] : items;
+  return shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown.at(-1)}` : shown.join('');
+}
+
 function applyBanner(a: ApplyResult): string {
   const p = a.positions;
+  const laid = a.layout;
   const applied = `Applied ${plural(a.applied.length, 'fix', 'fixes')}`;
-  if (!p.moved.length && !p.respaced.length) {
-    const where = result && result.pages > 1 ? 'in every size and on every page' : 'in every size';
-    const texts = p.texts === 1 ? 'The one text is exactly where it was' : `All ${p.texts} texts are exactly where they were`;
-    const spacing = p.spacings ? ', and every line spacing is unchanged' : '';
-    return `<div class="banner ok">${applied}. ${texts}${spacing}, ${where}.</div>`;
-  }
   // A changed line spacing is usually why texts moved, so it comes first.
-  const what = [
-    p.respaced.length ? `${plural(p.respaced.length, 'line spacing')} changed` : '',
-    p.moved.length ? `${plural(p.moved.length, 'text')} moved` : '',
+  const what = (spacings: number, texts: number) => [
+    spacings ? `${plural(spacings, 'line spacing')} changed` : '',
+    texts ? `${plural(texts, 'text')} moved` : '',
   ].filter(Boolean).join(' and ');
-  const list = [...p.respaced, ...p.moved].slice(0, 12).map((k) => `<li>${esc(k)}</li>`).join('');
-  return `<div class="banner warn">${applied}, but ${what}. Check them in the preview, or undo.<ul>${list}</ul></div>`;
+  const live = what(p.respaced.length, p.moved.length);
+  const respaced = laid.diffs.filter((d) => d.spacing);
+  const moved = laid.diffs.filter((d) => !d.spacing);
+  const net = what(respaced.length, moved.length);
+  const where = [...new Set(laid.diffs.map((d) => d.size))];
+  const sizes = listed(where);
+  const texts = p.texts === 1 ? 'The one text is exactly where it was' : `All ${p.texts} texts are exactly where they were`;
+  const spacing = p.spacings ? ', and every line spacing is unchanged' : '';
+  if (!live && !net) {
+    if (laid.error) {
+      return `<div class="banner warn">${applied}. ${texts}${spacing}, in every preview. The sizes between them could not be laid out to compare (${esc(laid.error)}): check them in GWD, or undo.</div>`;
+    }
+    const every = result && result.pages > 1 ? 'in every size and on every page' : 'in every size';
+    return `<div class="banner ok">${applied}. ${texts}${spacing}, ${every}.</div>`;
+  }
+  // The sizes no preview shows are laid out without scripts, so they are told apart.
+  const head = live
+    ? `${applied}, but ${live}.${net ? ` Laid out without scripts, ${net} too, at ${sizes}.` : laid.error ? ` The sizes between the previews could not be laid out to compare (${laid.error}).` : ''} Check them in the preview, or undo.`
+    : `${applied}. Every text in the previews is where it was, but laid out without scripts, ${net} at ${sizes}. Check ${where.length === 1 ? 'that size' : 'those sizes'} in GWD, or undo.`;
+  const keys = [
+    ...p.respaced,
+    ...p.moved,
+    ...respaced.map((d) => `${d.size} ${d.target} line-height`),
+    ...moved.map((d) => `${d.size} ${d.target} "${d.text}"`),
+  ];
+  const list = keys.slice(0, 12).map((k) => `<li>${esc(k)}</li>`).join('');
+  return `<div class="banner warn">${esc(head)}<ul>${list}</ul></div>`;
 }
 
 function renderFixes() {
@@ -416,7 +442,7 @@ function renderFixes() {
     </li>`).join('');
   box.innerHTML = `
     <h2>Fixes</h2>
-    <p class="sub">These declare what the ad already renders, so nothing should move; any fix that would move text is marked and left unticked. Text positions in every size are compared before and after.</p>
+    <p class="sub">These declare what the ad already renders, so nothing should move; any fix that would move text is marked and left unticked. Each fix is laid out without scripts at ${plural(r.layout.sizes, 'size')} first${r.layout.unseen ? `, ${r.layout.unseen} of them between the previews` : ''}, to find that. Text positions in every size are compared before and after.</p>
     ${session!.lastApply ? applyBanner(session!.lastApply) : ''}
     ${fixes.length
       ? `<ul class="fixlist">${list}</ul><button class="primary" data-action="apply">Apply selected fixes</button>`

@@ -30,7 +30,7 @@ export function parseSize(key: string): ServedSize | null {
   return { key: key.trim(), min, max, orientation: m[5] === 'l' ? 'landscape' : m[5] === 'p' ? 'portrait' : null };
 }
 
-const isRange = (s: ServedSize) => s.min[0] !== s.max[0] || s.min[1] !== s.max[1] || s.orientation !== null;
+export const isRange = (s: ServedSize) => s.min[0] !== s.max[0] || s.min[1] !== s.max[1] || s.orientation !== null;
 
 /** "300x250", or "300x250 to 320x480" for a range, with its orientation when it has one. */
 export function describeSize(key: string): string {
@@ -41,6 +41,11 @@ export function describeSize(key: string): string {
 
 // CSS orientation: portrait when height >= width, landscape otherwise.
 const fits = (o: Orientation | null, w: number, h: number) => !o || (o === 'portrait' ? h >= w : w > h);
+
+/** Whether the ad is served as `s` at this size: inside its bounds, in its orientation. */
+export function covers(s: ServedSize, width: number, height: number): boolean {
+  return width >= s.min[0] && width <= s.max[0] && height >= s.min[1] && height <= s.max[1] && fits(s.orientation, width, height);
+}
 
 /**
  * The sizes to preview a served size at: the size itself, or a range's smallest and largest

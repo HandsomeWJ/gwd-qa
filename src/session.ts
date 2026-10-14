@@ -2,10 +2,12 @@
 
 import { applyEdits, mergeEdits } from './css/edit';
 import { parseCss } from './css/parse';
+import { LayoutNet, layoutSizes, type LayoutDiff } from './audit/layout';
 import { comparePositions, observe, positions, waitForAd, type AdFrame } from './audit/observe';
 import { renderFindings } from './audit/render';
 import { staticAudit, type StaticReport } from './audit/static';
 import type { Finding } from './audit/types';
+import { guardPlan } from './fix/guard';
 import { planFixes, type FixPlan, type PlannedFix } from './fix/plan';
 import { adUrl, ensurePublished, publish, updateFile } from './serve';
 import { frameSizes, type FrameSize } from './sizes';
@@ -18,11 +20,15 @@ export interface AuditResult {
   safetyChecked: number;
   pages: number; // GWD pages in the ad; each is checked in every size
   skipped: string[]; // pages that never showed, so were not checked
+  /** The fixes offered ticked, laid out without scripts: at how many sizes, how many of them no preview shows, and how long it took. */
+  layout: { sizes: number; unseen: number; ms: number };
 }
 
 export interface ApplyResult {
   applied: PlannedFix[];
   positions: ReturnType<typeof comparePositions>;
+  /** The HTML before and after, laid out without scripts at every size: what changed, or why it could not be compared. */
+  layout: { diffs: LayoutDiff[]; sizes: number; ms: number; error?: string };
 }
 
 const decoder = new TextDecoder();
@@ -44,6 +50,7 @@ export class Session {
   /** Off by default: the preview blocks the ad's requests to other sites, so no tracker fires. */
   allowThirdParty = false;
   private unpublish: () => Promise<void> = async () => undefined;
+  private net: LayoutNet | null = null;
 
   private constructor(readonly pkg: AdPackage) {
     this.key = adKey(pkg);
@@ -125,6 +132,15 @@ export class Session {
     f.started = await waitForAd(f.el);
   }
 
+  /** Lays the ad out without scripts, at every served size and the sizes between that no preview shows. */
+  private layoutNet(): LayoutNet {
+    this.net ??= new LayoutNet(
+      new URL(adUrl(this.id, this.pkg.htmlPath), location.href).href,
+      layoutSizes(this.sizes, parseCss(this.originalHtml).media.map((m) => m.media)),
+    );
+    return this.net;
+  }
+
   /** Checks need every size running; a GWD ad that never shows its page would look like a pass. */
   private assertStarted() {
     const stuck = this.frames.filter((f) => !f.started).map((f) => f.label);
@@ -143,8 +159,14 @@ export class Session {
     const seen = await observe(this.frames, css); // shows each page in turn, pausing animations
     const findings = [...report.findings, ...renderFindings(seen.boxes)];
     const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, incomplete: seen.incomplete });
-    await this.reloadAll();
-    return { report, findings, plan, safetyChecked: seen.safetyChecked, pages: seen.pages, skipped: seen.skipped };
+    // Laid out while the frames restart: no fix is offered ticked that moves text in a size no frame shows.
+    const net = this.layoutNet();
+    const html = this.html;
+    const started = performance.now();
+    const guarded = guardPlan(plan, html, (after, sizes) => net.compare(html, after, sizes)).then(() => performance.now() - started);
+    const [, ms] = await Promise.all([this.reloadAll(), guarded]);
+    const layout = { sizes: net.sizes.length, unseen: net.sizes.filter((s) => !s.previewed).length, ms };
+    return { report, findings, plan, safetyChecked: seen.safetyChecked, pages: seen.pages, skipped: seen.skipped, layout };
   }
 
   /** Applies fixes, then proves text did not move by comparing every text node's position on every page. */
@@ -152,13 +174,22 @@ export class Session {
     await this.reloadAll(); // undo anything a click in the preview changed, so both runs start alike
     this.assertStarted();
     const before = await positions(this.frames);
+    const html = this.html;
     this.html = applyEdits(this.html, mergeEdits(fixes.flatMap((f) => f.edits)));
     await updateFile(this.id, this.pkg.htmlPath, encoder.encode(this.html));
     await this.reloadAll();
     this.assertStarted();
-    const result = { applied: fixes, positions: comparePositions(before, await positions(this.frames)) };
+    const moved = comparePositions(before, await positions(this.frames));
+    // The sizes no frame shows too, laid out without scripts while the frames restart.
+    const net = this.layoutNet();
+    const started = performance.now();
+    const laid = net.compare(html, this.html).then(
+      (diffs) => ({ diffs, sizes: net.sizes.length, ms: performance.now() - started }),
+      (err: unknown) => ({ diffs: [], sizes: net.sizes.length, ms: performance.now() - started, error: err instanceof Error ? err.message : String(err) }),
+    );
+    const [, layout] = await Promise.all([this.reloadAll(), laid]); // positions() leaves the frames paused on their last page
+    const result = { applied: fixes, positions: moved, layout };
     this.lastApply = result;
-    await this.reloadAll(); // positions() leaves the frames paused on their last page
     return result;
   }
 

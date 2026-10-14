@@ -124,8 +124,13 @@ test('shows the preview sharp, says when a size is cut off, and replays', async 
 });
 
 test('blocks the ad\'s requests to other sites unless they are allowed', async ({ page }) => {
+  // Not from the previews, nor from the frames that lay each fix out without scripts: the policy stops them all.
+  const sent: string[] = [];
+  page.on('requestfinished', (r) => { if (r.url().includes('pixel.invalid')) sent.push(r.url()); });
+  page.on('requestfailed', (r) => { if (r.url().includes('pixel.invalid') && r.failure()?.errorText !== 'csp') sent.push(r.url()); });
   await load(page, mockAdZip());
   await expect(page.locator('#net')).toContainText('pixel.invalid');
+  expect(sent).toEqual([]);
   await expect(frame(page, '300x250').locator('html')).toHaveAttribute('data-blocked', 'yes');
 
   await page.getByLabel('Let the ad contact other sites').check();
