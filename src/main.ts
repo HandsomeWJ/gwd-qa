@@ -9,6 +9,7 @@ import { allowedZipUrl, outsideHosts } from './net';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
 import { describeSize, frameSizes, type FrameSize } from './sizes';
+import { keyFor, legacyKey, type AdPackage } from './zip';
 
 const app = document.getElementById('app')!;
 let session: Session | null = null;
@@ -102,7 +103,7 @@ async function load(pick: () => Promise<PickedFile[]>) {
     clearResults();
     clearPreview();
     await old?.close();
-    loadDisclaimers(next.key);
+    loadDisclaimers(next.key, next.pkg);
     next.mountFrames($('#frames'), sizes, frameCard);
     layoutFrames();
     $('#drop').hidden = true;
@@ -146,34 +147,56 @@ const NET_KEY = 'gwdqa.allowThirdParty';
 const DISCLAIMER_KEY = 'gwdqa.disclaimers';
 // An id that names a disclaimer. Only ids count: GWD's generated class names are random.
 const DISCLAIMER_ID = /disclaim|legal|terms|tnc|t&c|fine-?print|small-?print/i;
-// Per element label: marked (true) or unmarked (false) as a disclaimer, for the loaded ad.
-let disclaimerChoices: Record<string, boolean> = {};
+// Per element label: marked (true) or unmarked (false) as a disclaimer, for the loaded ad. Maps,
+// not objects: labels and keys come from the ad, and one named __proto__ or constructor must not
+// find what every object inherits.
+let disclaimerChoices = new Map<string, boolean>();
+// The keys the loaded ad's marks are saved under: its own, and those of the fixed files it was
+// downloaded as, so they come back when a fixed file is checked again.
+let disclaimerKeys = new Set<string>();
 
 /** Every ad's marks, by the ad's key (adKey in src/zip.ts). */
-function storedDisclaimers(): Record<string, Record<string, boolean>> {
+function storedDisclaimers(): Map<string, Map<string, boolean>> {
   try {
-    return JSON.parse(localStorage.getItem(DISCLAIMER_KEY) ?? '{}');
+    const all: unknown = JSON.parse(localStorage.getItem(DISCLAIMER_KEY) ?? '{}');
+    const own = (v: unknown): [string, unknown][] => (v && typeof v === 'object' ? Object.entries(v) : []);
+    return new Map(own(all).map(([key, marks]) => [key, new Map(own(marks).filter((m): m is [string, boolean] => typeof m[1] === 'boolean'))]));
   } catch {
-    return {};
+    return new Map();
   }
 }
 
-function loadDisclaimers(key: string) {
-  disclaimerChoices = storedDisclaimers()[key] ?? {};
-}
-
-function saveDisclaimers(key: string) {
-  const all = storedDisclaimers();
-  all[key] = disclaimerChoices;
+function storeDisclaimers(all: Map<string, Map<string, boolean>>) {
   try {
-    localStorage.setItem(DISCLAIMER_KEY, JSON.stringify(all));
+    localStorage.setItem(DISCLAIMER_KEY, JSON.stringify(Object.fromEntries([...all].map(([key, marks]) => [key, Object.fromEntries(marks)]))));
   } catch {
     // private mode: the marks just aren't remembered
   }
 }
 
+/**
+ * Loads the marks saved under the ad's key. A zip or a folder went by its name alone before; marks
+ * saved under that name move to the ad's key, so they go on applying to this ad and to no other.
+ */
+function loadDisclaimers(key: string, pkg: AdPackage) {
+  const all = storedDisclaimers();
+  const old = legacyKey(pkg);
+  disclaimerKeys = new Set([key]);
+  disclaimerChoices = new Map(all.get(key) ?? (old !== undefined ? all.get(old) : undefined));
+  if (old === undefined || all.has(key) || !all.has(old)) return;
+  all.set(key, disclaimerChoices);
+  all.delete(old);
+  storeDisclaimers(all);
+}
+
+function saveDisclaimers() {
+  const all = storedDisclaimers();
+  for (const key of disclaimerKeys) all.set(key, disclaimerChoices);
+  storeDisclaimers(all);
+}
+
 const namedDisclaimer = (target: string) => DISCLAIMER_ID.test(/#([^.]+)/.exec(target)?.[1] ?? '');
-const isDisclaimer = (target: string) => disclaimerChoices[target] ?? namedDisclaimer(target);
+const isDisclaimer = (target: string) => disclaimerChoices.get(target) ?? namedDisclaimer(target);
 
 function allowThirdPartySaved(): boolean {
   try {
@@ -334,7 +357,7 @@ function groupFindings(list: Finding[], control: (f: Finding) => string = () => 
 }
 
 function disclaimerToggle(f: Finding): string {
-  const byName = disclaimerChoices[f.target] === undefined && namedDisclaimer(f.target);
+  const byName = !disclaimerChoices.has(f.target) && namedDisclaimer(f.target);
   return `<label class="exempt"><input type="checkbox" data-disclaimer="${esc(f.target)}"${isDisclaimer(f.target) ? ' checked' : ''}> Disclaimer, exempt from 8px${byName ? ' (from its id)' : ''}</label>`;
 }
 
@@ -471,6 +494,9 @@ function download(forUpload = false) {
   const a = document.createElement('a');
   a.href = url;
   a.download = lone ? s.pkg.zipName : forUpload ? `${stem}-upload.zip` : `${stem}.zip`;
+  // The file holds the HTML as it is now, so checked again it has another key: the marks go there too.
+  disclaimerKeys.add(keyFor(a.download, new TextEncoder().encode(s.html)));
+  saveDisclaimers();
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
@@ -529,9 +555,9 @@ app.addEventListener('change', (e) => {
   if (box.id === 'allow-net') setThirdParty(box.checked);
   if (box.dataset.disclaimer !== undefined && session && result) {
     const target = box.dataset.disclaimer;
-    if (box.checked === namedDisclaimer(target)) delete disclaimerChoices[target];
-    else disclaimerChoices[target] = box.checked;
-    saveDisclaimers(session.key);
+    if (box.checked === namedDisclaimer(target)) disclaimerChoices.delete(target);
+    else disclaimerChoices.set(target, box.checked);
+    saveDisclaimers();
     renderSummary();
     renderChecklist();
     app.querySelector<HTMLInputElement>(`input[data-disclaimer="${CSS.escape(target)}"]`)?.focus();
