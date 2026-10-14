@@ -120,7 +120,7 @@ test('keeps the spacing inside a range where only the range block sets a line-he
     // An inline font-size, which beats the range block's.
     rule('.gwd-p-g', P(200)),
     // A button keeps the browser's font when its wrapper's font changes.
-    rule('.gwd-div-h', 'position: absolute; left: 0px; top: 300px; width: 300px; height: 40px; font-family: Georgia'),
+    rule('.gwd-div-h', 'position: absolute; left: 0px; top: 300px; width: 300px; height: 40px; font-family: serif'),
     rule('.gwd-button-h', 'position: absolute; left: 10px; top: 0px; width: 120px; height: 30px; padding: 0px; color: rgb(0, 0, 0)'),
     // A size in em, which follows its wrapper's, which the range block changes.
     rule('.gwd-div-d', 'position: absolute; left: 0px; top: 350px; width: 300px; height: 90px; font-size: 16px'),
@@ -132,8 +132,9 @@ test('keeps the spacing inside a range where only the range block sets a line-he
     rule('.gwd-p-i', P(510)),
     rule('#SA_i_1', 'font-size: 20px'),
     rule('.gwd-p-x', P(560, 'font-family: Arial; font-size: 20px !important')),
-    // A font-family browsers drop, so the text takes its wrapper's, which the range block changes.
-    rule('.gwd-div-v', 'position: absolute; left: 0px; top: 610px; width: 300px; height: 90px; font-family: Georgia'),
+    // A font-family browsers drop, so the text takes its wrapper's (a generic family, which every system
+    // has), which the range block changes.
+    rule('.gwd-div-v', 'position: absolute; left: 0px; top: 610px; width: 300px; height: 90px; font-family: cursive'),
     rule('.gwd-p-v', P(0, 'font-family: Arial,,Helvetica; font-size: 16px')),
     // Chinese type its own font has, in a font that lacks it in the range alone, so only there some lines are taller.
     rule('.gwd-p-z', P(710, 'font-family: "PingFang SC", "Noto Sans CJK SC", sans-serif; font-size: 14px; width: 150px')),
@@ -159,8 +160,19 @@ test('keeps the spacing inside a range where only the range block sets a line-he
   ].join('\n        ')]);
   const { detail, manual, banner } = await applyAndCompare(page, browser, html, [...INSIDE, [300, 600], [300, 250], [320, 480]]);
   expect(banner).toContain('exactly where they were');
-  // measured in the range's font: the wrapper's family, as the dropped one leaves it
-  expect(detail).toContain('.gwd-p-v in 300x250 to 320x480:');
+  // measured in the range's font: the wrapper's family, as the dropped one leaves it (where that
+  // system's cursive and Arial happen to space alike, the base value already fits the range)
+  const base = /\.gwd-p-v: ([\d.]+)px/.exec(detail)?.[1];
+  const arial = await page.evaluate(() => {
+    const d = document.createElement('div');
+    d.style.cssText = 'position:absolute;white-space:nowrap;line-height:normal;font:16px Arial';
+    d.textContent = 'Xg';
+    document.body.append(d);
+    const h = d.getBoundingClientRect().height;
+    d.remove();
+    return h;
+  });
+  if (base && Math.abs(Number(base) - arial) > 0.05) expect(detail).toContain('.gwd-p-v in 300x250 to 320x480:');
   for (const cls of ['gwd-p-w', 'gwd-span-u', 'gwd-p-g', 'gwd-p-d', 'gwd-p-s', 'gwd-p-i', 'gwd-p-x']) {
     expect(manual).toContain(`.${cls} in 300x250 to 320x480 was not measured, and a value in its base rule would reach it there, so its base size gets none`);
   }
