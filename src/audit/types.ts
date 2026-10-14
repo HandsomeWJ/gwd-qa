@@ -80,21 +80,35 @@ export interface Box {
   normalLineHeight?: number;
   /** False when its web font had not loaded, so normalLineHeight measured a fallback font. */
   fontLoaded?: boolean;
+  /**
+   * Under line-height: normal some of its characters draw in a fallback font with other metrics
+   * (an emoji, a symbol, Chinese, Japanese or Korean type its own font lacks), so its lines need not
+   * all be one height and no one value keeps them.
+   */
+  mixedFonts?: boolean;
+  /** An animation on it or an element it sits in changes its font (or line-height) while the ad runs. */
+  fontAnimated?: boolean;
+  /**
+   * An element with no text of its own that holds text, such as a group's <div>: here only for its
+   * classes, whose line-height the texts inside would take.
+   */
+  holder?: boolean;
   /** A span inside other text (a p, button, link…), which takes that parent's line-height. */
   inTextParent: boolean;
   /** For such a span: the px line-height its text parent renders (normal resolved to px). */
   parentLineHeight?: number;
   /**
-   * For a <p>, <span> or <button> with no line-height of its own: the texts inside it that take
-   * its line-height today (they render line-height: normal and declare none), which a value
-   * given to it would reach.
+   * The texts inside it that take its line-height today (they declare none, or inherit, and so
+   * does every element between), which a value given to it would reach.
    */
   inherits?: Inheritor[];
   /**
-   * For such an element: its normal line-height in the size blocks that change its font (or an
-   * ancestor's) but do not apply in this frame, measured in its font with that block's font
-   * declarations applied. Keyed by the block's start offset; null where it cannot be measured
-   * exactly. Only measured in a frame whose own size blocks leave its font alone.
+   * For a <p>, <span> or <button> with no line-height of its own: every @media block that does not
+   * apply in this frame and sets a font property or line-height for it, an element it sits in, or
+   * the font of a text inside it. Keyed by the block's start offset, its normal line-height there:
+   * measured in its font with that block's font declarations applied, or null where that cannot be
+   * done exactly (the block sets a line-height, a block that applies here already changes its font,
+   * or which declaration wins is not plain).
    */
   probes?: Record<number, number | null>;
   /**
@@ -109,11 +123,13 @@ export interface Box {
 export interface Inheritor {
   target: string; // label(el)
   tag: string;
-  /** The <p>, <span> and <button> elements from just inside the element down to this text, itself included when it is one. */
+  /** Every element from just inside the element down to this text, itself included. */
   path: { tag: string; classes: string[] }[];
-  /** The px a browser renders for line-height: normal in its font. */
+  /** The px line-height it renders now: what it inherits, or for line-height: normal its font's. */
   normal: number;
   fontLoaded: boolean;
+  /** As on Box: an animation changes its font while the ad runs. */
+  fontAnimated?: boolean;
 }
 
 export interface CopyItem {

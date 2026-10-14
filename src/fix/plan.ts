@@ -5,7 +5,7 @@
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
 import { singleClass, sizeOfMedia, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
 import type { StaticReport } from '../audit/static';
-import type { Box, CheckId } from '../audit/types';
+import type { Box, CheckId, Inheritor } from '../audit/types';
 import { describeSize, parseSize } from '../sizes';
 
 export interface PlannedFix {
@@ -54,10 +54,45 @@ class Planner {
   private readonly blockRules = new Map<string, StyleRule[]>();
   private readonly html: string;
   private readonly css: CssModel;
+  /** Declarations the CSS values check found invalid: browsers drop them, so they are as good as not there. */
+  private readonly dropped: Set<number>;
+  private risky?: Map<string, Set<string> | 'all'>;
 
   constructor(private readonly input: PlanInput) {
     this.html = input.html;
     this.css = input.css;
+    this.dropped = new Set(input.report.cssValues.map((v) => v.start));
+  }
+
+  /** Whether a browser keeps this declaration of the ad's styles. */
+  live(d: Decl): boolean {
+    return !this.dropped.has(d.valueStart);
+  }
+
+  /**
+   * The frames where a page never showed that may hold this class: where another frame showed it
+   * on such a page, or, where no frame showed every page, every frame where a page never showed.
+   */
+  unseen(cls: string): string[] {
+    const incomplete = this.input.incomplete;
+    if (!incomplete?.size) return [];
+    if (!this.risky) {
+      const { boxes } = this.input;
+      const frames = new Set([...boxes.map((b) => b.frame), ...this.input.media.keys()]);
+      const complete = [...frames].some((f) => !incomplete.has(f));
+      this.risky = new Map([...incomplete].map((f): [string, Set<string> | 'all'] => {
+        if (!complete) return [f, 'all'];
+        const shown = new Set(boxes.filter((b) => b.frame === f).map((b) => b.page));
+        return [f, new Set(boxes.filter((b) => !shown.has(b.page)).flatMap((b) => b.classes))];
+      }));
+    }
+    return [...this.risky].filter(([, classes]) => classes === 'all' || classes.has(cls)).map(([f]) => f);
+  }
+
+  /** Why a class-wide fix is not known to be safe where a page never showed; '' when it is. */
+  unseenNote(cls: string): string {
+    const frames = this.unseen(cls);
+    return frames.length ? `.${cls} may sit on a page that never showed in ${frames.join(', ')}, so it was not checked there` : '';
   }
 
   baseRule(cls: string): StyleRule | undefined {
@@ -134,6 +169,10 @@ class Planner {
         this.manualNote('buttonPadding', `${cls} has no class to set padding on; change it in GWD.`);
         continue;
       }
+      if (this.unseenNote(cls)) {
+        this.manualNote('buttonPadding', `${this.unseenNote(cls)}; set its padding in GWD.`);
+        continue;
+      }
       const cs = padded[0].computed;
       const [top, right, bottom, left] = cs.padding;
       const rule = this.baseRule(cls);
@@ -185,6 +224,10 @@ class Planner {
       const bare = seen.filter((b) => !b.declared.color);
       if (cls.startsWith('#') || !bare.length) continue;
       const colors = [...new Set(bare.map((b) => b.computed.color))];
+      if (this.unseenNote(cls)) {
+        this.manualNote('buttonColor', `${this.unseenNote(cls)}; set its color in GWD.`);
+        continue;
+      }
       if (colors.length > 1) {
         this.manualNote('buttonColor', `.${cls} renders ${colors.join(' and ')} in different sizes; set its color per size in GWD.`);
         continue;
@@ -200,6 +243,7 @@ class Planner {
     const safe = new Map<string, string[]>();
     const moving = new Map<string, string[]>();
     const why: string[] = [];
+    const unchecked: string[] = [];
     for (const [cls, seen] of this.byClass(['p', 'span'])) {
       const missing = seen.some((b) => b.declared.marginBlockStart !== '0px' || b.declared.marginBlockEnd !== 'auto');
       if (!missing) continue;
@@ -217,17 +261,21 @@ class Planner {
         const cs = margined.computed;
         moving.set(cls, ['margin-block: 0px auto;']);
         why.push(`.${cls} has margin ${px(cs.marginTop)} / ${px(cs.marginBottom)} today`);
+      } else if (this.unseenNote(cls)) {
+        moving.set(cls, ['margin-block: 0px auto;']);
+        unchecked.push(this.unseenNote(cls));
       } else {
         safe.set(cls, ['margin-block: 0px auto;']);
       }
     }
     this.add('marginBlock', 'Add margin-block: 0px auto', [...safe.keys()].map((c) => `.${c}`).join(', '), this.addToBase(safe));
+    const moves = [why.length ? `This moves text: ${why.join('; ')}.` : '', unchecked.length ? `It may move text: ${unchecked.join('; ')}.` : ''];
     this.add(
       'marginBlock',
       'Add margin-block: 0px auto where it moves text',
       [...moving.keys()].map((c) => `.${c}`).join(', '),
       this.addToBase(moving),
-      `This moves text: ${why.join('; ')}. The checklist still asks for it; check the result in the preview.`,
+      `${moves.filter(Boolean).join(' ')} The checklist still asks for it; check the result in the preview.`,
     );
   }
 
@@ -262,7 +310,9 @@ class Planner {
     // What it renders now: the px it inherits from a parent's declaration, else its font's normal.
     const rendered = (b: Box) => (b.computed.lineHeight === 'normal' ? b.normalLineHeight : Math.round(parseFloat(b.computed.lineHeight) * 100) / 100);
     const where = (m: MediaBlock) => describeSize(sizeOfMedia(m.media) ?? m.media);
-    const declares = (r?: StyleRule) => !!r?.decls.some((d) => d.prop === 'line-height' || d.prop === 'font');
+    // Only what a browser keeps counts: a value the CSS values check finds invalid is dropped.
+    const declares = (r?: StyleRule) => !!r?.decls.some((d) => (d.prop === 'line-height' || d.prop === 'font') && this.live(d));
+    const fontDecls = (r: StyleRule) => r.decls.filter((d) => /^font(-|$)/.test(d.prop) && this.live(d));
     const open = this.input.boxes.filter((b) => TEXT_TAGS.includes(b.tag) && !b.declared.lineHeight && !b.runtime);
     const planned = new Set(open);
     const byCls = new Map<string, Box[]>();
@@ -284,6 +334,18 @@ class Planner {
         // Normal line-height comes from the font's metrics: a web font that had not loaded measures as
         // its fallback, and that value would change the spacing once the real font arrives.
         refuse(cls, `.${cls}: its font had not loaded when it was measured, so its line-height is not fixed automatically. Check the whole ad folder or zip, and let the ad contact other sites if a script loads its fonts, or set it in GWD.`);
+      } else if (seen.some((b) => b.computed.lineHeight === 'normal' && b.mixedFonts)) {
+        refuse(cls, `.${cls}: some of its characters draw in another font (an emoji, a symbol, or Chinese, Japanese or Korean type its font lacks), so its lines are not all one height; set its line-height in GWD.`);
+      } else if (seen.some((b) => b.fontAnimated)) {
+        refuse(cls, `.${cls}: an animation changes its font while the ad runs, and a fixed line-height would not follow it; set its line-height in GWD.`);
+      } else {
+        // A media query that is not a GWD size is not modelled: unless it applies in a frame the
+        // class was measured in, what it does to the class's font or line-height was never seen.
+        const shown = [...new Set(seen.map((b) => b.frame))];
+        const other = this.css.media.find((m) => sizeOfMedia(m.media) === null
+          && (this.rulesIn(m, cls).some((r) => declares(r) || fontDecls(r).length > 0) || seen.some((b) => b.probes?.[m.start] !== undefined))
+          && !shown.some((f) => this.input.media.get(f)?.has(m.media)));
+        if (other) refuse(cls, `.${cls}: @media ${other.media} changes its font or line-height in sizes no frame shows; set its line-height in GWD.`);
       }
     }
 
@@ -348,7 +410,8 @@ class Planner {
         if (rules.some(declares)) continue;
         const probed = byCls.get(cls)!.filter((b) => b.probes?.[m.start] !== undefined);
         const values = probed.map((b) => b.probes![m.start]);
-        if (!probed.length && !rules.some((r) => r.decls.some((d) => /^font(-|$)/.test(d.prop)))) continue; // same font as the base size
+        // No probe: the block sets no font or line-height for it, an element it sits in, or a text inside.
+        if (!probed.length && !rules.some((r) => fontDecls(r).length > 0)) continue; // same font as the base size
         // What a text that inherits a px renders there depends on its parent, which was not measured there.
         if (!probed.length || probed.some((b) => b.computed.lineHeight !== 'normal') || !values.every((v) => v !== null && same(v, values[0]!))) {
           noBase.set(cls, `.${cls} in ${where(m)} was not measured, and a value in its base rule would reach it there, so its base size gets none; set its line-height in GWD.`);
@@ -361,9 +424,10 @@ class Planner {
     }
 
     // A value in a size block also reaches the other size blocks that apply in some of its sizes.
-    // Where no frame measured such a block and it changes the font there, the value is right only if
-    // the block comes later and gives the class a line-height of its own, or comes earlier and the
-    // home block sets every font property it changes. Otherwise the class is left to you.
+    // Where no frame measured such a block and it changes the font or line-height there, the value
+    // is right only if the block comes later and gives the class a line-height of its own, or comes
+    // earlier, sets no line-height in its chain (its own one the value would override), and the home
+    // block sets every font property it changes. Otherwise the class is left to you.
     const overlap = (a: MediaBlock, b: MediaBlock) => {
       const [x, y] = [parseSize(sizeOfMedia(a.media)!), parseSize(sizeOfMedia(b.media)!)];
       if (!x || !y) return true;
@@ -375,17 +439,19 @@ class Planner {
       const size = home && parseSize(sizeOfMedia(home.media)!);
       // An exact size was measured with every block that applies there.
       if (!home || (size && size.min[0] === size.max[0] && size.min[1] === size.max[1] && !size.orientation)) continue;
-      const fontProps = (m: MediaBlock) => new Set(this.rulesIn(m, w.cls).flatMap((r) => r.decls.map((d) => d.prop).filter((p) => /^font(-|$)/.test(p))));
-      // A probe means the block changes its font, perhaps through an element it sits in.
+      const fontProps = (m: MediaBlock) => new Set(this.rulesIn(m, w.cls).flatMap((r) => fontDecls(r).map((d) => d.prop)));
+      // A probe means the block changes its font or line-height, perhaps through an element it sits in;
+      // a null one that what it does there is not known.
       const probed = (m: MediaBlock) => byCls.get(w.cls)!.some((b) => b.probes?.[m.start] !== undefined);
       const ownValue = (m: MediaBlock) => this.rulesIn(m, w.cls).some(declares) || writes.has(`u${(this.rulesIn(m, w.cls).at(-1) ?? m).start}|${w.cls}`);
       const yields = (m: MediaBlock) => {
+        if (this.rulesIn(m, w.cls).some(declares) || byCls.get(w.cls)!.some((b) => b.probes?.[m.start] === null)) return false;
         const mine = fontProps(home);
         if (mine.has('font')) return true;
         const theirs = fontProps(m);
         return (theirs.size || !probed(m) ? [...theirs] : ['font-family', 'font-size', 'font-weight', 'font-style']).every((p) => mine.has(p));
       };
-      const loose = unmeasured(w.cls).find((m) => m !== home && overlap(m, home) && (fontProps(m).size > 0 || probed(m))
+      const loose = unmeasured(w.cls).find((m) => m !== home && overlap(m, home) && (fontProps(m).size > 0 || probed(m) || this.rulesIn(m, w.cls).some(declares))
         && !(m.start > home.start ? ownValue(m) : yields(m)));
       if (loose) refuse(w.cls, `.${w.cls} in ${where(loose)} was not measured, and its value in ${w.where} would reach it there; set its line-height in GWD.`);
     }
@@ -408,10 +474,31 @@ class Planner {
       return v;
     };
 
+    // A page that never showed in a frame may hold the class there, in another font or under
+    // another line-height: where its value reaches that frame, nothing checked it.
+    for (const cls of byCls.keys()) {
+      const reaches = (f: string) => {
+        const v = valueIn(cls, f, frames.get(f));
+        return v !== undefined && v !== 'declared';
+      };
+      if (!refused.has(cls) && this.unseen(cls).some(reaches)) refuse(cls, `${this.unseenNote(cls)}; set its line-height in GWD.`);
+    }
+
+    // Why what a text inside needs is not known, or '' when it is.
+    const unknown = (t: Inheritor) => (!t.fontLoaded ? 'renders in a web font that had not loaded, so what it needs is not known'
+      : t.fontAnimated ? 'has its font changed by an animation, so what it needs changes as it plays' : '');
+    const change = (t: Inheritor, px?: number) => unknown(t) || (px === undefined ? 'would take a value that is not known' : `would go from ${t.normal}px to ${px}px`);
+    // An element on the way down to a text passes a value on where it gets none of its own (an 'inherit' passes it on).
+    const passes = (frame: string, size?: string) => (e: { classes: string[] }) => {
+      const own = this.mainClass(e.classes);
+      const v = own ? valueIn(own, frame, size) : undefined;
+      return v === undefined || v === 'inherit';
+    };
     // Leaving one class to you can expose text it shielded to another class's value: check until settled.
     for (let changed = true; changed;) {
       changed = false;
-      // A class's value reaches every element that carries it, not only the texts it was planned from.
+      // A class's value reaches every element that carries it, not only the texts it was planned
+      // from, and the texts inside such an element, whether or not it has text of its own.
       for (const g of this.input.boxes) {
         if (g.runtime) continue;
         const main = this.mainClass(g.classes);
@@ -421,24 +508,21 @@ class Planner {
           if (v === undefined || v === 'declared') continue;
           const now = rendered(g);
           const after = v === 'inherit' ? g.parentLineHeight : v;
-          if (now !== undefined && after !== undefined && same(now, after)) continue;
-          changed = refuse(cls, `.${cls} is also on ${g.target}${g.declared.lineHeight ? ', which declares its own line-height' : ''}, whose spacing its line-height would change in ${g.frame}; set it in GWD.`) || changed;
+          if (!g.holder && (now === undefined || after === undefined || !same(now, after))) {
+            changed = refuse(cls, `.${cls} is also on ${g.target}${g.declared.lineHeight ? ', which declares its own line-height' : ''}, whose spacing its line-height would change in ${g.frame}; set it in GWD.`) || changed;
+            continue;
+          }
+          const t = (g.inherits ?? []).find((t) => t.path.every(passes(g.frame, g.size)) && (!!unknown(t) || after === undefined || !same(t.normal, after)));
+          if (t) changed = refuse(cls, `.${cls} is also on ${g.target}, and ${t.target} inside it takes its line-height and ${change(t, after)} in ${g.frame}; set it in GWD.`) || changed;
         }
       }
-      // A value reaches the texts inside that get none of their own (an 'inherit' passes it on).
+      // A value reaches the texts inside that get none of their own.
       for (const b of open) {
         const cls = this.mainClass(b.classes);
         const px = cls ? valueIn(cls, b.frame, b.size) : undefined;
         if (!cls || typeof px !== 'number') continue;
-        const passes = (e: { classes: string[] }) => {
-          const own = this.mainClass(e.classes);
-          const v = own ? valueIn(own, b.frame, b.size) : undefined;
-          return v === undefined || v === 'inherit';
-        };
-        const d = (b.inherits ?? []).find((t) => t.path.every(passes) && (!t.fontLoaded || !same(t.normal, px)));
-        if (!d) continue;
-        const change = d.fontLoaded ? `would go from ${d.normal}px to ${px}px` : 'renders in a web font that had not loaded, so what it needs is not known';
-        changed = refuse(cls, `.${cls}: ${d.target} inside it takes its line-height and ${change} in ${b.frame}; set their line-heights in GWD.`) || changed;
+        const d = (b.inherits ?? []).find((t) => t.path.every(passes(b.frame, b.size)) && (!!unknown(t) || !same(t.normal, px)));
+        if (d) changed = refuse(cls, `.${cls}: ${d.target} inside it takes its line-height and ${change(d, px)} in ${b.frame}; set their line-heights in GWD.`) || changed;
       }
     }
 
