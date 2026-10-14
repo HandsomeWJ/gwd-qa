@@ -3,6 +3,7 @@
 import { applyEdits, mergeEdits } from './css/edit';
 import { parseCss } from './css/parse';
 import { LayoutNet, layoutSizes, type LayoutDiff } from './audit/layout';
+import { findStates, type States } from './audit/states';
 import { comparePositions, observe, positions, waitForAd, type AdFrame } from './audit/observe';
 import { renderFindings } from './audit/render';
 import { staticAudit, type StaticReport } from './audit/static';
@@ -20,8 +21,11 @@ export interface AuditResult {
   safetyChecked: number;
   pages: number; // GWD pages in the ad; each is checked in every size
   skipped: string[]; // pages that never showed, so were not checked
-  /** The fixes offered ticked, laid out without scripts: at how many sizes, how many of them no preview shows, and how long it took. */
-  layout: { sizes: number; unseen: number; ms: number };
+  /**
+   * The fixes offered ticked, laid out without scripts: at how many sizes, how many of them no
+   * preview shows, the hover, focus or click state they were laid out in too, and how long it took.
+   */
+  layout: { sizes: number; unseen: number; state: string | null; ms: number };
 }
 
 export interface ApplyResult {
@@ -53,6 +57,7 @@ export class Session {
   allowThirdParty = false;
   private unpublish: () => Promise<void> = async () => undefined;
   private net: LayoutNet | null = null;
+  private found: States | null = null;
 
   private constructor(readonly pkg: AdPackage) {
     this.key = adKey(pkg);
@@ -137,11 +142,18 @@ export class Session {
     for (const name of displaced) if (typeof name === 'string' && !this.displacedRuntime.includes(name)) this.displacedRuntime.push(name);
   }
 
-  /** Lays the ad out without scripts, at every served size and the sizes between that no preview shows. */
+  /** What the ad's CSS and scripts change in its hover, focus and click states; read once, as fixes never change them. */
+  private states(): States {
+    this.found ??= findStates(this.originalHtml, parseCss(this.originalHtml), this.pkg);
+    return this.found;
+  }
+
+  /** Lays the ad out without scripts, at every served size and the sizes between that no preview shows, at rest and in its states. */
   private layoutNet(): LayoutNet {
     this.net ??= new LayoutNet(
       new URL(adUrl(this.id, this.pkg.htmlPath), location.href).href,
       layoutSizes(this.sizes, parseCss(this.originalHtml).media.map((m) => m.media)),
+      this.states(),
     );
     return this.net;
   }
@@ -161,7 +173,7 @@ export class Session {
     this.assertStarted();
     const css = parseCss(this.html);
     const report = staticAudit(this.html, css, undefined, this.pkg);
-    const seen = await observe(this.frames, css); // shows each page in turn, pausing animations
+    const seen = await observe(this.frames, css, this.states()); // shows each page in turn, pausing animations
     const findings = [...report.findings, ...renderFindings(seen.boxes)];
     const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, incomplete: seen.incomplete });
     // Laid out while the frames restart: no fix is offered ticked that moves text in a size no frame shows.
@@ -170,7 +182,14 @@ export class Session {
     const started = performance.now();
     const guarded = guardPlan(plan, html, (after, sizes) => net.compare(html, after, sizes)).then(() => performance.now() - started);
     const [, ms] = await Promise.all([this.reloadAll(), guarded]);
-    const layout = { sizes: net.sizes.length, unseen: net.sizes.filter((s) => !s.previewed).length, ms };
+    // A state a script puts an element in that cannot be laid out here: no line-height is offered ticked.
+    const unknown = [...this.states().unknown, ...net.unreached];
+    const lineHeight = plan.fixes.find((f) => f.check === 'lineHeight' && !f.moves);
+    if (unknown.length && lineHeight) {
+      const which = `${unknown.slice(0, 2).join('; ')}${unknown.length > 2 ? `; and ${unknown.length - 2} more` : ''}`;
+      lineHeight.moves = `A script changes a font or line-height on an element this check cannot find (${which}), so how text is spaced then was not laid out. Check it in the preview.`;
+    }
+    const layout = { sizes: net.sizes.length, unseen: net.sizes.filter((s) => !s.previewed).length, state: net.state, ms };
     return { report, findings, plan, safetyChecked: seen.safetyChecked, pages: seen.pages, skipped: seen.skipped, layout };
   }
 

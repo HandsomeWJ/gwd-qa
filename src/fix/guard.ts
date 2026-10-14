@@ -1,7 +1,7 @@
 // The layout safety net over the plan. Every fix offered ticked is laid out without scripts in every
-// size, including those no preview shows, and must leave every text and line spacing as it is. A
-// class whose line-height would change one is left to you; any other fix that would is offered
-// unticked.
+// size, including those no preview shows, at rest and in the ad's hover, focus and click states, and
+// must leave every text and line spacing as it is. A class whose line-height would change one is
+// left to you; any other fix that would is offered unticked.
 
 import { applyEdits, mergeEdits } from '../css/edit';
 import type { LayoutDiff } from '../audit/layout';
@@ -10,8 +10,8 @@ import { withoutPart, type FixPlan, type PlannedFix } from './plan';
 /** Lays `html` out and lists where it differs from the ad as planned, in every size or only those named. */
 export type LayoutCheck = (html: string, sizes?: string[]) => Promise<LayoutDiff[]>;
 
-const where = (d: LayoutDiff) => `${d.size}${d.previewed ? '' : ', which no preview shows'}`;
-const sameSpot = (a: LayoutDiff, b: LayoutDiff) => a.size === b.size && a.index === b.index;
+const where = (d: LayoutDiff) => `${d.size}${d.state ? ` ${d.state}` : d.previewed ? '' : ', which no preview shows'}`;
+const sameSpot = (a: LayoutDiff, b: LayoutDiff) => a.size === b.size && a.index === b.index && a.state === b.state;
 
 /** Leaves out of the plan's ticked fixes whatever the layout check finds moving text. */
 export async function guardPlan(plan: FixPlan, html: string, check: LayoutCheck): Promise<void> {
@@ -75,7 +75,7 @@ async function guardOthers(plan: FixPlan, check: LayoutCheck, withFixes: (f: Pla
   // None moves it alone, so they do together: each is left to you.
   if (!found.length) ticked.forEach((f) => found.push([f, together[0]]));
   for (const [f, d] of found) {
-    const look = d.previewed ? 'Check the result in the preview.' : 'Check that size in GWD.';
+    const look = d.state ? 'Check that state in the preview.' : d.previewed ? 'Check the result in the preview.' : 'Check that size in GWD.';
     f.moves = `Laid out without scripts, it ${d.spacing ? 'changes the line spacing of' : 'moves'} ${d.target} at ${where(d)}. ${look}`;
   }
 }

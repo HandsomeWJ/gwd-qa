@@ -42,7 +42,7 @@ export interface CssValueUnknown {
 /** The ad's files, which the stylesheets and scripts it loads are read from. */
 export type AdFiles = Pick<AdPackage, 'files' | 'htmlPath'>;
 
-type Where = Pick<CssValueIssue, 'target' | 'via' | 'handler' | 'file'>;
+export type Where = Pick<CssValueIssue, 'target' | 'via' | 'handler' | 'file'>;
 
 // Starts at the '!', so a long run of spaces in a value costs no backtracking.
 const IMPORTANT = /!\s*important$/i;
@@ -203,8 +203,47 @@ export function checkCssValues(
     };
   };
 
-  checkSheet(css);
-  // The ad's own stylesheets and scripts; each is read once.
+  const files = readAd(html, css, ad, unknown, {
+    sheet: checkSheet,
+    script: (text, from, to, file) => scanScript(text, from, to, hits(file)),
+    tag: (tag) => {
+      const style = tag.attrs.get('style');
+      if (!style) return;
+      const src = htmlText(style.value, style.start);
+      if (src.undecoded) unknown.push({ target: tagLabel(tag), message: `Its style attribute has ${src.undecoded}, which could not be decoded here, so its CSS values were not checked.` });
+      else checkDecls(parseDeclList(src.text), { target: tagLabel(tag), via: 'style attribute', handler: null }, (i) => src.at[i]);
+    },
+  });
+  const order = (v: CssValueIssue) => (v.file ? files.order(v.file) : -1);
+  return { issues: issues.sort((a, b) => order(a) - order(b) || a.start - b.start), unknown };
+}
+
+// @import chains deeper than this are never real CSS.
+const MAX_IMPORTS = 8;
+
+/** The URLs a stylesheet's @import rules load. */
+function imports(css: string): string[] {
+  const bare = css.replace(/\/\*[\s\S]*?(\*\/|$)/g, ' ');
+  return [...bare.matchAll(/@import\s+(?:url\(\s*(["']?)([^"')]*)\1\s*\)|(["'])([^"'\n]*)\3)/gi)].map((m) => (m[2] ?? m[4]).trim());
+}
+
+/** What readAd() visits. */
+export interface AdVisitor {
+  /** A <style> block's rules, or a stylesheet's; `at` maps its offsets to the file's. */
+  sheet: (model: CssModel, file?: string, at?: (i: number) => number) => void;
+  /** An inline script (`text` is the HTML, `from`-`to` its content) or a script file's text. */
+  script: (text: string, from: number, to: number, file?: string) => void;
+  /** Every start tag of the HTML, in order. */
+  tag?: (tag: Tag) => void;
+}
+
+/**
+ * Visits the ad's CSS and scripts: the HTML's own, and the stylesheets and scripts it loads from its
+ * own files, each once, leaving GWD's runtime out. A file it loads but does not have goes into
+ * `unknown` as not read.
+ */
+export function readAd(html: string, css: CssModel, ad: AdFiles | undefined, unknown: CssValueUnknown[], visit: AdVisitor): AdFileReader {
+  visit.sheet(css);
   const files = new AdFileReader(ad, unknown);
   const sheet = (path: string, label: string, chain = 0) => {
     if (GWD_RUNTIME.test(path.split('/').pop()!)) return;
@@ -212,20 +251,14 @@ export function checkCssValues(
     if (text === null) return;
     // parseCss reads <style> elements, so the file is read as one; '</style' in it is made inert.
     const wrapped = `<style>${text.replace(/<\/(?=style)/gi, '< ')}</style>`;
-    checkSheet(parseCss(wrapped), path, (i) => i - '<style>'.length);
+    visit.sheet(parseCss(wrapped), path, (i) => i - '<style>'.length);
     if (chain < MAX_IMPORTS) for (const ref of imports(text)) files.ref(ref, path, (p, l) => sheet(p, l, chain + 1));
   };
   for (const block of css.styleBlocks) {
     for (const ref of imports(html.slice(block.open, block.close))) files.ref(ref, ad?.htmlPath ?? '', sheet);
   }
-
   for (const tag of startTags(html)) {
-    const style = tag.attrs.get('style');
-    if (style) {
-      const src = htmlText(style.value, style.start);
-      if (src.undecoded) unknown.push({ target: tagLabel(tag), message: `Its style attribute has ${src.undecoded}, which could not be decoded here, so its CSS values were not checked.` });
-      else checkDecls(parseDeclList(src.text), { target: tagLabel(tag), via: 'style attribute', handler: null }, (i) => src.at[i]);
-    }
+    visit.tag?.(tag);
     if (tag.name === 'link') {
       const rel = (tag.attrs.get('rel')?.value ?? '').toLowerCase().split(/\s+/);
       const type = tag.attrs.get('type')?.value.trim() || 'text/css';
@@ -244,26 +277,16 @@ export function checkCssValues(
       files.ref(ref, ad?.htmlPath ?? '', (path, label) => {
         if (GWD_RUNTIME.test(path.split('/').pop()!)) return;
         const text = files.read(path, label, 'the styles it sets were not checked');
-        if (text !== null && !GWD_ELEMENT.test(text)) scanScript(text, 0, text.length, hits(path));
+        if (text !== null && !GWD_ELEMENT.test(text)) visit.script(text, 0, text.length, path);
       });
       continue;
     }
     if (!tag.content) continue;
     const { start, end } = tag.content;
     if (gwdRuntime(tag, html.slice(start, end))) continue;
-    scanScript(html, start, end, hits());
+    visit.script(html, start, end);
   }
-  const order = (v: CssValueIssue) => (v.file ? files.order(v.file) : -1);
-  return { issues: issues.sort((a, b) => order(a) - order(b) || a.start - b.start), unknown };
-}
-
-// @import chains deeper than this are never real CSS.
-const MAX_IMPORTS = 8;
-
-/** The URLs a stylesheet's @import rules load. */
-function imports(css: string): string[] {
-  const bare = css.replace(/\/\*[\s\S]*?(\*\/|$)/g, ' ');
-  return [...bare.matchAll(/@import\s+(?:url\(\s*(["']?)([^"')]*)\1\s*\)|(["'])([^"'\n]*)\3)/gi)].map((m) => (m[2] ?? m[4]).trim());
+  return files;
 }
 
 /**
@@ -311,7 +334,7 @@ class AdFileReader {
 }
 
 /** The declarations, when the whole text is a declaration list ("opacity: 0; color: red;"); else null. */
-function declList(text: string): Decl[] | null {
+export function declList(text: string): Decl[] | null {
   const decls = parseDeclList(text);
   let rest = '';
   let last = 0;
@@ -329,7 +352,7 @@ function declList(text: string): Decl[] | null {
  * before '//'), the name kept as written and the value trimmed, !important and all. Each goes to
  * style.setProperty(name, value). It stops at the first piece with no name or no value.
  */
-function gwdInlineStyles(text: string): { name: string; valueStart: number; valueEnd: number }[] {
+export function gwdInlineStyles(text: string): { name: string; valueStart: number; valueEnd: number }[] {
   const out: { name: string; valueStart: number; valueEnd: number }[] = [];
   const space = (c: string | undefined) => c !== undefined && /\s/.test(c);
   for (let from = 0; from <= text.length; ) {
@@ -361,7 +384,7 @@ function gwdInlineStyles(text: string): { name: string; valueStart: number; valu
 }
 
 /** Text as the browser reads it, with the source offset of each character (and one past the end). */
-interface Source {
+export interface Source {
   text: string;
   at: number[];
   /** A character reference that could not be decoded, so the text may not be what the browser reads. */
@@ -460,7 +483,7 @@ interface Tok {
 // A '/' after these starts a regular expression, not a division.
 const BEFORE_REGEX = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
 const CONTROL = new Set(['if', 'for', 'while', 'switch', 'catch', 'with']);
-const SETTERS = new Set(['setInlineStyle', 'setAttribute', 'style']);
+const SETTERS = new Set(['setInlineStyle', 'setAttribute', 'style', 'classList', 'className']);
 
 function stringEnd(src: string, i: number): number {
   let k = i + 1;
@@ -631,17 +654,23 @@ function functionName(toks: Tok[], partner: number[], t: number): string | null 
   return CONTROL.has(before.text) ? null : before.text; // function name() {, or a method
 }
 
-interface ScriptHits {
+/**
+ * What a script sets. `id` is the element's id where the code names it (getElementById('x'),
+ * querySelector('#x'), or GWD's setInlineStyle('x', …)); null where it is found while the ad runs.
+ */
+export interface ScriptHits {
   /** A declaration list, read as cssText and style attributes are. */
-  list: (src: Source, where: Where) => void;
+  list: (src: Source, where: Where, id: string | null) => void;
   /** The styles string of GWD's setInlineStyle(). */
-  inline: (src: Source, where: Where) => void;
+  inline: (src: Source, where: Where, id: string | null) => void;
   /** style.setProperty(name, value). */
-  property: (name: string, src: Source, where: Where) => void;
+  property: (name: string, src: Source, where: Where, id: string | null) => void;
   /** One property's whole value. */
-  single: (prop: string, src: Source, where: Where) => void;
+  single: (prop: string, src: Source, where: Where, id: string | null) => void;
   /** A style it sets that cannot be checked here. */
   unknown: (target: string, message: string) => void;
+  /** Classes it puts on or takes off an element: classList, className, setAttribute('class'). */
+  classes?: (op: 'add' | 'remove' | 'toggle', names: string[], where: Where, id: string | null) => void;
 }
 
 /** style.fontSize -> font-size; vendor names (webkitTransform) get their leading dash. */
@@ -651,8 +680,8 @@ function cssName(member: string): string {
   return /^(webkit|moz|ms|o)-/.test(name) ? `-${name}` : name;
 }
 
-/** Finds the CSS a script's string literals set, with the element and the enclosing named function. */
-function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
+/** Finds the CSS and classes a script's string literals set, with the element and the enclosing named function. */
+export function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
   const src = html.slice(from, to);
   const toks = jsTokens(src);
   const partner = brackets(toks);
@@ -694,6 +723,17 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
     }
     return memberChain(toks, dot - 1) ?? 'an element';
   };
+  /** The id of the element a member call or assignment before toks[dot] looks up by id, else null. */
+  const idBefore = (dot: number): string | null => {
+    if (!isP(toks[dot], '.') || !isP(toks[dot - 1], ')')) return null;
+    const open = partner[dot - 1];
+    if (open + 2 !== dot - 1 || !str(open + 1)) return null;
+    const arg = text(open + 1).text.trim();
+    const fn = toks[open - 1]?.text;
+    if (fn === 'getElementById') return arg || null;
+    return fn === 'querySelector' && /^#[\w-]+$/.test(arg) ? arg.slice(1) : null;
+  };
+  const classNames = (k: number) => text(k).text.split(/\s+/).filter(Boolean);
 
   /** The string assigned by toks[k] ('=', or '+=' when `adds`), or -1. */
   const assigned = (k: number, adds: boolean) => {
@@ -716,21 +756,43 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
       if (!el || el[1] <= el[0] || k < 0) continue;
       // A long expression is not spelled out: calls nested in each other would spell out the same text again and again.
       const words = el[1] - el[0] > 32 ? null : toks.slice(el[0], el[1]).map((w) => (w.kind === 'str' ? `'${w.text}'` : w.text));
-      const target = single(el) >= 0 ? text(el[0]).text : words?.join('') ?? 'an element';
-      hits.inline(text(k), { target, via: 'setInlineStyle', handler });
+      const id = single(el) >= 0 ? text(el[0]).text : null;
+      const target = id ?? words?.join('') ?? 'an element';
+      hits.inline(text(k), { target, via: 'setInlineStyle', handler }, id);
     } else if (tok.text === 'setAttribute' && isP(toks[t + 1], '(')) {
       const [name, styles] = callArgs(toks, partner, t + 1);
       const n = single(name);
       const k = single(styles);
-      if (n < 0 || k < 0 || text(n).text.trim().toLowerCase() !== 'style') continue;
-      hits.list(text(k), { target: objectBefore(t - 1), via: "setAttribute('style')", handler });
+      const attr = n < 0 ? '' : text(n).text.trim().toLowerCase();
+      if (k < 0 || (attr !== 'style' && attr !== 'class')) continue;
+      if (attr === 'class') hits.classes?.('add', classNames(k), { target: objectBefore(t - 1), via: "setAttribute('class')", handler }, idBefore(t - 1));
+      else hits.list(text(k), { target: objectBefore(t - 1), via: "setAttribute('style')", handler }, idBefore(t - 1));
+    } else if (tok.text === 'classList' && isP(toks[t - 1], '.') && isP(toks[t + 1], '.') && toks[t + 2]?.kind === 'name' && isP(toks[t + 3], '(')) {
+      const method = toks[t + 2].text;
+      if (!hits.classes || !['add', 'remove', 'toggle', 'replace'].includes(method)) continue;
+      // toggle(name, force) and replace(old, new) read their class names from the first one or two.
+      const all = callArgs(toks, partner, t + 3).map(single);
+      const args = method === 'toggle' ? all.slice(0, 1) : method === 'replace' ? all.slice(0, 2) : all;
+      if (!args.length || args.some((k) => k < 0)) continue;
+      const where = { target: objectBefore(t - 1), via: `classList.${method}`, handler };
+      const id = idBefore(t - 1);
+      const names = args.map((k) => text(k).text.trim()).filter(Boolean);
+      if (method === 'replace') {
+        hits.classes('remove', names.slice(0, 1), where, id);
+        hits.classes('add', names.slice(1, 2), where, id);
+      } else hits.classes(method === 'toggle' ? 'toggle' : (method as 'add' | 'remove'), method === 'toggle' ? names.slice(0, 1) : names, where, id);
+    } else if (tok.text === 'className' && isP(toks[t - 1], '.')) {
+      // '=' puts these on (and takes the others off); '+=' adds them.
+      const adds = isP(toks[t + 1], '+') && isP(toks[t + 2], '=');
+      const k = assigned(t + 1, adds);
+      if (k >= 0) hits.classes?.('add', classNames(k), { target: objectBefore(t - 1), via: 'className', handler }, idBefore(t - 1));
     } else if (tok.text === 'style' && isP(toks[t - 1], '.') && isP(toks[t + 1], '.') && toks[t + 2]?.kind === 'name') {
       const member = toks[t + 2].text;
       if (member === 'setProperty' && isP(toks[t + 3], '(')) {
         const [name, value] = callArgs(toks, partner, t + 3);
         const n = single(name);
         const k = single(value);
-        if (n >= 0 && k >= 0) hits.property(text(n).text, text(k), { target: objectBefore(t - 1), via: 'style.setProperty', handler });
+        if (n >= 0 && k >= 0) hits.property(text(n).text, text(k), { target: objectBefore(t - 1), via: 'style.setProperty', handler }, idBefore(t - 1));
         continue;
       }
       // '+=' adds to the value the element has then: whole declarations to cssText, but only the end of one to a property.
@@ -739,12 +801,13 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
       if (k < 0) continue;
       // Named only for a hit, so that a long a.style.b.style… chain is walked once, not at every 'style'.
       const target = objectBefore(t - 1);
-      if (member === 'cssText') hits.list(text(k), { target, via: 'style.cssText', handler });
+      const id = idBefore(t - 1);
+      if (member === 'cssText') hits.list(text(k), { target, via: 'style.cssText', handler }, id);
       else if (adds) {
         const part = text(k).text;
         const shown = part.length > 40 ? `${part.slice(0, 40)}…` : part;
         hits.unknown(target, `style.${member} += "${shown}"${handler ? ` in ${handler}` : ''} adds to the value it has then, so whether browsers accept the result is not known here.`);
-      } else hits.single(cssName(member), text(k), { target, via: `style.${member}`, handler });
+      } else hits.single(cssName(member), text(k), { target, via: `style.${member}`, handler }, id);
     }
   }
 }

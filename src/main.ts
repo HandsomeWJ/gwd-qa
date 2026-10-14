@@ -77,6 +77,8 @@ document.addEventListener('visibilitychange', () => {
 function setBusy(on: boolean) {
   busy = on;
   app.querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.disabled = on || b.dataset.disabled === 'true'));
+  // While checks run, a pointer resting on a preview must not put its text in a hover state to be measured.
+  $('#frames').classList.toggle('busy', on);
 }
 
 // Started at once; loading waits for it so frames never miss the worker on a first visit.
@@ -440,8 +442,13 @@ function applyBanner(a: ApplyResult): string {
     texts ? `${plural(texts, 'text')} moved` : '',
   ].filter(Boolean).join(' and ');
   const live = what(p.respaced.length, p.moved.length);
-  // The previews compare their own sizes with the ad running; the layout without scripts adds the sizes between them.
-  const between = laid.diffs.filter((d) => !d.previewed);
+  // The previews compare their own sizes with the ad running; the layout without scripts adds the sizes
+  // between them, and the hover, focus and click states, which no preview is in.
+  const between = laid.diffs.filter((d) => !d.previewed && !d.state);
+  const inState = laid.diffs.filter((d) => d.state);
+  const stateWhat = what(inState.filter((d) => d.spacing).length, inState.filter((d) => !d.spacing).length);
+  const stateSizes = listed([...new Set(inState.map((d) => d.size))]);
+  const state = inState[0]?.state ?? '';
   const respaced = between.filter((d) => d.spacing);
   const moved = between.filter((d) => !d.spacing);
   const net = what(respaced.length, moved.length);
@@ -449,7 +456,7 @@ function applyBanner(a: ApplyResult): string {
   const sizes = listed(where);
   const texts = p.texts === 1 ? 'The one text is exactly where it was' : `All ${p.texts} texts are exactly where they were`;
   const spacing = p.spacings ? ', and every line spacing is unchanged' : '';
-  if (!live && !net) {
+  if (!live && !net && !stateWhat) {
     if (laid.error) {
       return `<div class="banner warn">${applied}. ${texts}${spacing}, in every preview. The sizes between them could not be laid out to compare (${esc(laid.error)}): check them in GWD, or undo.</div>`;
     }
@@ -459,14 +466,18 @@ function applyBanner(a: ApplyResult): string {
     return `<div class="banner ok">${applied}. ${texts}${spacing}, ${every}.</div>`;
   }
   // The sizes no preview shows are laid out without scripts, so they are told apart.
+  const inStateText = stateWhat ? ` ${state[0].toUpperCase()}${state.slice(1)}, ${stateWhat} at ${stateSizes}.` : '';
   const head = live
-    ? `${applied}, but ${live}.${net ? ` Laid out without scripts, ${net} too, at ${sizes}.` : laid.error ? ` The sizes between the previews could not be laid out to compare (${laid.error}).` : ''} Check them in the preview, or undo.`
-    : `${applied}. Every text in the previews is where it was, but laid out without scripts, ${net} at ${sizes}. Check ${where.length === 1 ? 'that size' : 'those sizes'} in GWD, or undo.`;
+    ? `${applied}, but ${live}.${net ? ` Laid out without scripts, ${net} too, at ${sizes}.` : laid.error ? ` The sizes between the previews could not be laid out to compare (${laid.error}).` : ''}${inStateText} Check them in the preview, or undo.`
+    : net
+      ? `${applied}. Every text in the previews is where it was, but laid out without scripts, ${net} at ${sizes}.${inStateText} Check ${where.length === 1 ? 'that size' : 'those sizes'} in GWD, or undo.`
+      : `${applied}. Every text is where it was at rest, but ${state}, ${stateWhat} at ${stateSizes}. Check that state in the preview, or undo.`;
   const keys = [
     ...p.respaced,
     ...p.moved,
     ...respaced.map((d) => `${d.size} ${d.target} line-height`),
     ...moved.map((d) => `${d.size} ${d.target} "${d.text}"`),
+    ...inState.map((d) => `${d.size} ${d.target} ${d.spacing ? 'line-height' : `"${d.text}"`}, hovered, focused or clicked`),
   ];
   const list = keys.slice(0, 12).map((k) => `<li>${esc(k)}</li>`).join('');
   return `<div class="banner warn">${esc(head)}<ul>${list}</ul></div>`;
@@ -495,7 +506,7 @@ function renderFixes() {
     </li>`).join('');
   box.innerHTML = `
     <h2>Fixes</h2>
-    <p class="sub">These declare what the ad already renders, so nothing should move; any fix that would move text is marked and left unticked. Each fix is laid out without scripts at ${plural(r.layout.sizes, 'size')} first${r.layout.unseen ? `, ${r.layout.unseen} of them between the previews` : ''}, to find that. Text positions in every size are compared before and after.</p>
+    <p class="sub">These declare what the ad already renders, so nothing should move; any fix that would move text is marked and left unticked. Each fix is laid out without scripts at ${plural(r.layout.sizes, 'size')} first${r.layout.unseen ? `, ${r.layout.unseen} of them between the previews` : ''}${r.layout.state ? `, at rest and ${esc(r.layout.state)}` : ''}, to find that. Text positions in every size are compared before and after.</p>
     ${session!.lastApply ? applyBanner(session!.lastApply) : ''}
     ${fixes.length
       ? `<ul class="fixlist">${list}</ul><button class="primary" data-action="apply">Apply selected fixes</button>`

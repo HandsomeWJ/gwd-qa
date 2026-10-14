@@ -6,6 +6,7 @@
 
 import { sizeOfMedia } from '../css/parse';
 import { covers, frameSizes, isRange, parseSize, type ServedSize } from '../sizes';
+import { describeStates, forceStates, hasStates, type States } from './states';
 import { hasDirectText, label } from './static';
 
 export interface LayoutSize {
@@ -27,6 +28,8 @@ export interface LayoutDiff {
   /** Classes whose rules lay it out: its own, then those of what it sits in (nearest first), then of what sits in it. */
   classes: string[];
   index: number; // its place in the document, the same in both versions
+  /** The hover, focus or click state both versions were laid out in; absent at rest. */
+  state?: string;
 }
 
 const TEXT_TAGS = new Set(['p', 'span', 'button']);
@@ -137,15 +140,21 @@ interface Font {
 interface Laid {
   els: { target: string; text: string; classes: string[] }[];
   at: Map<string, string[]>;
+  /** In a state layout, what a script sets on an element that the document does not have. */
+  unreached: string[];
 }
 
 const px = (n: number) => `${Math.round(n * 100) / 100}px`;
 
-/** Lays out the document in `frame` at each size, after loading every font its texts use in any of them. */
-async function measure(frame: HTMLIFrameElement, sizes: LayoutSize[]): Promise<Laid> {
+/**
+ * Lays out the document in `frame` at each size, after loading every font its texts use in any of
+ * them; with `states`, in every hover, focus and click state at once.
+ */
+async function measure(frame: HTMLIFrameElement, sizes: LayoutSize[], states: States | null): Promise<Laid> {
   const doc = frame.contentDocument;
   const win = frame.contentWindow;
   if (!doc?.body || !win) throw new Error('its frame did not load');
+  const unreached = states ? forceStates(doc, states) : [];
   const resize = (s: LayoutSize) => {
     frame.style.width = `${s.width}px`;
     frame.style.height = `${s.height}px`;
@@ -217,27 +226,45 @@ async function measure(frame: HTMLIFrameElement, sizes: LayoutSize[]): Promise<L
     for (const d of el.querySelectorAll('[class]')) classes.push(...d.classList);
     return { target: label(el), text: (el.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 24), classes: [...new Set(classes)] };
   });
-  return { els: info, at };
+  return { els: info, at, unreached };
 }
 
 /** Lays out versions of one ad's HTML and compares them. */
 export class LayoutNet {
-  private kept: { html: string; laid: Promise<Laid> } | null = null;
+  // The version the others are compared with, laid out once per view: at rest, and in its states.
+  private readonly kept = new Map<string, Promise<Laid>>();
+  /** "in its hover, focus or click state (…)" when the ad has one that changes a font or line-height. */
+  readonly state: string | null;
+  /** What a script sets on an element the ad does not have, so that its state was not laid out. */
+  unreached: string[] = [];
 
   /** `url`: the ad's HTML as the service worker serves it, which its files are relative to. */
-  constructor(private readonly url: string, readonly sizes: LayoutSize[]) {}
+  constructor(private readonly url: string, readonly sizes: LayoutSize[], private readonly states: States | null = null) {
+    this.state = states && hasStates(states) ? describeStates(states) : null;
+  }
 
-  /** Where `after` lays out differently from `before`, at every size, or only at the sizes named. */
+  /** Where `after` lays out differently from `before`, at every size or only at the sizes named; at rest, and in the ad's states. */
   async compare(before: string, after: string, only?: string[]): Promise<LayoutDiff[]> {
-    if (this.kept?.html !== before) {
-      const laid = this.layOut(before, this.sizes);
-      this.kept = { html: before, laid };
+    const views = this.state ? [false, true] : [false];
+    return (await Promise.all(views.map((forced) => this.compareIn(forced, before, after, only)))).flat();
+  }
+
+  private async compareIn(forced: boolean, before: string, after: string, only?: string[]): Promise<LayoutDiff[]> {
+    const view = forced ? 'state' : 'rest';
+    const key = `${view}\n${before}`;
+    let base = this.kept.get(key);
+    if (!base) {
+      for (const k of [...this.kept.keys()]) if (k.startsWith(`${view}\n`)) this.kept.delete(k);
+      const laid = this.layOut(before, this.sizes, forced);
+      this.kept.set(key, laid);
       laid.catch(() => {
-        if (this.kept?.laid === laid) this.kept = null;
+        if (this.kept.get(key) === laid) this.kept.delete(key);
       });
+      base = laid;
     }
     const sizes = only ? this.sizes.filter((s) => only.includes(s.key)) : this.sizes;
-    const [a, b] = await Promise.all([this.kept.laid, this.layOut(after, sizes)]);
+    const [a, b] = await Promise.all([base, this.layOut(after, sizes, forced)]);
+    if (forced) this.unreached = a.unreached;
     const out: LayoutDiff[] = [];
     for (const s of sizes) {
       const [x, y] = [a.at.get(s.key)!, b.at.get(s.key)!];
@@ -245,13 +272,13 @@ export class LayoutNet {
         if (x[i] === y[i]) continue;
         const el = b.els[i] ?? a.els[i];
         const spacing = x[i]?.split('\n')[0] !== y[i]?.split('\n')[0];
-        out.push({ size: s.key, previewed: s.previewed, target: el.target, text: el.text, spacing, classes: el.classes, index: i });
+        out.push({ size: s.key, previewed: s.previewed, target: el.target, text: el.text, spacing, classes: el.classes, index: i, ...(forced ? { state: this.state! } : {}) });
       }
     }
     return out;
   }
 
-  private async layOut(html: string, sizes: LayoutSize[]): Promise<Laid> {
+  private async layOut(html: string, sizes: LayoutSize[], forced = false): Promise<Laid> {
     const host = document.createElement('div');
     host.style.cssText = 'position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none';
     host.setAttribute('aria-hidden', 'true');
@@ -273,7 +300,7 @@ export class LayoutNet {
         frame.srcdoc = atRest(html, this.url);
         document.body.appendChild(host);
       });
-      return await measure(frame, sizes);
+      return await measure(frame, sizes, forced ? this.states : null);
     } finally {
       host.remove();
     }

@@ -3,6 +3,7 @@
 // (Box) that the rendered checks and the fix planner read.
 
 import { lastCompound, singleClass, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
+import { gwdRefNames, type States } from './states';
 import { hasDirectText, label } from './static';
 import type { Box, Inheritor } from './types';
 
@@ -415,7 +416,7 @@ const SPACING_KEYFRAME = /^(font|lineHeight)/;
 function fontAnimated(el: Element, ctx: Context): boolean {
   for (let n: Element | null = el; n; n = n.parentElement) {
     if (n.getAnimations().some((a) => propsOf((a.effect as KeyframeEffect).getKeyframes()).some((p) => SPACING_KEYFRAME.test(p)))) return true;
-    if (ctx.animators.some((s) => matches(n!, s))) return true;
+    if (ctx.animators.some((s) => matches(n!, s)) || ctx.stateAnimated(n)) return true;
   }
   return false;
 }
@@ -468,6 +469,8 @@ interface Context {
   specs: ProbeSpec[];
   /** The selectors (their last compound) that run keyframes setting a font property or line-height. */
   animators: string[];
+  /** Whether a script puts a class on the element that runs such keyframes, as when it is clicked. */
+  stateAnimated: (el: Element) => boolean;
 }
 
 /**
@@ -661,8 +664,11 @@ function keyframeSafety(f: AdFrame, scope: Element): { checked: number; mismatch
   return { checked, mismatches };
 }
 
-/** Reads every frame, showing each GWD page in turn. Leaves the frames on their last page. */
-export async function observe(frames: AdFrame[], css: CssModel): Promise<Observation> {
+/**
+ * Reads every frame, showing each GWD page in turn. Leaves the frames on their last page. `states`
+ * holds the classes the ad's scripts put on elements, as when they are clicked.
+ */
+export async function observe(frames: AdFrame[], css: CssModel, states?: States): Promise<Observation> {
   const conditions = [...new Set(css.media.map((m) => m.media))];
   const live: CssModel = { ...css, rules: css.rules.map((r) => ({ ...r, decls: r.decls.filter(kept) })) };
   const blocks = css.media
@@ -676,13 +682,16 @@ export async function observe(frames: AdFrame[], css: CssModel): Promise<Observa
     .filter((r) => r.decls.some((d) => /^(-webkit-)?animation(-name)?$/.test(d.prop) && d.value.split(/[\s,]+/).some((name) => spacingKeyframes.has(name))))
     // the element it styles, whatever state (playing, clicked) the rest of the selector waits for
     .flatMap((r) => r.selector.split(',').map((sel) => lastCompound(sel).replace(/::?[a-z-]+(\([^)]*\))?/gi, '') || '*'));
+  // A class a script puts on an element (one it does not name: any element) that runs such keyframes.
+  const named = (states?.classes ?? []).filter((c) => c.op !== 'remove' && animators.some((a) => a.split(/(?=[.#:[])/).includes(`.${c.name}`)));
+  const stateAnimated = (el: Element) => named.some((c) => c.ref === null || gwdRefNames(el, c.ref));
   const claimed = new WeakMap<Element, Set<number>>();
   const results = await Promise.all(frames.map(async (f) => {
     const { doc, win } = frameParts(f);
     const boxes: Box[] = [];
     const safety: SafetyMismatch[] = [];
     let checked = 0;
-    const ctx: Context = { css: live, blocks, fit: fittingOf(doc, win), claimed, specs: [], animators };
+    const ctx: Context = { css: live, blocks, fit: fittingOf(doc, win), claimed, specs: [], animators, stateAnimated };
     const visit = await visitPages(f, (scope, multi) => {
       boxes.push(...boxesIn(f, scope, multi, ctx));
       const s = keyframeSafety(f, scope); // pauses animations, so it goes after the boxes
