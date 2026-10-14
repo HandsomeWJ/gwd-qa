@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { applyEdits, mergeEdits } from '../src/css/edit';
 import { parseCss } from '../src/css/parse';
-import { cssValueIssues, type CssValidator } from '../src/audit/cssvalues';
+import { checkCssValues, cssValueIssues, describeIssue, type CssValidator } from '../src/audit/cssvalues';
 import { staticAudit } from '../src/audit/static';
 import type { Box } from '../src/audit/types';
 import { planFixes } from '../src/fix/plan';
@@ -16,10 +16,14 @@ const VALUES: Record<string, RegExp> = {
   color: /^(red|white)$/,
   'font-family': /^.+$/,
   transition: /^(all \d*\.?\d+s linear|opacity \d*\.?\d+s cubic-bezier\((\d*\.?\d+, ?){3}\d*\.?\d+\))$/,
+  'transition-duration': /^\d*\.?\d+s$/,
   transform: /^scale\(\d+(, ?\d+)?\)$/,
   'background-size': /^(auto|cover|contain)$/,
   'box-shadow': /^(\d*\.?\d+px ){3}rgba\((\d*\.?\d+, ?){3}\d*\.?\d+\)$/,
   filter: /^blur\(\d*\.?\d+px\)$/,
+  background: /^url\((("[^"]*")|[^)"]*)\) (calc\(\d*\.?\d+px\)|\d*\.?\d+px) \d*\.?\d+px no-repeat$/,
+  font: /^\d*\.?\d+em "[^"]*"$/,
+  '-webkit-text-stroke': /^\d*\.?\d+px$/,
 };
 const valid: CssValidator = (prop, value) => (value === 'inherit' ? Object.hasOwn(VALUES, prop) : VALUES[prop]?.test(value) ?? false);
 const issues = (html: string) => cssValueIssues(html, parseCss(html), valid);
@@ -78,7 +82,7 @@ const SCRIPT = `  <script>
     }
     var tick = () => {
       el.style.transform = 'scale(1,05)';
-      gwd.actions.events.setInlineStyle(event.target.id, 'font-family: \\'A;B\\'; opacity: 0,4');
+      gwd.actions.events.setInlineStyle(event.target.id, 'font-family: \\'A B\\'; opacity: 0,4');
     };
   </script>`;
 
@@ -91,6 +95,8 @@ ${SCRIPT}`);
     expect(found.map((v) => [v.target, v.via, v.handler, `${v.prop}: ${v.value}`, v.fixed])).toEqual([
       ['.gwd-p-a', '', null, 'opacity: 0,5', '0.5'],
       ['.gwd-p-a', '', null, 'font-size: 12,5px', '12.5px'],
+      // A vendor property the browser knows drops an invalid value like any other.
+      ['.gwd-p-a', '', null, '-webkit-text-stroke: 0,5px', '0.5px'],
       ['kf-fade 0%', '', null, 'opacity: 0,2', '0.2'],
       ['.gwd-p-a in 300x250', '', null, 'left: 1,5px', '1.5px'],
       ['navigation3_3', 'setInlineStyle', 'gwd.framechange_savings', 'opacity: 0,3', '0.3'],
@@ -107,7 +113,7 @@ ${SCRIPT}`);
     expect(found.map((v) => html.slice(v.start, v.end))).toEqual(found.map((v) => v.value));
   });
 
-  it('skips unknown and vendor properties, JSON and template scripts, comments, and strings that are not CSS', () => {
+  it('skips unknown properties (vendor ones the browser does not know too), JSON and template scripts, comments, and strings that are not CSS', () => {
     const html = page(`  <script type="application/json">gwd.actions.events.setInlineStyle('a', 'opacity: 0,3');</script>
   <script gwd-served-sizes="">el.style.opacity = '0,3';</script>
   <script type="text/template">el.style.opacity = '0,3';</script>
@@ -161,6 +167,25 @@ ${SCRIPT}`);
       el.style.left = '2,5px'
       \`tag\`;
     }
+    function lines(el, v, n) {
+      el.style.opacity = '0,11'
+        != v ? '1' : '0';
+      el.style.opacity = '0,12'
+        !== v ? '1' : '0';
+      el.style.opacity = '0,13'
+      ++n;
+      el.style.opacity = '0,14'
+      --n;
+      el.style.opacity = '0,15'
+      + +n;
+      el.style.opacity = '0,16'
+      - -n;
+      el.style.opacity = '0,17'
+      --> a comment, so the next line could go on with it
+      + n;
+      el.style.opacity = '0,18'
+      !n && go();
+    }
   </script>
   <script>el.style.opacity = '0,7'</script>`);
     expect(issues(html).map((v) => [v.handler, `${v.prop}: ${v.value}`, v.fixed])).toEqual([
@@ -172,7 +197,111 @@ ${SCRIPT}`);
       ['set', 'opacity: 0,6', '0.6'],
       ['branch', 'opacity: 0,8', '0.8'],
       ['branch', 'opacity: 0,9', '0.9'],
+      // A '++' or '--' on the next line always starts a statement; '!=' and '!==' compare with the literal.
+      ['lines', 'opacity: 0,13', '0.13'],
+      ['lines', 'opacity: 0,14', '0.14'],
+      ['lines', 'opacity: 0,18', '0.18'],
       [null, 'opacity: 0,7', '0.7'],
+    ]);
+  });
+
+  it("reads setInlineStyle() the way GWD's runtime applies it, which ignores what cssText would take", () => {
+    const html = page(`  <script type="text/javascript" gwd-events="handlers">
+    gwd.styles = function(event) {
+      gwd.actions.events.setInlineStyle('a', 'opacity: 0.3 !important;');
+      gwd.actions.events.setInlineStyle('b', 'opacity : 0,4');
+      gwd.actions.events.setInlineStyle('c', 'opacity: 0,3 !important;');
+      gwd.actions.events.setInlineStyle('d', 'color: red;Opacity:0,5;');
+      gwd.actions.events.setInlineStyle('e', "font-family: 'A;B'; opacity: 0,6");
+      gwd.actions.events.setInlineStyle('f', 'color; opacity: 0,7');
+      gwd.actions.events.setInlineStyle('g', 'background: url(http://x.test/a.png) 1px 1px no-repeat; opacity:0,8 ;; left: 1,5px: 2px');
+      gwd.actions.events.setInlineStyle('h', ' opacity: 0,9; zoomy : 0,1; --x : 0,2');
+    };
+  </script>`);
+    expect(issues(html).map((v) => [v.target, `${v.prop}: ${v.value}`, html.slice(v.start, v.end), v.fixed, v.note ?? null])).toEqual([
+      ['a', 'opacity: 0.3 !important', '0.3 !important', null, 'setInlineStyle takes !important as part of the value, which browsers then reject'],
+      ['b', 'opacity : 0,4', '0,4', null, 'setInlineStyle takes the spaces around the name as part of it, so browsers know no such property'],
+      ['c', 'opacity: 0,3 !important', '0,3 !important', null, 'setInlineStyle takes !important as part of the value, which browsers then reject'],
+      // style.setProperty() reads a name in any case.
+      ['d', 'opacity: 0,5', '0,5', '0.5', null],
+      // GWD splits at every ';', even one in quotes, and stops at a piece with no value: 'B'' in e, 'color' in f.
+      // A value ends at the next colon, but not at one before '//'.
+      ['g', 'opacity: 0,8', '0,8', '0.8', null],
+      ['g', 'left: 1,5px', '1,5px', '1.5px', null],
+      ['h', ' opacity: 0,9', '0,9', null, 'setInlineStyle takes the spaces around the name as part of it, so browsers know no such property'],
+    ]);
+  });
+
+  it('never makes a comma inside url() or a string a point, trying the commas outside functions first', () => {
+    const html = page(`  <style type="text/css">
+    .gwd-div-a {
+      background: url("assets/hero_1,5x.png") 1,5px 1,5px no-repeat;
+    }
+    .gwd-div-b {
+      background: url(assets/hero_2,5x.png) 2,5px 1px no-repeat;
+    }
+    .gwd-div-c {
+      background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><path d='M0,0 L10,10'/></svg>") 1,5px 2px no-repeat;
+    }
+    .gwd-p-d {
+      font: 1,5em "Brand 1,5";
+    }
+    .gwd-div-e {
+      background: url("assets/hero_3,5x.png") calc(1,5px) 2px no-repeat;
+    }
+  </style>`);
+    expect(issues(html).map((v) => [v.target, v.fixed])).toEqual([
+      ['.gwd-div-a', 'url("assets/hero_1,5x.png") 1.5px 1.5px no-repeat'],
+      ['.gwd-div-b', 'url(assets/hero_2,5x.png) 2.5px 1px no-repeat'],
+      ['.gwd-div-c', `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><path d='M0,0 L10,10'/></svg>") 1.5px 2px no-repeat`],
+      ['.gwd-p-d', '1.5em "Brand 1,5"'],
+      // Only the commas inside a function make it valid, and still none inside url().
+      ['.gwd-div-e', 'url("assets/hero_3,5x.png") calc(1.5px) 2px no-repeat'],
+    ]);
+  });
+
+  it('reads every character reference in a style attribute as the browser does', () => {
+    const html = page('', `  <div id="a" style="opacity: 0&period;5"></div>
+  <div id="b" style="opacity: 0&comma;5"></div>
+  <div id="c" style="opacity: .5&#59 left: 1,5px"></div>
+  <div id="d" style="font-size: 1&frac12;px; opacity: 0,5&#0;"></div>
+  <div id="e" style="opacity: 0,5&#150;"></div>`);
+    expect(issues(html).map((v) => [v.target, `${v.prop}: ${v.value}`, html.slice(v.start, v.end), v.fixed])).toEqual([
+      ['div#b', 'opacity: 0,5', '0&comma;5', '0.5'],
+      ['div#c', 'left: 1,5px', '1,5px', '1.5px'],
+      ['div#d', 'font-size: 1\u00bdpx', '1&frac12;px', null],
+      ['div#d', 'opacity: 0,5\ufffd', '0,5&#0;', null],
+      ['div#e', 'opacity: 0,5\u2013', '0,5&#150;', null],
+    ]);
+  });
+
+  it('leaves a style attribute it cannot decode to you, where no HTML parser is there to ask', () => {
+    vi.stubGlobal('document', undefined);
+    try {
+      const html = page('', `  <div id="a" style="opacity: 0&semi;5"></div>
+  <div id="b" style="opacity: 0&amp;5; left: 1,5px"></div>`);
+      const { issues: found, unknown } = checkCssValues(html, parseCss(html), valid);
+      expect(found.map((v) => [v.target, `${v.prop}: ${v.value}`])).toEqual([['div#b', 'opacity: 0&5'], ['div#b', 'left: 1,5px']]);
+      expect(unknown).toEqual([{ target: 'div#a', message: 'Its style attribute has &semi;, which could not be decoded here, so its CSS values were not checked.' }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not check what '+=' adds to a property, which depends on the value it has then", () => {
+    const html = page(`  <script>
+    function go(el) {
+      el.style.transition = 'all 1s linear';
+      el.style.transition += ', opacity 0,5s';
+      el.style.opacity += '0,5';
+      el.style.cssText += 'opacity: 0,6';
+    }
+  </script>`);
+    const { issues: found, unknown } = checkCssValues(html, parseCss(html), valid);
+    expect(found.map((v) => [v.via, `${v.prop}: ${v.value}`])).toEqual([['style.cssText', 'opacity: 0,6']]);
+    expect(unknown).toEqual([
+      { target: 'el', message: 'style.transition += ", opacity 0,5s" in go adds to the value it has then, so whether browsers accept the result is not known here.' },
+      { target: 'el', message: 'style.opacity += "0,5" in go adds to the value it has then, so whether browsers accept the result is not known here.' },
     ]);
   });
 
@@ -242,6 +371,9 @@ describe('scanning time', () => {
     ['unmatched brackets', () => `<script>${rep('}){')}</script>`],
     ['nested template literals', () => `<script>${rep('`${')}</script>`],
     ['style chains', () => `<script>${rep('a.style.')}</script>`],
+    ['a chain before a style', () => `<script>${rep('a.', MB - 64)}a.style.opacity = '0,5'; ${rep('b.', 64)}b.setAttribute('style', 'left: 1,5px');</script>`],
+    ['a chain before a function', () => `<script>${rep('a.', MB - 64)}a = function() { el.style.opacity = '0,5'; };</script>`],
+    ['spaces in a setInlineStyle', () => `<script>gwd.actions.events.setInlineStyle('a', 'opacity: 0${' '.repeat(MB)}x');</script>`],
     ['open braces', () => `<script>${rep('{', MB / 2)}${rep('x.style.y;', MB / 2)}</script>`],
     ['spaces in a value', () => `<div style="opacity: 0${' '.repeat(MB)}x"></div>`],
     ['semicolons', () => `<div style="${rep(';')}"></div>`],
@@ -283,6 +415,97 @@ describe('staticAudit', () => {
   });
 });
 
+describe("the ad's other files", () => {
+  const encoder = new TextEncoder();
+  const ad = (files: Record<string, string>) => ({ htmlPath: 'Ad/Responsive.html', files: new Map(Object.entries(files).map(([k, v]) => [k, encoder.encode(v)])) });
+  const html = page(`  <link href="gwdpage_style.css" rel="stylesheet" data-version="13" data-exports-type="gwd-page">
+  <link href="gwdimage_style.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css?family=Inter" rel="stylesheet" type="text/css">
+  <link href="css/extra.css?v=2" rel="stylesheet">
+  <link href="print.css" rel="alternate stylesheet">
+  <link href="missing.css" rel="stylesheet">
+  <script data-source="gwdpage_min.js" data-exports-type="gwd-page" src="gwdpage_min.js"></script>
+  <script src="gwd-events-support.1.0.js"></script>
+  <script src="https://cdn.example.test/tracker.js"></script>
+  <script src="js/custom.js">el.style.opacity = '0,1';</script>
+  <script src="mock-runtime.js"></script>
+  <script src="gone.js"></script>
+  <style type="text/css">
+    @import url("more.css");
+    .gwd-p-a { opacity: 0,2; }
+  </style>`);
+  const files = ad({
+    'Ad/Responsive.html': html,
+    'Ad/gwdpage_style.css': '.x { opacity: 0,3; }',
+    'Ad/gwdimage_style.css': '.x { opacity: 0,3; }',
+    'Ad/css/extra.css': '/* @import "nowhere.css"; */\n@import "../more.css";\n.gwd-p-b { opacity: 0,4; }',
+    'Ad/print.css': '.x { opacity: 0,3; }',
+    'Ad/more.css': '.gwd-p-c { left: 1,5px; }',
+    'Ad/gwdpage_min.js': "a.style.opacity = '0,3';",
+    'Ad/gwd-events-support.1.0.js': "a.style.opacity = '0,3';",
+    'Ad/js/custom.js': "function go(el) {\n  el.style.opacity = '0,6';\n}",
+    'Ad/mock-runtime.js': "customElements.define('gwd-page', P); a.style.opacity = '0,3';",
+  });
+
+  it('reads the stylesheets and scripts the ad loads from its own files, and says which it could not read', () => {
+    const { issues, unknown } = checkCssValues(html, parseCss(html), valid, files);
+    expect(issues.map((v) => [v.file ?? null, v.target, v.via, `${v.prop}: ${v.value}`, v.fixed])).toEqual([
+      [null, '.gwd-p-a', '', 'opacity: 0,2', '0.2'],
+      ['Ad/more.css', '.gwd-p-c', '', 'left: 1,5px', '1.5px'],
+      ['Ad/css/extra.css', '.gwd-p-b', '', 'opacity: 0,4', '0.4'],
+      ['Ad/js/custom.js', 'el', 'style.opacity', 'opacity: 0,6', '0.6'],
+    ]);
+    // Offsets are into the file each value is in.
+    expect(issues.map((v) => (v.file ? new TextDecoder().decode(files.files.get(v.file)) : html).slice(v.start, v.end))).toEqual(['0,2', '1,5px', '0,4', '0,6']);
+    expect(describeIssue(issues[3])).toBe('"opacity: 0,6" is not valid CSS, so browsers ignore it; write 0.6. style.opacity sets it in go, in Ad/js/custom.js.');
+    expect(unknown).toEqual([
+      { target: 'missing.css', message: 'The ad loads missing.css, which is not among the files checked, so its CSS values were not checked.' },
+      { target: 'gone.js', message: 'The ad loads gone.js, which is not among the files checked, so the styles it sets were not checked.' },
+    ]);
+  });
+
+  it('reports them in the checklist, Review where a file could not be read, and leaves their values to you', () => {
+    // @import, not <link> or <script src>: happy-dom's DOMParser, unlike a browser's, would fetch those.
+    const linked = page(`  <style type="text/css">
+    @import url("more.css");
+    @import 'css/extra.css';
+    @import "missing.css";
+    .gwd-p-a { opacity: 0,2; }
+  </style>`);
+    const report = staticAudit(linked, parseCss(linked), valid, files);
+    expect(report.findings.filter((f) => f.check === 'cssValues').map((f) => [f.level, f.target, f.message, f.hint ?? null, f.unknown ?? false])).toEqual([
+      ['fail', '.gwd-p-a', '"opacity: 0,2" is not valid CSS, so browsers ignore it; write 0.2.', null, false],
+      ['fail', '.gwd-p-c', '"left: 1,5px" is not valid CSS, so browsers ignore it; write 1.5px. It is in Ad/more.css.', 'Correct the value in Ad/more.css.', false],
+      ['fail', '.gwd-p-b', '"opacity: 0,4" is not valid CSS, so browsers ignore it; write 0.4. It is in Ad/css/extra.css.', 'Correct the value in Ad/css/extra.css.', false],
+      ['note', 'missing.css', 'The ad loads missing.css, which is not among the files checked, so its CSS values were not checked.', null, true],
+    ]);
+    const p = planFixes({ html: linked, css: parseCss(linked), boxes: [], media: new Map(), report, safety: [] });
+    expect(p.fixes.map((f) => f.detail)).toEqual(['.gwd-p-a opacity: 0,2 -> 0.2']);
+    expect(p.manual.map((m) => m.detail)).toEqual([
+      '.gwd-p-c left: 1,5px in Ad/more.css is not valid CSS, so browsers ignore it; write 1.5px in Ad/more.css.',
+      '.gwd-p-b opacity: 0,4 in Ad/css/extra.css is not valid CSS, so browsers ignore it; write 0.4 in Ad/css/extra.css.',
+    ]);
+  });
+
+  it("never takes a value in another file for the HTML's own at the same offset", () => {
+    const fade = page(`  <style type="text/css">
+    @import "fade.css";
+    .gwd-p-b {
+      opacity: 0;
+    }
+  </style>`, '  <p class="gwd-p-b" id="SA_text_1">Hello</p>');
+    const at = fade.indexOf('opacity: 0;') + 'opacity: '.length;
+    const report = staticAudit(fade, parseCss(fade), valid, ad({ 'Ad/fade.css': `${' '.repeat(at - '.x{opacity:'.length)}.x{opacity:0,5}` }));
+    expect(report.cssValues.map((v) => [v.file, v.start])).toEqual([['Ad/fade.css', at]]);
+    expect(report.findings.filter((f) => f.check === 'textFade').map((f) => f.target)).toEqual(['p#SA_text_1']);
+  });
+
+  it('cannot read any of them without the files', () => {
+    const { unknown } = checkCssValues(html, parseCss(html), valid);
+    expect(unknown.map((u) => u.target)).toEqual(['more.css', 'css/extra.css?v=2', 'missing.css', 'js/custom.js', 'mock-runtime.js', 'gone.js']);
+  });
+});
+
 describe('fixing CSS values', () => {
   function plan(html: string, boxes: Box[] = [], media: Record<string, string[]> = {}) {
     const css = parseCss(html);
@@ -313,6 +536,42 @@ describe('fixing CSS values', () => {
     expect(moving.detail).toBe('.gwd-p-a left: 1,5px -> 1.5px, .gwd-div-box filter: blur(0,5px) -> blur(0.5px)');
     expect(moving.moves).toContain('Check the result in the preview');
     expect(applyEdits(html, mergeEdits(moving.edits))).toBe(html.replace('left: 1,5px;', 'left: 1.5px;').replace('blur(0,5px)', 'blur(0.5px)'));
+  });
+
+  it('offers a transition ticked only when everything it animates only changes how things look', () => {
+    const transitions = page(`  <script type="text/javascript" gwd-events="handlers">
+    gwd.hover = function(event) {
+      gwd.actions.events.setInlineStyle('SA_cta_1', 'transition: all 0,2s linear; color: white;');
+      gwd.actions.events.setInlineStyle('SA_cta_2', 'transition: opacity 0,5s cubic-bezier(0.42,0,0.58,1)');
+      gwd.actions.events.setInlineStyle('SA_cta_3', 'transition-duration: 0,5s');
+    };
+  </script>`);
+    const [safe, moving] = plan(transitions).fixes;
+    expect(safe.detail).toBe('SA_cta_2 transition: opacity 0,5s cubic-bezier(0.42,0,0.58,1) -> opacity 0.5s cubic-bezier(0.42,0,0.58,1) (in gwd.hover)');
+    // all, or a duration for whatever the element transitions, would make text that jumps slide or grow.
+    expect(moving.detail).toBe('SA_cta_1 transition: all 0,2s linear -> all 0.2s linear (in gwd.hover), SA_cta_3 transition-duration: 0,5s -> 0.5s (in gwd.hover)');
+    expect(moving.moves).toContain('animate');
+  });
+
+  it('never edits a URL or string, and offers no fix for what setInlineStyle ignores whatever its value', () => {
+    const html = page(`  <style type="text/css">
+    .gwd-div-a {
+      background: url("assets/hero_1,5x.png") 1,5px 1,5px no-repeat;
+    }
+  </style>
+  <script type="text/javascript" gwd-events="handlers">
+    gwd.styles = function(event) {
+      gwd.actions.events.setInlineStyle('a', 'opacity: 0,3 !important;');
+      gwd.actions.events.setInlineStyle('b', 'opacity : 0,4');
+    };
+  </script>`);
+    const p = plan(html);
+    expect(p.fixes.map((f) => [f.detail, !f.moves])).toEqual([['.gwd-div-a background: url("assets/hero_1,5x.png") 1,5px 1,5px no-repeat -> url("assets/hero_1,5x.png") 1.5px 1.5px no-repeat', true]]);
+    expect(applyEdits(html, mergeEdits(p.fixes[0].edits))).toBe(html.replace('1,5px 1,5px', '1.5px 1.5px'));
+    expect(p.manual.map((m) => m.detail)).toEqual([
+      'a opacity: 0,3 !important (in gwd.styles) is ignored: setInlineStyle takes !important as part of the value, which browsers then reject; correct it in GWD.',
+      'b opacity : 0,4 (in gwd.styles) is ignored: setInlineStyle takes the spaces around the name as part of it, so browsers know no such property; correct it in GWD.',
+    ]);
   });
 
   it('leaves other invalid values to you', () => {

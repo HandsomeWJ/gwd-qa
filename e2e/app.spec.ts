@@ -1,7 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { mockAdZip } from './mock-ad';
+import { mockAdHtml, mockAdZip, mockZip } from './mock-ad';
 
 async function load(page: Page, zip: Buffer, name = 'mock-ad.zip') {
   await page.goto('./');
@@ -97,6 +97,49 @@ test('checks CSS values as Chromium reads them, skipping GWD\'s runtime and styl
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   await expect(cssValues.locator('summary .pill')).toHaveText('Pass', { timeout: 90_000 });
+});
+
+test("checks the ad's own stylesheets and scripts, and what GWD's setInlineStyle ignores, as Chromium reads them", async ({ page }) => {
+  const files = unzipSync(new Uint8Array(mockAdZip()));
+  const html = strFromU8(files['Mock Ad/Responsive.html'])
+    .replace('  <style type="text/css">', `  <link href="extra.css" rel="stylesheet">
+  <script src="js/custom.js"></script>
+  <style type="text/css">
+    .gwd-p-a { -webkit-text-stroke: 0,5px; }
+    .gwd-div-z { background: url("hero_1,5x.png") 1,5px 1,5px no-repeat; }`)
+    .replace("'opacity: 0,3;');", "'opacity: 0,3;');\n      gwd.actions.events.setInlineStyle('SA_cta_1', 'opacity: 0.4 !important;');\n      gwd.actions.events.setInlineStyle('SA_cta_1', 'opacity : 0,6');");
+  files['Mock Ad/Responsive.html'] = strToU8(html);
+  files['Mock Ad/extra.css'] = strToU8('.gwd-p-a { opacity: 0,7; }');
+  files['Mock Ad/js/custom.js'] = strToU8("function go(el) {\n  el.style.opacity = '0,8';\n}");
+  await load(page, Buffer.from(zipSync(files)));
+
+  const cssValues = row(page, 'cssValues');
+  await cssValues.locator('summary').click();
+  const findings = cssValues.locator('.findings');
+  await expect(findings).toContainText('"opacity: 0,7" is not valid CSS, so browsers ignore it; write 0.7. It is in Mock Ad/extra.css.');
+  await expect(findings).toContainText('"opacity: 0,8" is not valid CSS, so browsers ignore it; write 0.8. style.opacity sets it in go, in Mock Ad/js/custom.js.');
+  // GWD's runtime hands setProperty() the name untrimmed and !important in the value: Chromium sets neither.
+  await expect(findings).toContainText('"opacity: 0.4 !important" is ignored: setInlineStyle takes !important as part of the value');
+  await expect(findings).toContainText('"opacity : 0,6" is ignored: setInlineStyle takes the spaces around the name as part of it');
+  // Chromium knows this vendor property, so it drops the invalid value.
+  await expect(findings).toContainText('"-webkit-text-stroke: 0,5px" is not valid CSS, so browsers ignore it; write 0.5px.');
+  // The ticked fix leaves the comma in the image's name.
+  const cssFix = page.locator('#fixes .fixlist li', { hasText: 'Write decimal points in CSS values' }).first();
+  await expect(cssFix).toContainText('.gwd-div-z background: url("hero_1,5x.png") 1,5px 1,5px no-repeat -> url("hero_1,5x.png") 1.5px 1.5px no-repeat');
+  await expect(cssFix.locator('input')).toBeChecked();
+  await expect(page.locator('#fixes .manual')).toContainText('opacity: 0,7 in Mock Ad/extra.css is not valid CSS, so browsers ignore it; write 0.7 in Mock Ad/extra.css.');
+});
+
+test('shows Review, not Pass, for CSS values when a stylesheet the ad loads is not among its files', async ({ page }) => {
+  const html = mockAdHtml()
+    .replace("'opacity: 0,3;'", "'opacity: 0.3;'")
+    .replace('style="opacity: 0,5;"', 'style="opacity: 0.5;"')
+    .replace('  <style type="text/css">', '  <link href="missing.css" rel="stylesheet">\n  <style type="text/css">');
+  await load(page, mockZip(html));
+  const cssValues = row(page, 'cssValues');
+  await expect(cssValues.locator('summary .pill')).toHaveText('Review');
+  await cssValues.locator('summary').click();
+  await expect(cssValues.locator('.findings')).toContainText('The ad loads missing.css, which is not among the files checked, so its CSS values were not checked.');
 });
 
 test('shows the preview sharp, says when a size is cut off, and replays', async ({ page }) => {
