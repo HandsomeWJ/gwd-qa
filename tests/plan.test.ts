@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { applyEdits, mergeEdits } from '../src/css/edit';
 import { parseCss } from '../src/css/parse';
+import type { CssValidator } from '../src/audit/cssvalues';
 import { staticAudit } from '../src/audit/static';
-import type { Box } from '../src/audit/types';
+import type { Box, Inheritor } from '../src/audit/types';
 import { planFixes } from '../src/fix/plan';
 import { box } from './boxes';
 import { fixture } from './fixture';
@@ -11,10 +12,11 @@ const M250 = '(width: 300px) and (height: 250px)';
 const M600 = '(width: 300px) and (height: 600px)';
 const RANGE = '(min-width: 300px) and (max-width: 320px) and (min-height: 250px) and (max-height: 480px)';
 
-function plan(html: string, boxes: Box[], media: Record<string, string[]>, safety: { animation: string }[] = []) {
+function plan(html: string, boxes: Box[], media: Record<string, string[]>, safety: { animation: string }[] = [], more: { incomplete?: string[]; valid?: CssValidator } = {}) {
   const css = parseCss(html);
-  const report = staticAudit(html, css);
-  const p = planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report, safety });
+  const report = staticAudit(html, css, more.valid);
+  const incomplete = more.incomplete && new Set(more.incomplete);
+  const p = planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report, safety, ...(incomplete ? { incomplete } : {}) });
   const fix = (check: string, moves = false) => p.fixes.find((f) => f.check === check && !!f.moves === moves);
   const applied = (check: string, moves = false) => applyEdits(html, mergeEdits(fix(check, moves)?.edits ?? []));
   return { p, fix, applied };
@@ -257,6 +259,142 @@ describe('line-height', () => {
       expect(fix('lineHeight')).toBeUndefined();
       expect(p.manual.map((m) => m.detail)).toEqual([note]);
     }
+  });
+
+  it('counts no line-height or font that browsers drop as invalid', () => {
+    const decimalPoint: CssValidator = (_, value) => !/\d,\d/.test(value);
+    const noBase = '.gwd-p-head in 300x250 was not measured, and a value in its base rule would reach it there, so its base size gets none; set its line-height in GWD.';
+    // The 300x250 block's line-height has a decimal comma, so the base value would reach that size.
+    const comma = fixture('mini-ad.html').replace('        line-height: 14px;\n', '        line-height: 1,5;\n');
+    const unprobed = plan(comma, [box({ ...head, frame: '320x480', normalLineHeight: 19.5 })], { '320x480': [] }, [], { valid: decimalPoint });
+    expect(unprobed.fix('lineHeight')).toBeUndefined();
+    expect(unprobed.p.manual.map((m) => m.detail)).toContain(noBase);
+    const m250 = parseCss(comma).media[0].start;
+    const probed = plan(comma, [box({ ...head, frame: '320x480', normalLineHeight: 19.5, probes: { [m250]: 15 } })], { '320x480': [] }, [], { valid: decimalPoint });
+    expect(probed.fix('lineHeight')?.detail).toBe('.gwd-p-head: 19.5px, .gwd-p-head in 300x250: 15px');
+    // A font shorthand browsers drop sets no font: an earlier range's font-size still reaches the home block's sizes.
+    const H = '(min-width: 305px) and (max-width: 336px) and (min-height: 240px) and (max-height: 490px)';
+    const ranges = html.replace('    @media (width: 300px) and (height: 600px) {}', `    @media ${RANGE} {\n      .gwd-p-head {\n        font-size: 20px;\n      }\n    }\n    @media ${H} {\n      .gwd-p-head {\n        font: 1,5px Arial;\n      }\n    }`);
+    const ends = ['305x240 (range 305x240 to 336x490)', '336x490 (range 305x240 to 336x490)'];
+    const shorthand = plan(ranges, ends.map((frame) => box({ ...head, frame, normalLineHeight: 18 })), Object.fromEntries(ends.map((f) => [f, [H]])), [], { valid: decimalPoint });
+    expect(shorthand.fix('lineHeight')).toBeUndefined();
+    expect(shorthand.p.manual.map((m) => m.detail)).toContain('.gwd-p-head in 300x250 to 320x480 was not measured, and its value in 305x240 to 336x490 would reach it there; set its line-height in GWD.');
+  });
+
+  it('leaves a class to you where an earlier range no frame measured gives it, or what it sits in, a line-height', () => {
+    // H is measured at both its ends, where the earlier range does not apply; they overlap in between.
+    const H = '(min-width: 305px) and (max-width: 336px) and (min-height: 240px) and (max-height: 490px)';
+    const ranges = (earlier: string) => html.replace('    @media (width: 300px) and (height: 600px) {}', `    @media ${RANGE} {\n${earlier}    }\n    @media ${H} {\n      .gwd-p-head {\n        font-family: Arial;\n        font-size: 14px;\n        font-weight: 400;\n        font-style: normal;\n      }\n    }`);
+    const ends = ['305x240 (range 305x240 to 336x490)', '336x490 (range 305x240 to 336x490)'];
+    const media = Object.fromEntries(ends.map((f) => [f, [H]]));
+    const note = '.gwd-p-head in 300x250 to 320x480 was not measured, and its value in 305x240 to 336x490 would reach it there; set its line-height in GWD.';
+    const own = plan(ranges('      .gwd-p-head {\n        line-height: 30px;\n      }\n'), ends.map((frame) => box({ ...head, frame, normalLineHeight: 16 })), media);
+    expect(own.fix('lineHeight')).toBeUndefined();
+    expect(own.p.manual.map((m) => m.detail)).toContain(note);
+    // A wrapper's line-height there: observe records the block with a null probe.
+    const wrapper = ranges('      .gwd-div-w {\n        line-height: 30px;\n      }\n');
+    const range = parseCss(wrapper).media.find((m) => m.media === RANGE)!.start;
+    const unknown = plan(wrapper, ends.map((frame) => box({ ...head, frame, normalLineHeight: 16, probes: { [range]: null } })), media);
+    expect(unknown.fix('lineHeight')).toBeUndefined();
+    expect(unknown.p.manual.map((m) => m.detail)).toContain(note);
+    // A font it sets that the home block sets in full is safe.
+    const font = plan(ranges('      .gwd-div-w {\n        font-size: 30px;\n      }\n'), ends.map((frame) => box({ ...head, frame, normalLineHeight: 16, probes: { [range]: 35 } })), media);
+    expect(font.fix('lineHeight')?.detail).toBe('.gwd-p-head in 305x240 to 336x490: 16px');
+  });
+
+  it('gives the base rule nothing where a text that inherits a px sits in a size no frame measured that changes its font', () => {
+    const m250 = parseCss(html).media[0].start;
+    const { fix, p } = plan(html, [box({ ...head, frame: '320x480', normalLineHeight: 19.5, probes: { [m250]: 15 }, computed: { lineHeight: '20px' } })], { '320x480': [] });
+    expect(fix('lineHeight')).toBeUndefined();
+    expect(p.manual.map((m) => m.detail)).toEqual([
+      '.gwd-p-head in 300x250 was not measured, and a value in its base rule would reach it there, so its base size gets none; set its line-height in GWD.',
+    ]);
+  });
+
+  it('leaves a class to you where a page it sits on never showed in a size, and offers class-wide fixes there unticked', () => {
+    // page2 never showed in 300x250; 300x600 showed both pages, with .gwd-p-head and the button on page2.
+    const missing = { marginBlockStart: '', marginBlockEnd: '' };
+    const boxes = [
+      box({ ...head, frame: '300x600', page: 'page1', normalLineHeight: 19.5, declared: missing }),
+      box({ ...head, frame: '300x600', page: 'page2', normalLineHeight: 19.5, declared: missing }),
+      box({ classes: ['gwd-p-swap'], frame: '300x600', page: 'page1', declared: { lineHeight: '14px', ...missing } }),
+      box({ tag: 'button', classes: ['gwd-empty'], frame: '300x600', page: 'page2', declared: { lineHeight: '20px', width: '100px', height: '30px' }, computed: { color: 'rgb(1, 2, 3)', padding: [1, 6, 1, 6], paddingText: '1px 6px' } }),
+      box({ ...head, frame: '300x250', page: 'page1', normalLineHeight: 15, declared: missing }),
+      box({ classes: ['gwd-p-swap'], frame: '300x250', page: 'page1', declared: { lineHeight: '14px', ...missing } }),
+    ];
+    const media = { '300x600': [M600], '300x250': [M250] };
+    const shown = plan(html, boxes, media);
+    expect(shown.fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x600: 19.5px, .gwd-p-head in 300x250: 15px');
+    expect(shown.fix('buttonColor')?.detail).toBe('.gwd-empty (rgb(1, 2, 3))');
+    expect(shown.fix('buttonPadding')?.detail).toBe('.gwd-empty');
+    const { fix, p } = plan(html, boxes, media, [], { incomplete: ['300x250'] });
+    expect(fix('lineHeight')).toBeUndefined();
+    expect(fix('buttonColor')).toBeUndefined();
+    expect(fix('buttonPadding')).toBeUndefined();
+    expect(p.manual.map((m) => m.detail)).toEqual([
+      '.gwd-empty may sit on a page that never showed in 300x250, so it was not checked there; set its padding in GWD.',
+      '.gwd-empty may sit on a page that never showed in 300x250, so it was not checked there; set its color in GWD.',
+      '.gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there; set its line-height in GWD.',
+    ]);
+    // .gwd-p-swap sits only on page1, which showed everywhere
+    expect(fix('marginBlock')?.detail).toBe('.gwd-p-swap');
+    expect(fix('marginBlock', true)?.detail).toBe('.gwd-p-head');
+    expect(fix('marginBlock', true)?.moves).toBe('It may move text: .gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there. The checklist still asks for it; check the result in the preview.');
+  });
+
+  it('treats every class as on a page that never showed where no frame showed every page', () => {
+    const only = [box({ ...head, frame: '300x250', page: 'page1', normalLineHeight: 15 })];
+    expect(plan(html, only, { '300x250': [M250] }).fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 15px');
+    const { fix, p } = plan(html, only, { '300x250': [M250] }, [], { incomplete: ['300x250'] });
+    expect(fix('lineHeight')).toBeUndefined();
+    expect(p.manual.map((m) => m.detail)).toEqual(['.gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there; set its line-height in GWD.']);
+  });
+
+  it('leaves text to you whose lines are not all one height, or whose font an animation changes', () => {
+    const mixed = plan(html, [box({ ...head, normalLineHeight: 20, mixedFonts: true })], { '300x250': [M250] });
+    expect(mixed.fix('lineHeight')).toBeUndefined();
+    expect(mixed.p.manual.map((m) => m.detail)).toEqual(['.gwd-p-head: some of its characters draw in another font (an emoji, a symbol, or Chinese, Japanese or Korean type its font lacks), so its lines are not all one height; set its line-height in GWD.']);
+    // under a px it inherits, every line is that px tall
+    const inherited = plan(html, [box({ ...head, normalLineHeight: 20, mixedFonts: true, computed: { lineHeight: '24px' } })], { '300x250': [M250] });
+    expect(inherited.fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 24px');
+    const animated = plan(html, [box({ ...head, normalLineHeight: 18, fontAnimated: true })], { '300x250': [M250] });
+    expect(animated.fix('lineHeight')).toBeUndefined();
+    expect(animated.p.manual.map((m) => m.detail)).toEqual(['.gwd-p-head: an animation changes its font while the ad runs, and a fixed line-height would not follow it; set its line-height in GWD.']);
+    // the same for a text inside that takes its line-height, though it renders the same px now
+    const sup: Inheritor = { target: 'sup', tag: 'sup', path: [{ tag: 'sup', classes: [] }], normal: 18, fontLoaded: true, fontAnimated: true };
+    const inside = plan(html, [box({ ...head, normalLineHeight: 18, inherits: [sup] })], { '300x250': [M250] });
+    expect(inside.fix('lineHeight')).toBeUndefined();
+    expect(inside.p.manual.map((m) => m.detail)).toEqual(['.gwd-p-head: sup inside it takes its line-height and has its font changed by an animation, so what it needs changes as it plays in 300x250; set their line-heights in GWD.']);
+  });
+
+  it('leaves a class to you where a media query that is not a GWD size changes it in no frame it was measured in', () => {
+    const query = '(min-width: 305px) and (max-width: 315px)';
+    const handWritten = html.replace('    @media (width: 300px) and (height: 600px) {}', `    @media ${query} {\n      .gwd-p-swap {\n        font-size: 10px;\n      }\n    }`);
+    const swap = { tag: 'p', classes: ['gwd-p-swap'], normalLineHeight: 18 };
+    const note = `.gwd-p-swap: @media ${query} changes its font or line-height in sizes no frame shows; set its line-height in GWD.`;
+    const unseen = plan(handWritten, [box({ ...swap, frame: '300x250' }), box({ ...swap, frame: '320x480' })], { '300x250': [M250], '320x480': [] });
+    expect(unseen.fix('lineHeight')).toBeUndefined();
+    expect(unseen.p.manual.map((m) => m.detail)).toEqual([note]);
+    // where a frame the class was measured in shows it, what it does was measured there
+    const seen = plan(handWritten, [box({ ...swap, frame: '310x250' })], { '310x250': [query] });
+    expect(seen.fix('lineHeight')?.detail).toBe('.gwd-p-swap: 18px');
+    // through an element it sits in, which observe records as a probe
+    const block = parseCss(html).media.length;
+    const wrapper = html.replace('    @media (width: 300px) and (height: 600px) {}', `    @media ${query} {\n      .gwd-div-w {\n        line-height: 30px;\n      }\n    }`);
+    const start = parseCss(wrapper).media[block - 1].start;
+    const probed = plan(wrapper, [box({ ...swap, frame: '320x480', probes: { [start]: null } })], { '320x480': [] });
+    expect(probed.p.manual.map((m) => m.detail)).toEqual([note]);
+  });
+
+  it('leaves a class to you where it also sits on an element without text of its own whose texts would take its value', () => {
+    const inner: Inheritor = { target: 'div#SA_inner_1', tag: 'div', path: [{ tag: 'div', classes: [] }], normal: 11, fontLoaded: true };
+    const wrap = { tag: 'div', classes: ['gwd-p-swap'], target: 'div#SA_wrap_1', holder: true };
+    const { fix, p } = plan(html, [box({ classes: ['gwd-p-swap'], normalLineHeight: 18 }), box({ ...wrap, inherits: [inner] })], { '300x250': [M250] });
+    expect(fix('lineHeight')).toBeUndefined();
+    expect(p.manual.map((m) => m.detail)).toEqual(['.gwd-p-swap is also on div#SA_wrap_1, and div#SA_inner_1 inside it takes its line-height and would go from 11px to 18px in 300x250; set it in GWD.']);
+    // texts inside that render the same value now keep it
+    const same = plan(html, [box({ classes: ['gwd-p-swap'], normalLineHeight: 18 }), box({ ...wrap, inherits: [{ ...inner, normal: 18 }] })], { '300x250': [M250] });
+    expect(same.fix('lineHeight')?.detail).toBe('.gwd-p-swap in 300x250: 18px');
   });
 
   it('gives a span inside text line-height: inherit, and leaves sizes that disagree to you', () => {
