@@ -280,6 +280,29 @@ function failing(check: CheckId): Finding[] {
   return result!.findings.filter((f) => f.check === check && f.level === 'fail' && !(check === 'type' && isDisclaimer(f.target)));
 }
 
+// The checks read from the ad as it renders in the frames (src/audit/render.ts), on each page.
+const RENDERED = new Set<CheckId>(['type', 'lineHeight', 'buttonPadding', 'buttonColor', 'marginBlock']);
+
+/**
+ * What the rendered checks never saw, such as "1 page and 1 size": pages that never showed in a
+ * size, and served sizes with no preview. '' when they saw every page in every size.
+ */
+function unchecked(): string {
+  const pages = result!.skipped.length;
+  const sizes = session!.unknownSizes.length;
+  return [pages ? plural(pages, 'page') : '', sizes ? plural(sizes, 'size') : ''].filter(Boolean).join(' and ');
+}
+
+/**
+ * Pass only when the check saw everything it checks. A note where it could not decide, or a page or
+ * size it never saw, leaves that to the user: Review.
+ */
+function verdict(check: CheckId): 'fail' | 'review' | 'pass' {
+  if (failing(check).length) return 'fail';
+  if (result!.findings.some((f) => f.check === check && f.unknown)) return 'review';
+  return RENDERED.has(check) && unchecked() ? 'review' : 'pass';
+}
+
 /** Type findings for text marked as a disclaimer, which the 8px rule exempts. */
 function exempt(): Finding[] {
   return result!.findings.filter((f) => f.check === 'type' && f.level === 'fail' && isDisclaimer(f.target));
@@ -311,8 +334,9 @@ function standinNote(s: Session): string {
 
 function renderSummary() {
   const s = session!;
-  const failed = CHECKS.filter((c) => c.id !== 'copy' && failing(c.id).length).length;
-  const review = CHECKS.filter((c) => !failing(c.id).length && result!.findings.some((f) => f.check === c.id && f.unknown)).length;
+  const failed = CHECKS.filter((c) => c.id !== 'copy' && verdict(c.id) === 'fail').length;
+  const review = CHECKS.filter((c) => c.id !== 'copy' && verdict(c.id) === 'review').length;
+  const unseen = unchecked();
   const lone = s.pkg.kind === 'html';
   const fileKind = lone ? 'HTML' : 'zip';
   const note = standinNote(s);
@@ -324,7 +348,8 @@ function renderSummary() {
         <strong>${esc(s.pkg.zipName)}</strong>${lone ? '' : ` · ${esc(s.pkg.htmlPath)}`} · ${plural(s.sizes.length, 'size')}<br>
         ${failed ? `<span class="pill fail">${plural(failed, 'check')} failing</span>` : ''}
         ${review ? `<span class="pill info">${plural(review, 'check')} to review</span>` : ''}
-        ${failed || review ? '' : '<span class="pill pass">Every check passes</span>'}
+        ${unseen ? `<span class="pill info">${unseen} not checked</span>` : ''}
+        ${failed || review || unseen ? '' : '<span class="pill pass">Every check passes</span>'}
         ${s.changed ? '<span class="pill info">Fixed, not yet downloaded</span>' : ''}
       </div>
       <div class="actions">
@@ -376,11 +401,11 @@ function renderChecklist() {
     const notes = r.findings.filter((f) => f.check === c.id && f.level === 'note');
     const fixable = r.plan.fixes.some((f) => f.check === c.id);
     const targets = new Set(fails.map((f) => f.target)).size;
-    // A note where the check could not decide leaves it to the user, so it is not a pass.
-    const pill = fails.length ? '<span class="pill fail">Fail</span>' : notes.some((f) => f.unknown) ? '<span class="pill info">Review</span>' : '<span class="pill pass">Pass</span>';
+    const pill = { fail: '<span class="pill fail">Fail</span>', review: '<span class="pill info">Review</span>', pass: '<span class="pill pass">Pass</span>' }[verdict(c.id)];
     const extra = [
       exempted.length ? `${plural(new Set(exempted.map((f) => f.target)).size, 'disclaimer')} exempt` : '',
       !fails.length && notes.length ? plural(notes.length, 'note') : '',
+      RENDERED.has(c.id) && unchecked() ? `${unchecked()} not checked` : '',
     ].filter(Boolean);
     const count = [fails.length ? `${plural(targets, 'item')}${fixable ? ' · auto-fix ready' : ''}` : '', ...extra].filter(Boolean).join(' · ');
     const toggle = c.id === 'type' ? disclaimerToggle : undefined;

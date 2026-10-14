@@ -216,3 +216,49 @@ test('a text whose label is a name every object has is not a disclaimer until it
   await type.locator('summary').click();
   await expect(type.locator('input[data-disclaimer="constructor"]').first()).not.toBeChecked();
 });
+
+// The deck never shows page two in 300x250, as an ad whose own timeline moves away from it.
+const NO_PAGE2_IN_300X250 = `<script>
+    (() => {
+      const deck = customElements.get('gwd-pagedeck').prototype;
+      const goToPage = deck.goToPage;
+      deck.goToPage = function (target) {
+        if (innerWidth === 300 && innerHeight === 250 && (target === 1 || target === 'page2')) return;
+        return goToPage.call(this, target);
+      };
+    })();
+  </script>`;
+
+test('a page that never showed leaves the checks of what renders to review, never a pass', async ({ page }) => {
+  await page.goto('./');
+  // Page two holds the 6px note, which would fail Type size if the check saw it.
+  const html = mockAdHtml()
+    .replace('["300x250", "300x250:320x480"]', '["300x250"]')
+    .replace('<script src="mock-gwd.js"></script>', `<script src="mock-gwd.js"></script>\n  ${NO_PAGE2_IN_300X250}`);
+  await load(page, 'hidden-page.zip', mockZip(html));
+  await expect(page.locator('#checklist .banner.warn')).toContainText('page2 in 300x250 never showed, so it was not checked there.');
+  const type = row(page, 'type');
+  await expect(type.locator('summary .pill')).toHaveText('Review');
+  await expect(type.locator('summary .count')).toHaveText('1 page not checked');
+
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#summary')).toContainText('Fixed, not yet downloaded', { timeout: 120_000 });
+  const meta = page.locator('#summary .meta');
+  await expect(meta).toContainText('5 checks to review');
+  await expect(meta).toContainText('1 page not checked');
+  await expect(meta).not.toContainText('Every check passes');
+  // What renders is left to review; what is read from the source alone still passes.
+  await expect(page.locator('#checklist details[data-check] summary .pill')).toHaveText(['Review', 'Review', 'Review', 'Review', 'Review', 'Pass', 'Pass', 'Pass', 'Pass', 'Pass']);
+});
+
+test('a served size with no preview leaves the checks of what renders to review', async ({ page }) => {
+  await page.goto('./');
+  const html = mockAdHtml().replace('["300x250", "300x250:320x480"]', '["300x250", "300x250:320x480", "300x250:200x100"]');
+  await load(page, 'no-preview.zip', mockZip(html));
+  await expect(page.locator('#checklist .banner.warn')).toContainText('Served size "300x250:200x100" has no preview');
+  await markNote(page);
+  const type = row(page, 'type');
+  await expect(type.locator('summary .pill')).toHaveText('Review');
+  await expect(type.locator('summary .count')).toHaveText('2 disclaimers exempt · 1 size not checked');
+  await expect(page.locator('#summary .meta')).toContainText('1 size not checked');
+});
