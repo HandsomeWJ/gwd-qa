@@ -283,7 +283,8 @@ function standinNote(s: Session): string {
   if (!s.missingRuntime.length) return '';
   const images = [...s.pkg.files.keys()].some((p) => /\.(png|jpe?g|gif|webp|svg)$/i.test(p));
   const which = s.pkg.kind === 'html' ? '' : ` Not included: ${s.missingRuntime.map((p) => p.split('/').pop()).join(', ')}.`;
-  return `GWD's runtime files were not included, so the preview uses a stand-in: layout and text are checked, but ${images ? '' : 'images are missing and '}animations or interactions may differ. Drop the whole folder or zip for the full preview.${which}`;
+  const also = s.displacedRuntime.length ? ` The stand-in also runs in place of ${s.displacedRuntime.join(', ')}, which cannot run without them.` : '';
+  return `GWD's runtime files were not included, so the preview uses a stand-in: layout and text are checked, but ${images ? '' : 'images are missing and '}animations or interactions may differ. Drop the whole folder or zip for the full preview.${which}${also}`;
 }
 
 function renderSummary() {

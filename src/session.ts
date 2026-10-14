@@ -35,6 +35,8 @@ export class Session {
   readonly originalHtml: string;
   /** GWD runtime files the ad loads but did not come with; the preview runs a stand-in for them. */
   readonly missingRuntime: string[];
+  /** GWD runtime files the ad came with that cannot run beside the stand-in, so it runs in their place too. */
+  readonly displacedRuntime: string[] = [];
   html: string;
   frames: AdFrame[] = [];
   sizes: string[] = [];
@@ -123,6 +125,9 @@ export class Session {
       throw new Error(`The ${f.label} preview got HTTP ${nav.responseStatus} instead of the ad. Reload this page and try again.`);
     }
     f.started = await waitForAd(f.el);
+    const standin = (f.el.contentWindow as (Window & { gwdStandin?: { displaced?: unknown } }) | null)?.gwdStandin;
+    const displaced = Array.isArray(standin?.displaced) ? standin.displaced : [];
+    for (const name of displaced) if (typeof name === 'string' && !this.displacedRuntime.includes(name)) this.displacedRuntime.push(name);
   }
 
   /** Checks need every size running; a GWD ad that never shows its page would look like a pass. */
