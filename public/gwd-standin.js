@@ -273,6 +273,18 @@
     // On first use, not on connect: the parser has not added the pages yet when the deck connects.
     register() {
       if (this.pages) return;
+      if (document.readyState === 'loading') {
+        // Asked while the HTML is still being parsed (GWD's own overrides helper asks soon after it
+        // connects), when later pages are not there yet: like GWD's own deck before web components are
+        // ready, it has none, and leaves them in the document for GWD's groups runtime to fill.
+        this.pages = [];
+        this.current = -1;
+        document.addEventListener('DOMContentLoaded', () => {
+          this.pages = null;
+          this.register();
+        }, { once: true });
+        return;
+      }
       this.pages = [...this.children].filter((el) => el.localName === 'gwd-page');
       this.pages.forEach((page) => page.remove());
       this.current = -1;

@@ -102,6 +102,19 @@ test('leaves the groups to GWD\'s own groups runtime when another runtime file i
   await expect(frame(page, '300x250').locator('#SA_card_1')).toHaveText('Filled by GWD');
 });
 
+test('keeps every page when something asks the stand-in deck for its pages before the HTML is parsed', async ({ page }) => {
+  // GWD's own overrides helper asks soon after it connects, which can be before the parser reaches page two.
+  const html = mockAdHtml('Headline', GWD_RUNTIME)
+    .replace('      <gwd-page id="page2">', '      <script>document.querySelector("gwd-pagedeck").getPages();</script>\n      <gwd-page id="page2">');
+  await page.goto('./');
+  await page.locator('#file').setInputFiles({ name: 'Responsive.html', mimeType: 'text/html', buffer: Buffer.from(html) });
+  await expect(page.locator('#summary')).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator('#checklist .sub')).toContainText('on each of its 2 pages');
+  const lineHeight = row(page, 'lineHeight');
+  await lineHeight.locator('summary').click();
+  await expect(lineHeight.locator('li', { hasText: 'p#SA_headline_2' })).toContainText('on page2');
+});
+
 // Like GWD's own page deck: it takes the pages out of the document once web components are ready.
 const OWN_DECK_TAKES_PAGES = `
 window.addEventListener('WebComponentsReady', () => { for (const deck of document.querySelectorAll('gwd-pagedeck')) deck.getPages(); });
