@@ -1,7 +1,7 @@
-import { strFromU8, unzipSync } from 'fflate';
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { GWD_RUNTIME, mockAdHtml, mockAdZip, mockZip } from './mock-ad';
+import { GWD_RUNTIME, MOCK_RUNTIME, mockAdHtml, mockAdZip, mockZip } from './mock-ad';
 
 type Gwdqa = { session: { id: string; key: string; html: string; originalHtml: string; lastApply: unknown; pkg: { zipName: string }; audit?: unknown } | null };
 const gwdqa = (page: Page) => page.evaluate(() => {
@@ -93,6 +93,27 @@ test('a failed check after applying puts the file back, so the fixes on the page
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
   expect(fixed).toContain("setInlineStyle('SA_cta_1', 'opacity: 0.3;')");
+});
+
+test('undoing after the browser dropped the ad\'s files puts every file back', async ({ page }) => {
+  await page.goto('./');
+  // Its runtime goes by one of GWD's names, which the stand-in would answer for if the file went missing.
+  const zip = Buffer.from(zipSync({ 'Mock Ad/Responsive.html': strToU8(mockAdHtml('Headline', ['gwdpage_min.js'])), 'Mock Ad/gwdpage_min.js': strToU8(MOCK_RUNTIME) }));
+  await load(page, 'mock-ad.zip', zip);
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#fixes .banner')).toContainText('exactly where they were', { timeout: 90_000 });
+
+  // As when the site's data is cleared, or the browser evicts it, while the tab is open.
+  await page.evaluate(async () => {
+    for (const name of await caches.keys()) if (name.startsWith('gwdqa-ad-')) await caches.delete(name);
+  });
+  await page.getByRole('button', { name: 'Undo fixes' }).click();
+  await expect(page.locator('#summary')).not.toContainText('Fixed, not yet downloaded', { timeout: 90_000 });
+  await expect(page.locator('#status .banner.err')).toHaveCount(0);
+  const frames = page.frames().filter((f) => f.url().includes('/__ad/'));
+  expect(frames).toHaveLength(3);
+  for (const f of frames) expect(await f.evaluate(() => 'gwdStandin' in window)).toBe(false);
+  await expect(page.locator('#summary .banner.standin')).toHaveCount(0);
 });
 
 test('the apply banner counts changed line spacings and moved texts apart', async ({ page }) => {

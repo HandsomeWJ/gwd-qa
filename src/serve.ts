@@ -39,6 +39,11 @@ function keyFor(id: string, path: string): string {
   return `${location.origin}${BASE}__adkey/${id}/${encodeURIComponent(path)}`;
 }
 
+/** Stored after every file, so a cache without it lacks some, for example one recreated by updateFile() alone. */
+function completeKey(id: string): string {
+  return `${location.origin}${BASE}__adcomplete/${id}`;
+}
+
 /** URL a frame loads; each path segment is percent-encoded, the worker decodes it. */
 export function adUrl(id: string, path: string): string {
   return `${BASE}__ad/${id}/${path.split('/').map(encodeURIComponent).join('/')}`;
@@ -108,9 +113,13 @@ export async function publish(id: string, files: Map<string, Uint8Array>): Promi
   };
 }
 
-/** Puts the files back when the cache has gone, for example after the site's data was cleared. */
+/**
+ * Puts the files back when the cache has gone, for example after the site's data was cleared, or
+ * holds only some of them, as when a file was updated after it had gone.
+ */
 export async function ensurePublished(id: string, files: () => Map<string, Uint8Array>): Promise<void> {
-  if (!(await caches.has(cacheName(id)))) await putAll(id, files());
+  // match() with a cacheName never creates the cache, unlike open().
+  if (!(await caches.match(completeKey(id), { cacheName: cacheName(id) }))) await putAll(id, files());
 }
 
 export async function updateFile(id: string, path: string, data: Uint8Array): Promise<void> {
@@ -120,6 +129,7 @@ export async function updateFile(id: string, path: string, data: Uint8Array): Pr
 async function putAll(id: string, files: Map<string, Uint8Array>): Promise<void> {
   const cache = await caches.open(cacheName(id));
   await Promise.all([...files].map(([path, data]) => putFile(cache, id, path, data)));
+  await cache.put(completeKey(id), new Response(''));
 }
 
 function putFile(cache: Cache, id: string, path: string, data: Uint8Array): Promise<void> {
