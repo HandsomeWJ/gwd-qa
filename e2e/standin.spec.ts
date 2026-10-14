@@ -102,6 +102,18 @@ test('leaves the groups to GWD\'s own groups runtime when another runtime file i
   await expect(frame(page, '300x250').locator('#SA_card_1')).toHaveText('Filled by GWD');
 });
 
+// Like GWD's own page deck: it takes the pages out of the document once web components are ready.
+const OWN_DECK_TAKES_PAGES = `
+window.addEventListener('WebComponentsReady', () => { for (const deck of document.querySelectorAll('gwd-pagedeck')) deck.getPages(); });
+`;
+
+test('lets GWD\'s own groups runtime fill the groups before the pages leave the document, when only web components are missing', async ({ page }, testInfo) => {
+  const html = groupedAd(['gwd_webcomponents_v1_min.js', 'mock-gwd.js', 'gwdpagedeck_min.js', 'groups_runtime.min.1.0.js']);
+  await checkFolder(page, testInfo, { 'Responsive.html': html, 'mock-gwd.js': MOCK_RUNTIME, 'gwdpagedeck_min.js': OWN_DECK_TAKES_PAGES, 'groups_runtime.min.1.0.js': OWN_GROUPS });
+  await expect(page.locator('#summary .banner.standin')).toContainText('Not included: gwd_webcomponents_v1_min.js.');
+  await expect(frame(page, '300x250').locator('#SA_card_1')).toHaveText('Filled by GWD');
+});
+
 // Per-size overrides as GWD's helper applies them: every key whose size matches, ranges first, then the
 // exact size, a later key winning per attribute. In 300x250 both keys match: the range's class applies
 // and the exact size's text wins.

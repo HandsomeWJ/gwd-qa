@@ -502,9 +502,11 @@
       if (img.complete && img.getAttribute('src') && !img.naturalWidth) placeholder(img);
     }
     window.addEventListener('resize', () => applyOverrides(document));
-    // GWD's web components runtime announces this, and the ad's own code then calls initAd().
+    // GWD's web components runtime announces this, and the ad's own code then calls initAd(). It comes
+    // after every DOMContentLoaded handler, as GWD's does: its groups runtime fills the groups on
+    // DOMContentLoaded, before its page deck takes the pages out of the document on this event.
     const scripts = [...document.scripts].filter((el) => el.src).map((el) => fileName(el.src));
-    if (!scripts.some((name) => /webcomponents/i.test(name) && !state.scripts.includes(name))) window.dispatchEvent(new Event('WebComponentsReady'));
+    if (!scripts.some((name) => /webcomponents/i.test(name) && !state.scripts.includes(name))) setTimeout(() => window.dispatchEvent(new Event('WebComponentsReady')));
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setUp, { once: true });
   else setTimeout(setUp);
