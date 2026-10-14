@@ -1,9 +1,9 @@
 // Stands in for Google Web Designer's runtime when an ad is checked without it, for example from
 // its HTML file alone. This is the site's own code, not Google's: just enough of the runtime for
-// the ad to start, show each of its pages and apply its per-size overrides, so the checks can read
-// its layout and text. The service worker (sw.js) serves it for every gwd*.js and groups_runtime*.js
-// the ad loads but does not include, so it can run several times in one page; only the first run
-// sets it up.
+// the ad to start, show each of its pages, fill its groups and apply its per-size overrides, so the
+// checks can read its layout and text. The service worker (sw.js) serves it for every gwd*.js and
+// groups_runtime*.js the ad loads but does not include, so it can run several times in one page:
+// the first run sets it up, and each run then does what the file it stands in for would have done.
 (() => {
   const fileName = (url) => {
     const name = new URL(url, location.href).pathname.split('/').pop();
@@ -13,10 +13,13 @@
       return name;
     }
   };
-  const state = (window.gwdStandin ??= { scripts: [], started: false });
-  if (document.currentScript?.src) state.scripts.push(fileName(document.currentScript.src));
-  if (state.started) return;
-  state.started = true;
+  const state = (window.gwdStandin ??= { scripts: [], displaced: [] });
+  const file = document.currentScript?.src ? fileName(document.currentScript.src) : '';
+  if (file) state.scripts.push(file);
+  // The GWD runtime scripts the ad includes, in the folder of the file this run stands in for. The
+  // service worker writes their names in here as it serves this file; left empty, none count as included.
+  const included = /* included */ [];
+  if (state.run) return state.run(file, included);
 
   // What GWD's component styles provide, under the ad's own CSS. <gwd-genericad> stays inline, so
   // the deck's height: 100% is the body's.
@@ -40,97 +43,185 @@
     if (e.target instanceof HTMLImageElement) placeholder(e.target);
   }, true);
 
-  // data-gwd-media-override: per served size, attributes and text that replace the base ones.
-  // Keys are sizes like "300x250", or ranges like "300x250:320x480" with ":l" or ":p" for an
-  // orientation; an exact size wins over a range.
-  const SIZE = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)(?::(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)(?::([lp]))?)?$/;
+  // data-gwd-media-override, applied as GWD's overrides helper (gwdresponsiveattributeshelper_min.js)
+  // applies it. Keys are sizes like "300x250", or ranges like "300x250:320x480" with ":l" or ":p" for
+  // an orientation. Every key whose size matches applies: ranges first, then exact sizes, each in string
+  // order, a later key's value winning per attribute. The value an override replaced is kept on the
+  // element in data-gwd-media-override-<name>, as GWD keeps it, and put back once no key sets it.
+  const OVERRIDE = 'data-gwd-media-override';
+  const BASE = `${OVERRIDE}-`;
+  const TEXT = 'data-gwd-text'; // its value is JSON: the element's content, and whether it is plain text
+  const REMOVED = 'gwd-attribute-removed'; // the attribute was not there
+  const NUM = '(?:0|[1-9]\\d*)(?:\\.\\d+)?';
+  const SIZE = new RegExp(`^(${NUM})x(${NUM})(?::(${NUM})x(${NUM})(?::([lp]))?)?$`);
+  const px = (n) => (n === '0' ? n : `${n}px`);
   const mediaOf = (key) => {
-    const m = SIZE.exec(key.trim());
-    if (!m) return null;
-    if (!m[3]) return `(width: ${m[1]}px) and (height: ${m[2]}px)`;
-    const orientation = m[5] === 'l' ? '(orientation: landscape) and ' : m[5] === 'p' ? '(orientation: portrait) and ' : '';
-    return `${orientation}(min-width: ${m[1]}px) and (max-width: ${m[3]}px) and (min-height: ${m[2]}px) and (max-height: ${m[4]}px)`;
+    const m = SIZE.exec(key);
+    if (!m[3]) return `(width: ${px(m[1])}) and (height: ${px(m[2])})`;
+    const orientation = m[5] ? `(orientation: ${m[5] === 'l' ? 'landscape' : 'portrait'}) and ` : '';
+    return `${orientation}(min-width: ${px(m[1])}) and (max-width: ${px(m[3])}) and (min-height: ${px(m[2])}) and (max-height: ${px(m[4])})`;
   };
-  const matchingKey = (overrides) => {
-    const keys = Object.keys(overrides).filter((key) => {
-      const media = mediaOf(key);
-      return media && matchMedia(media).matches;
-    });
-    return keys.find((key) => !key.includes(':')) ?? keys[0] ?? '';
-  };
-  const TEXT = 'data-gwd-text'; // its value is JSON whose content is the element's HTML
-  const textOf = (value) => {
+  const byGwdOrder = (a, b) => (a.includes(':') !== b.includes(':') ? (a.includes(':') ? -1 : 1) : a === b ? 0 : a < b ? -1 : 1);
+  // GWD skips an element whose overrides are not all a valid size key with string values.
+  const overridesOf = (el) => {
     try {
-      return JSON.parse(value).content ?? null;
+      const overrides = JSON.parse(el.getAttribute(OVERRIDE));
+      const valid = Object.entries(overrides).every(([key, values]) => SIZE.test(key) && values instanceof Object && Object.values(values).every((v) => typeof v === 'string'));
+      return valid ? overrides : null;
     } catch {
       return null;
     }
   };
-  // Per element: the size key applied, and the base values it replaced.
-  const applied = new WeakMap();
-  const restore = (el, name, value) => {
-    if (name === TEXT) el.innerHTML = value;
-    else if (value === null) el.removeAttribute(name);
-    else el.setAttribute(name, value);
+  const savedBase = (el) => new Map([...el.attributes].filter((a) => a.name.startsWith(BASE)).map((a) => [a.name.slice(BASE.length), a.value]));
+  const write = (el, values) => {
+    const saved = savedBase(el);
+    for (const [name, value] of values) {
+      let now;
+      if (name === TEXT) {
+        const isPlainText = el.textContent === el.innerHTML;
+        now = JSON.stringify({ content: isPlainText ? el.textContent : el.innerHTML, isPlainText });
+      } else {
+        now = el.hasAttribute(name) ? el.getAttribute(name) : REMOVED;
+      }
+      if (value === now) continue;
+      if (!saved.has(name)) el.setAttribute(BASE + name, now);
+      else if (saved.get(name) === value) el.removeAttribute(BASE + name);
+      if (name === TEXT) {
+        const text = JSON.parse(value);
+        if (text.isPlainText || typeof window.gwd?.binders?.html !== 'function') el.textContent = text.content;
+        else window.gwd.binders.html(el, text.content);
+      } else if (value === REMOVED) {
+        el.removeAttribute(name);
+      } else {
+        el.setAttribute(name, value);
+      }
+    }
   };
+  // Per element, the keys applied last: they are applied again only when the ones that match change.
+  const applied = new WeakMap();
+  const applyOverride = (el) => {
+    const overrides = overridesOf(el);
+    if (!overrides) return;
+    const keys = Object.keys(overrides).sort(byGwdOrder).filter((key) => matchMedia(mediaOf(key)).matches);
+    const signature = JSON.stringify(keys);
+    if (applied.get(el) === signature) return;
+    applied.set(el, signature);
+    const values = savedBase(el);
+    for (const key of keys) for (const [name, value] of Object.entries(overrides[key])) values.set(name, value);
+    write(el, values);
+  };
+  // GWD's helper takes the elements on the deck's pages, and the pages and the deck themselves; with
+  // no deck, every element in the document.
+  const inDeck = (el) => !document.querySelector('gwd-pagedeck') || el.localName === 'gwd-pagedeck' || !!el.closest('gwd-page');
+  const ownHelper = () => customElements.get('gwd-responsive-attributes-helper') === GwdResponsiveAttributesHelper;
   const applyOverrides = (root) => {
-    if (!state.overrides) return;
-    const els = [...(root.matches?.('[data-gwd-media-override]') ? [root] : []), ...root.querySelectorAll('[data-gwd-media-override]')];
-    for (const el of els) {
-      let overrides;
-      try {
-        overrides = JSON.parse(el.getAttribute('data-gwd-media-override'));
-      } catch {
-        continue;
-      }
-      const key = matchingKey(overrides);
-      const before = applied.get(el) ?? { key: '', base: {} };
-      if (before.key === key) continue;
-      for (const [name, value] of Object.entries(before.base)) restore(el, name, value);
-      const base = {};
-      for (const [name, value] of Object.entries(key ? overrides[key] : {})) {
-        if (name === TEXT) {
-          const html = textOf(value);
-          if (html === null) continue;
-          base[name] = el.innerHTML;
-          el.innerHTML = html;
-        } else {
-          base[name] = el.getAttribute(name);
-          el.setAttribute(name, String(value));
-        }
-      }
-      applied.set(el, { key, base });
+    if (!ownHelper()) return;
+    const els = [...(root.matches?.(`[${OVERRIDE}]`) ? [root] : []), ...root.querySelectorAll(`[${OVERRIDE}]`)];
+    try {
+      for (const el of els) if (inDeck(el)) applyOverride(el);
+    } catch {
+      // as GWD's helper, stop at text whose JSON does not parse
     }
   };
 
-  // GWD's groups runtime fills each group instance, [data-gwd-group="name"], with a copy of the
-  // group's definition from <template id="gwd-group-definitions">, and the groups inside that copy
-  // in turn. Only empty instances are filled, so this can run again, or after GWD's own runtime.
-  const groupDefs = () => {
-    const defs = new Map();
+  // GWD's groups runtime (groups_runtime*.js), when the stand-in runs in its place: like GWD's, it
+  // fills each group instance, [data-gwd-group="name"], with a copy of the group's definition from
+  // <template id="gwd-group-definitions">, the groups inside that copy filled too. An instance's own
+  // content is replaced, and an instance of a group with no definition is removed. Where definitions
+  // hold each other, GWD walks them depth first in definition order and drops, from its copy of the
+  // definitions, each instance that leads back to a definition still being walked; so does this.
+  const GROUP = 'data-gwd-group';
+  const GROUP_DEF = 'data-gwd-group-def';
+  const groupsRuntime = () => state.scripts.some((name) => /^groups_runtime/i.test(name));
+  const filledGroups = new WeakSet(); // filled once, as GWD fills each instance once
+  const clear = (el) => {
+    for (const n of [...el.childNodes]) if (n.nodeType !== Node.COMMENT_NODE) n.remove();
+  };
+  const copyInto = (def, el) => el.append(...[...def.childNodes].map((n) => n.cloneNode(true)));
+  let groupDefs = null;
+  // The definitions, by name, with the groups in them filled. A plain object, as GWD keeps them, so
+  // they are walked in the same order.
+  const definitions = () => {
+    if (groupDefs) return groupDefs;
+    const defs = (groupDefs = Object.create(null));
     const template = document.getElementById('gwd-group-definitions');
-    for (const def of (template?.content ?? document).querySelectorAll('[data-gwd-group-def]')) {
-      const name = def.getAttribute('data-gwd-group-def');
-      if (name && !defs.has(name)) defs.set(name, def);
+    const copies = template?.content ? document.importNode(template.content, true) : null;
+    for (const def of (copies ?? document).querySelectorAll(`[${GROUP_DEF}]`)) {
+      const name = def.getAttribute(GROUP_DEF);
+      if (name && !defs[name]) defs[name] = { el: def, uses: [] };
+      else def.remove();
+    }
+    // Each instance inside a definition, noted on its group's definition with the one that holds it.
+    const held = copies ? Object.values(defs).flatMap((def) => [...def.el.querySelectorAll(`[${GROUP}]`)]) : [...document.querySelectorAll(`[${GROUP}]`)];
+    for (const el of held) {
+      let holder = null;
+      for (let n = el.parentElement; n && !holder; n = n.parentElement) {
+        const name = n.getAttribute(GROUP_DEF);
+        if (name && defs[name]) holder = name;
+      }
+      if (!holder) continue; // an instance in the page, filled by fillGroups
+      filledGroups.add(el);
+      clear(el);
+      const def = defs[el.getAttribute(GROUP)];
+      if (def) def.uses.push({ el, holder });
+      else el.remove();
+    }
+    const order = new Map();
+    const walking = new Set();
+    const walk = (name) => {
+      const index = order.size;
+      order.set(name, index);
+      walking.add(name);
+      const { uses } = defs[name];
+      for (let i = uses.length - 1; i >= 0; i--) {
+        const { el, holder } = uses[i];
+        if (!order.has(holder)) walk(holder);
+        else if (walking.has(holder) && index > order.get(holder)) {
+          el.remove();
+          uses.splice(i, 1);
+        }
+      }
+      walking.delete(name);
+    };
+    for (const name in defs) if (!order.has(name)) walk(name);
+    // Fill the instances of each definition once every group it holds is filled.
+    const waiting = Object.create(null); // per definition: how many instances of each group it holds
+    for (const name in defs) waiting[name] = Object.create(null);
+    for (const name in defs) for (const { holder } of defs[name].uses) waiting[holder][name] = (waiting[holder][name] ?? 0) + 1;
+    const done = [];
+    for (const name in waiting) {
+      if (Object.keys(waiting[name]).length) continue;
+      done.push(name);
+      delete waiting[name];
+    }
+    for (let k = 0; k < done.length; k++) {
+      const name = done[k];
+      for (const { el, holder } of defs[name].uses) {
+        copyInto(defs[name].el, el);
+        const counts = waiting[holder];
+        if (--counts[name]) continue;
+        delete counts[name];
+        if (Object.keys(counts).length) continue;
+        done.push(holder);
+        delete waiting[holder];
+      }
     }
     return defs;
   };
-  const isEmpty = (el) => [...el.childNodes].every((n) => n.nodeType === Node.COMMENT_NODE || (n.nodeType === Node.TEXT_NODE && !n.data.trim()));
-  // A group inside a copy of itself would never end; GWD leaves it out.
-  const insideItself = (el, name) => {
-    for (let n = el.parentElement; n; n = n.parentElement) {
-      if (n.getAttribute('data-gwd-group') === name || n.getAttribute('data-gwd-group-def') === name) return true;
-    }
-    return false;
-  };
-  const fillGroups = (root, defs = groupDefs()) => {
-    if (!defs.size) return;
-    for (const el of root.querySelectorAll('[data-gwd-group]')) {
-      const name = el.getAttribute('data-gwd-group');
-      const def = defs.get(name);
-      if (!def || !isEmpty(el) || insideItself(el, name)) continue;
-      el.append(...[...def.childNodes].map((n) => n.cloneNode(true)));
-      fillGroups(el, defs);
+  const fillGroups = (root) => {
+    if (!groupsRuntime()) return;
+    const defs = definitions();
+    for (const el of root.querySelectorAll(`[${GROUP}]`)) {
+      if (filledGroups.has(el)) continue;
+      filledGroups.add(el);
+      clear(el);
+      const def = defs[el.getAttribute(GROUP)];
+      if (!def) {
+        el.remove();
+        continue;
+      }
+      copyInto(def.el, el);
+      for (const inner of el.querySelectorAll(`[${GROUP}]`)) filledGroups.add(inner);
     }
   };
 
@@ -190,6 +281,11 @@
     getPages() {
       this.register();
       return [...this.pages];
+    }
+    // GWD's own overrides helper finds the elements it applies them to through this.
+    getElementsBySelector(selector) {
+      this.register();
+      return this.pages.flatMap((page) => [...page.querySelectorAll(selector)]);
     }
     getCurrentPage() {
       this.register();
@@ -345,18 +441,43 @@
     }
   };
 
-  // GWD's core elements. The stand-in defines each one that is not defined yet, now, so GWD's own
-  // files that load after it find theirs taken: the ad runs on GWD's files that came before the
-  // first missing one and the stand-in for the rest, never on a mix it cannot start.
-  const core = {
-    'gwd-page': GwdPage,
-    'gwd-pagedeck': GwdPageDeck,
-    'gwd-image': GwdImage,
-    'gwd-genericad': GwdGenericAd,
-    'gwd-responsive-attributes-helper': GwdResponsiveAttributesHelper,
+  // GWD's core elements, each with the runtime file that defines it.
+  const CORE = {
+    'gwd-page': ['gwdpage_min.js', GwdPage],
+    'gwd-pagedeck': ['gwdpagedeck_min.js', GwdPageDeck],
+    'gwd-image': ['gwdimage_min.js', GwdImage],
+    'gwd-genericad': ['gwdgenericad_min.js', GwdGenericAd],
+    'gwd-responsive-attributes-helper': ['gwdresponsiveattributeshelper_min.js', GwdResponsiveAttributesHelper],
   };
-  for (const [tag, element] of Object.entries(core)) define(tag, element);
-  state.overrides = customElements.get('gwd-responsive-attributes-helper') === GwdResponsiveAttributesHelper;
+  // What GWD's gwd_webcomponents_v1_min.js does where the browser has custom elements: lets GWD's
+  // own elements, ES5 constructors that call HTMLElement.call(this), construct.
+  const webComponents = () => {
+    if (state.webComponents || window.Reflect === undefined || window.customElements === undefined || window.customElements.polyfillWrapFlushCallback) return;
+    state.webComponents = true;
+    const BuiltIn = window.HTMLElement;
+    window.HTMLElement = function () {
+      return Reflect.construct(BuiltIn, [], this.constructor);
+    };
+    window.HTMLElement.prototype = BuiltIn.prototype;
+    window.HTMLElement.prototype.constructor = window.HTMLElement;
+    Object.setPrototypeOf(window.HTMLElement, BuiltIn);
+  };
+  // Each run defines the core elements that GWD's own files will not: those whose file the ad does not
+  // include, which come before or after this one, so GWD's own files still define theirs. GWD's own
+  // deck and image need GWD's own page, so with the stand-in's page they are the stand-in's too; GWD's
+  // files for them, if included, are noted as displaced.
+  const run = (file, included) => {
+    if (/webcomponents/i.test(file)) webComponents();
+    const has = (name) => included.some((n) => n.toLowerCase() === name);
+    for (const [tag, [name, element]] of Object.entries(CORE)) if (!has(name)) define(tag, element);
+    if (customElements.get('gwd-page') !== GwdPage) return;
+    for (const tag of ['gwd-pagedeck', 'gwd-image']) {
+      const [name, element] = CORE[tag];
+      if (customElements.get(tag)) continue;
+      define(tag, element);
+      if (has(name) && !state.displaced.includes(name)) state.displaced.push(name);
+    }
+  };
   // GWD's own page deck takes its pages out of the document as it registers them.
   document.addEventListener('pagesregistered', (e) => {
     for (const page of e.detail?.pages ?? []) {
@@ -369,6 +490,9 @@
   const INERT = ['gwd-taparea', 'gwd-gesture', 'gwd-reveal', 'gwd-image-effect', 'gwd-attached', 'gwd-text-helper'];
 
   const setUp = () => {
+    // A core element that no file defined after all, for example as the ad includes GWD's file for it
+    // but does not load it.
+    run('', []);
     fillGroups(document);
     applyOverrides(document);
     const found = [...document.querySelectorAll('*')].map((el) => el.localName).filter((tag) => tag.startsWith('gwd-'));
@@ -384,4 +508,6 @@
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setUp, { once: true });
   else setTimeout(setUp);
+  state.run = run;
+  run(file, included);
 })();
