@@ -109,6 +109,21 @@ test('the apply banner counts changed line spacings and moved texts apart', asyn
   await expect(banner.locator('li').first()).toHaveText('300x250 page1 p#SA_headline_1 line-height');
 });
 
+test('the apply banner also counts what moves in a size no preview shows, laid out without scripts', async ({ page }) => {
+  await page.goto('./');
+  await load(page, 'mock-ad.zip', mockAdZip());
+  // Give the text on page two another line-height only inside the range, which neither of its frames shows.
+  await page.evaluate(() => {
+    const g = (window as unknown as { gwdqa: { session: { html: string }; result: { plan: { fixes: { edits: { start: number; end: number; text: string }[] }[] } } } }).gwdqa;
+    const at = g.session.html.indexOf('  </style>');
+    g.result.plan.fixes[0].edits.push({ start: at, end: at, text: '    @media (min-width: 305px) and (max-width: 315px) {\n      .gwd-p-c {\n        line-height: 40px;\n      }\n    }\n' });
+  });
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  const banner = page.locator('#fixes .banner.warn');
+  await expect(banner).toContainText('Every text in the previews is where it was, but laid out without scripts, 1 line spacing changed at 310x365. Check that size in GWD, or undo.', { timeout: 90_000 });
+  await expect(banner.locator('li')).toHaveText(['310x365 p#SA_headline_2 line-height']);
+});
+
 test('disclaimer marks on just the HTML stay with that HTML; a zip keeps them by its name', async ({ page }) => {
   await page.goto('./');
   // Marks an older version saved under a zip's name still apply.
