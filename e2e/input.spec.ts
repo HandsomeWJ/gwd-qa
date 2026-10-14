@@ -118,3 +118,17 @@ test('takes a dropped file', async ({ page }) => {
   await expect(page.locator('#summary .meta strong')).toHaveText('Responsive.html');
   await expect(frame(page, '300x250').locator('#SA_headline_1')).toHaveText('Exact size');
 });
+
+test('refuses two files of the same name in one drop, such as two ads\' HTML from search results', async ({ page }) => {
+  await page.goto('./');
+  const dataTransfer = await page.evaluateHandle(([a, b]) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([a], 'Responsive.html', { type: 'text/html' }));
+    dt.items.add(new File([b], 'Responsive.html', { type: 'text/html' }));
+    return dt;
+  }, [mockAdHtml('Alpha', GWD_RUNTIME), mockAdHtml('Beta', GWD_RUNTIME)]);
+  await page.dispatchEvent('#drop', 'drop', { dataTransfer });
+  await expect(page.locator('#status .banner.err')).toHaveText('Files with the same name came from different folders: Responsive.html. They may be different ads. Check one ad at a time: its zip, its folder, or just its HTML.');
+  await expect(page.locator('#drop')).toBeVisible();
+  await expect(page.locator('#summary')).toBeHidden();
+});

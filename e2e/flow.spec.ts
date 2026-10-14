@@ -145,25 +145,45 @@ test('the apply banner also counts what moves in a size no preview shows, laid o
   await expect(banner.locator('li')).toHaveText(['310x365 p#SA_headline_2 line-height']);
 });
 
-test('disclaimer marks on just the HTML stay with that HTML; a zip keeps them by its name', async ({ page }) => {
+const marks = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem('gwdqa.disclaimers') ?? '{}'));
+
+/** Ticks p#SA_note_1, the mock ad's small text that is not named a disclaimer, as one. */
+async function markNote(page: Page) {
+  const type = row(page, 'type');
+  await type.evaluate((d) => ((d as HTMLDetailsElement).open = true)); // a row stays open from the ad before
+  await type.locator('input[data-disclaimer="p#SA_note_1"]').first().check();
+  await expect(type.locator('summary .count')).toHaveText(/^2 disclaimers exempt/);
+}
+
+async function downloaded(page: Page, button: string) {
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: button, exact: true }).click()]);
+  return { name: download.suggestedFilename(), data: readFileSync((await download.path())!) };
+}
+
+test('disclaimer marks stay with the ad they were made on, by its name and its HTML', async ({ page }) => {
   await page.goto('./');
-  // Marks an older version saved under a zip's name still apply.
-  await page.evaluate(() => localStorage.setItem('gwdqa.disclaimers', JSON.stringify({ 'mock-ad.zip': { 'p#SA_note_1': true } })));
-  await load(page, 'mock-ad.zip', mockAdZip());
+  // Marks an older version saved under a zip's name alone still apply, to the first ad of that name.
+  await page.evaluate(() => localStorage.setItem('gwdqa.disclaimers', JSON.stringify({ 'Archive.zip': { 'p#SA_note_1': true } })));
+  await load(page, 'Archive.zip', mockAdZip('First'));
   await expect(row(page, 'type').locator('summary .count')).toHaveText('2 disclaimers exempt');
   await page.getByRole('button', { name: 'Check another ad' }).click();
 
-  // GWD names every ad's HTML Responsive.html, so the name alone cannot tell two ads apart.
-  const markNote = async () => {
-    const type = row(page, 'type');
-    await type.locator('summary').click();
-    await type.locator('input[data-disclaimer="p#SA_note_1"]').first().check();
-    await expect(type.locator('summary .count')).toHaveText('2 disclaimers exempt');
-    await page.getByRole('button', { name: 'Check another ad' }).click();
-  };
+  // macOS names every zip it makes Archive.zip, so the name alone cannot tell two ads apart.
+  await load(page, 'Archive.zip', mockAdZip('Second'));
+  await expect(row(page, 'type').locator('summary .count')).toHaveText('1 item · 1 disclaimer exempt');
+  await page.getByRole('button', { name: 'Check another ad' }).click();
+  await load(page, 'Archive.zip', mockAdZip('First'));
+  await expect(row(page, 'type').locator('summary .count')).toHaveText('2 disclaimers exempt');
+  const first = (await gwdqa(page))!.key;
+  expect(first).toMatch(/^Archive\.zip#[0-9a-f]{8}$/);
+  expect(await marks(page)).toEqual({ [first]: { 'p#SA_note_1': true } });
+  await page.getByRole('button', { name: 'Check another ad' }).click();
+
+  // GWD names every ad's HTML Responsive.html: the same holds for just the HTML.
   await load(page, 'Responsive.html', mockAdHtml('Alpha', GWD_RUNTIME));
   await expect(row(page, 'type').locator('summary .count')).toHaveText('1 item · 1 disclaimer exempt');
-  await markNote();
+  await markNote(page);
+  await page.getByRole('button', { name: 'Check another ad' }).click();
 
   await load(page, 'Responsive.html', mockAdHtml('Beta', GWD_RUNTIME));
   await expect(row(page, 'type').locator('summary .count')).toHaveText('1 item · 1 disclaimer exempt');
@@ -172,4 +192,109 @@ test('disclaimer marks on just the HTML stay with that HTML; a zip keeps them by
   await load(page, 'Responsive.html', mockAdHtml('Alpha', GWD_RUNTIME));
   await expect(row(page, 'type').locator('summary .count')).toHaveText('2 disclaimers exempt');
   expect((await gwdqa(page))!.key).toMatch(/^Responsive\.html#[0-9a-f]{8}$/);
+});
+
+test('disclaimer marks come back when the fixed HTML is checked again', async ({ page }) => {
+  await page.goto('./');
+  await load(page, 'Responsive.html', mockAdHtml('Alpha', GWD_RUNTIME));
+  await markNote(page);
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#summary')).toContainText('Fixed, not yet downloaded', { timeout: 90_000 });
+  const html = await downloaded(page, 'Download fixed HTML');
+  // Unmarked after the download: the downloaded file's marks follow too.
+  await row(page, 'type').locator('input[data-disclaimer="p#SA_disclaimer_1"]').first().uncheck();
+  await page.getByRole('button', { name: 'Check another ad' }).click();
+  await load(page, html.name, html.data);
+  await expect(row(page, 'type').locator('summary .count')).toHaveText('1 item · 1 disclaimer exempt');
+  await expect(row(page, 'type').locator('input[data-disclaimer="p#SA_note_1"]').first()).toBeChecked();
+  await expect(row(page, 'type').locator('input[data-disclaimer="p#SA_disclaimer_1"]').first()).not.toBeChecked();
+});
+
+test('disclaimer marks come back when the fixed zip is checked again', async ({ page }) => {
+  await page.goto('./');
+  await load(page, 'mock-ad.zip', mockAdZip());
+  await markNote(page);
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#summary')).toContainText('Fixed, not yet downloaded', { timeout: 90_000 });
+  const zip = await downloaded(page, 'Download fixed zip');
+  const upload = await downloaded(page, 'Download for upload');
+  for (const file of [zip, upload]) {
+    await page.getByRole('button', { name: 'Check another ad' }).click();
+    await load(page, file.name, file.data);
+    await expect(row(page, 'type').locator('summary .count')).toHaveText('2 disclaimers exempt');
+  }
+});
+
+test('disclaimer marks stay with their ad when its file has a name every object has', async ({ page }) => {
+  await page.goto('./');
+  // A zip saved without an extension.
+  await pick(page, '__proto__', mockAdZip());
+  await expect(page.locator('#summary')).toBeVisible({ timeout: 90_000 });
+  await markNote(page);
+  const key = (await gwdqa(page))!.key;
+  expect(key).toMatch(/^__proto__#[0-9a-f]{8}$/);
+  expect(await marks(page)).toEqual({ [key]: { 'p#SA_note_1': true } });
+  expect(await page.evaluate(() => Object.keys(Object.prototype))).toEqual([]);
+  await page.getByRole('button', { name: 'Check another ad' }).click();
+  await load(page, 'other-ad.zip', mockAdZip());
+  await expect(row(page, 'type').locator('summary .count')).toHaveText('1 item · 1 disclaimer exempt');
+});
+
+test('a text whose label is a name every object has is not a disclaimer until it is marked', async ({ page }) => {
+  await page.goto('./');
+  const html = mockAdHtml()
+    .replace('<p class="gwd-p-e" id="SA_note_1">Tiny</p>', '<constructor style="position: absolute; left: 10px; top: 100px; font-size: 6px; line-height: 8px;">Only 6px</constructor>')
+    .replace(/\s*<p class="gwd-p-d" id="SA_disclaimer_1">Small print<\/p>/, '');
+  await load(page, 'constructor.zip', mockZip(html));
+  const type = row(page, 'type');
+  await expect(type.locator('summary .pill')).toHaveText('Fail');
+  await expect(type.locator('summary .count')).toHaveText('1 item');
+  await type.locator('summary').click();
+  await expect(type.locator('input[data-disclaimer="constructor"]').first()).not.toBeChecked();
+});
+
+// The deck never shows page two in 300x250, as an ad whose own timeline moves away from it.
+const NO_PAGE2_IN_300X250 = `<script>
+    (() => {
+      const deck = customElements.get('gwd-pagedeck').prototype;
+      const goToPage = deck.goToPage;
+      deck.goToPage = function (target) {
+        if (innerWidth === 300 && innerHeight === 250 && (target === 1 || target === 'page2')) return;
+        return goToPage.call(this, target);
+      };
+    })();
+  </script>`;
+
+test('a page that never showed leaves the checks of what renders to review, never a pass', async ({ page }) => {
+  await page.goto('./');
+  // Page two holds the 6px note, which would fail Type size if the check saw it.
+  const html = mockAdHtml()
+    .replace('["300x250", "300x250:320x480"]', '["300x250"]')
+    .replace('<script src="mock-gwd.js"></script>', `<script src="mock-gwd.js"></script>\n  ${NO_PAGE2_IN_300X250}`);
+  await load(page, 'hidden-page.zip', mockZip(html));
+  await expect(page.locator('#checklist .banner.warn')).toContainText('page2 in 300x250 never showed, so it was not checked there.');
+  const type = row(page, 'type');
+  await expect(type.locator('summary .pill')).toHaveText('Review');
+  await expect(type.locator('summary .count')).toHaveText('1 page not checked');
+
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#summary')).toContainText('Fixed, not yet downloaded', { timeout: 120_000 });
+  const meta = page.locator('#summary .meta');
+  await expect(meta).toContainText('5 checks to review');
+  await expect(meta).toContainText('1 page not checked');
+  await expect(meta).not.toContainText('Every check passes');
+  // What renders is left to review; what is read from the source alone still passes.
+  await expect(page.locator('#checklist details[data-check] summary .pill')).toHaveText(['Review', 'Review', 'Review', 'Review', 'Review', 'Pass', 'Pass', 'Pass', 'Pass', 'Pass']);
+});
+
+test('a served size with no preview leaves the checks of what renders to review', async ({ page }) => {
+  await page.goto('./');
+  const html = mockAdHtml().replace('["300x250", "300x250:320x480"]', '["300x250", "300x250:320x480", "300x250:200x100"]');
+  await load(page, 'no-preview.zip', mockZip(html));
+  await expect(page.locator('#checklist .banner.warn')).toContainText('Served size "300x250:200x100" has no preview');
+  await markNote(page);
+  const type = row(page, 'type');
+  await expect(type.locator('summary .pill')).toHaveText('Review');
+  await expect(type.locator('summary .count')).toHaveText('2 disclaimers exempt · 1 size not checked');
+  await expect(page.locator('#summary .meta')).toContainText('1 size not checked');
 });

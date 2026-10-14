@@ -9,6 +9,7 @@ import { allowedZipUrl, outsideHosts } from './net';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
 import { describeSize, frameSizes, type FrameSize } from './sizes';
+import { keyFor, legacyKey, type AdPackage } from './zip';
 
 const app = document.getElementById('app')!;
 let session: Session | null = null;
@@ -102,7 +103,7 @@ async function load(pick: () => Promise<PickedFile[]>) {
     clearResults();
     clearPreview();
     await old?.close();
-    loadDisclaimers(next.key);
+    loadDisclaimers(next.key, next.pkg);
     next.mountFrames($('#frames'), sizes, frameCard);
     layoutFrames();
     $('#drop').hidden = true;
@@ -146,34 +147,56 @@ const NET_KEY = 'gwdqa.allowThirdParty';
 const DISCLAIMER_KEY = 'gwdqa.disclaimers';
 // An id that names a disclaimer. Only ids count: GWD's generated class names are random.
 const DISCLAIMER_ID = /disclaim|legal|terms|tnc|t&c|fine-?print|small-?print/i;
-// Per element label: marked (true) or unmarked (false) as a disclaimer, for the loaded ad.
-let disclaimerChoices: Record<string, boolean> = {};
+// Per element label: marked (true) or unmarked (false) as a disclaimer, for the loaded ad. Maps,
+// not objects: labels and keys come from the ad, and one named __proto__ or constructor must not
+// find what every object inherits.
+let disclaimerChoices = new Map<string, boolean>();
+// The keys the loaded ad's marks are saved under: its own, and those of the fixed files it was
+// downloaded as, so they come back when a fixed file is checked again.
+let disclaimerKeys = new Set<string>();
 
 /** Every ad's marks, by the ad's key (adKey in src/zip.ts). */
-function storedDisclaimers(): Record<string, Record<string, boolean>> {
+function storedDisclaimers(): Map<string, Map<string, boolean>> {
   try {
-    return JSON.parse(localStorage.getItem(DISCLAIMER_KEY) ?? '{}');
+    const all: unknown = JSON.parse(localStorage.getItem(DISCLAIMER_KEY) ?? '{}');
+    const own = (v: unknown): [string, unknown][] => (v && typeof v === 'object' ? Object.entries(v) : []);
+    return new Map(own(all).map(([key, marks]) => [key, new Map(own(marks).filter((m): m is [string, boolean] => typeof m[1] === 'boolean'))]));
   } catch {
-    return {};
+    return new Map();
   }
 }
 
-function loadDisclaimers(key: string) {
-  disclaimerChoices = storedDisclaimers()[key] ?? {};
-}
-
-function saveDisclaimers(key: string) {
-  const all = storedDisclaimers();
-  all[key] = disclaimerChoices;
+function storeDisclaimers(all: Map<string, Map<string, boolean>>) {
   try {
-    localStorage.setItem(DISCLAIMER_KEY, JSON.stringify(all));
+    localStorage.setItem(DISCLAIMER_KEY, JSON.stringify(Object.fromEntries([...all].map(([key, marks]) => [key, Object.fromEntries(marks)]))));
   } catch {
     // private mode: the marks just aren't remembered
   }
 }
 
+/**
+ * Loads the marks saved under the ad's key. A zip or a folder went by its name alone before; marks
+ * saved under that name move to the ad's key, so they go on applying to this ad and to no other.
+ */
+function loadDisclaimers(key: string, pkg: AdPackage) {
+  const all = storedDisclaimers();
+  const old = legacyKey(pkg);
+  disclaimerKeys = new Set([key]);
+  disclaimerChoices = new Map(all.get(key) ?? (old !== undefined ? all.get(old) : undefined));
+  if (old === undefined || all.has(key) || !all.has(old)) return;
+  all.set(key, disclaimerChoices);
+  all.delete(old);
+  storeDisclaimers(all);
+}
+
+function saveDisclaimers() {
+  const all = storedDisclaimers();
+  for (const key of disclaimerKeys) all.set(key, disclaimerChoices);
+  storeDisclaimers(all);
+}
+
 const namedDisclaimer = (target: string) => DISCLAIMER_ID.test(/#([^.]+)/.exec(target)?.[1] ?? '');
-const isDisclaimer = (target: string) => disclaimerChoices[target] ?? namedDisclaimer(target);
+const isDisclaimer = (target: string) => disclaimerChoices.get(target) ?? namedDisclaimer(target);
 
 function allowThirdPartySaved(): boolean {
   try {
@@ -189,7 +212,7 @@ function renderNet() {
   const refers = others.length ? ` Its code refers to ${others.join(', ')}.` : ' Its code refers to no other sites apart from fonts.';
   const state = s.allowThirdParty
     ? 'The ad can contact other sites, so its trackers and pixels can fire from this preview.'
-    : 'Requests to other sites are blocked, so the ad cannot fire trackers or pixels from this preview. Fonts still load.';
+    : 'The ad\'s requests to other sites are blocked, so its trackers and pixels do not fire from this preview. Fonts still load. Code written to get around a preview can still reach other sites, for example by opening a window.';
   const clicks = !s.allowThirdParty && others.length ? ' Clicks that those sites\' scripts handle do nothing until you let the ad contact them.' : '';
   $('#net').innerHTML = `
     <label class="switch"><input type="checkbox" id="allow-net"${s.allowThirdParty ? ' checked' : ''}> Let the ad contact other sites</label>
@@ -257,6 +280,29 @@ function failing(check: CheckId): Finding[] {
   return result!.findings.filter((f) => f.check === check && f.level === 'fail' && !(check === 'type' && isDisclaimer(f.target)));
 }
 
+// The checks read from the ad as it renders in the frames (src/audit/render.ts), on each page.
+const RENDERED = new Set<CheckId>(['type', 'lineHeight', 'buttonPadding', 'buttonColor', 'marginBlock']);
+
+/**
+ * What the rendered checks never saw, such as "1 page and 1 size": pages that never showed in a
+ * size, and served sizes with no preview. '' when they saw every page in every size.
+ */
+function unchecked(): string {
+  const pages = result!.skipped.length;
+  const sizes = session!.unknownSizes.length;
+  return [pages ? plural(pages, 'page') : '', sizes ? plural(sizes, 'size') : ''].filter(Boolean).join(' and ');
+}
+
+/**
+ * Pass only when the check saw everything it checks. A note where it could not decide, or a page or
+ * size it never saw, leaves that to the user: Review.
+ */
+function verdict(check: CheckId): 'fail' | 'review' | 'pass' {
+  if (failing(check).length) return 'fail';
+  if (result!.findings.some((f) => f.check === check && f.unknown)) return 'review';
+  return RENDERED.has(check) && unchecked() ? 'review' : 'pass';
+}
+
 /** Type findings for text marked as a disclaimer, which the 8px rule exempts. */
 function exempt(): Finding[] {
   return result!.findings.filter((f) => f.check === 'type' && f.level === 'fail' && isDisclaimer(f.target));
@@ -289,8 +335,9 @@ function standinNote(s: Session): string {
 
 function renderSummary() {
   const s = session!;
-  const failed = CHECKS.filter((c) => c.id !== 'copy' && failing(c.id).length).length;
-  const review = CHECKS.filter((c) => !failing(c.id).length && result!.findings.some((f) => f.check === c.id && f.unknown)).length;
+  const failed = CHECKS.filter((c) => c.id !== 'copy' && verdict(c.id) === 'fail').length;
+  const review = CHECKS.filter((c) => c.id !== 'copy' && verdict(c.id) === 'review').length;
+  const unseen = unchecked();
   const lone = s.pkg.kind === 'html';
   const fileKind = lone ? 'HTML' : 'zip';
   const note = standinNote(s);
@@ -302,7 +349,8 @@ function renderSummary() {
         <strong>${esc(s.pkg.zipName)}</strong>${lone ? '' : ` · ${esc(s.pkg.htmlPath)}`} · ${plural(s.sizes.length, 'size')}<br>
         ${failed ? `<span class="pill fail">${plural(failed, 'check')} failing</span>` : ''}
         ${review ? `<span class="pill info">${plural(review, 'check')} to review</span>` : ''}
-        ${failed || review ? '' : '<span class="pill pass">Every check passes</span>'}
+        ${unseen ? `<span class="pill info">${unseen} not checked</span>` : ''}
+        ${failed || review || unseen ? '' : '<span class="pill pass">Every check passes</span>'}
         ${s.changed ? '<span class="pill info">Fixed, not yet downloaded</span>' : ''}
       </div>
       <div class="actions">
@@ -335,7 +383,7 @@ function groupFindings(list: Finding[], control: (f: Finding) => string = () => 
 }
 
 function disclaimerToggle(f: Finding): string {
-  const byName = disclaimerChoices[f.target] === undefined && namedDisclaimer(f.target);
+  const byName = !disclaimerChoices.has(f.target) && namedDisclaimer(f.target);
   return `<label class="exempt"><input type="checkbox" data-disclaimer="${esc(f.target)}"${isDisclaimer(f.target) ? ' checked' : ''}> Disclaimer, exempt from 8px${byName ? ' (from its id)' : ''}</label>`;
 }
 
@@ -354,11 +402,11 @@ function renderChecklist() {
     const notes = r.findings.filter((f) => f.check === c.id && f.level === 'note');
     const fixable = r.plan.fixes.some((f) => f.check === c.id);
     const targets = new Set(fails.map((f) => f.target)).size;
-    // A note where the check could not decide leaves it to the user, so it is not a pass.
-    const pill = fails.length ? '<span class="pill fail">Fail</span>' : notes.some((f) => f.unknown) ? '<span class="pill info">Review</span>' : '<span class="pill pass">Pass</span>';
+    const pill = { fail: '<span class="pill fail">Fail</span>', review: '<span class="pill info">Review</span>', pass: '<span class="pill pass">Pass</span>' }[verdict(c.id)];
     const extra = [
       exempted.length ? `${plural(new Set(exempted.map((f) => f.target)).size, 'disclaimer')} exempt` : '',
       !fails.length && notes.length ? plural(notes.length, 'note') : '',
+      RENDERED.has(c.id) && unchecked() ? `${unchecked()} not checked` : '',
     ].filter(Boolean);
     const count = [fails.length ? `${plural(targets, 'item')}${fixable ? ' · auto-fix ready' : ''}` : '', ...extra].filter(Boolean).join(' · ');
     const toggle = c.id === 'type' ? disclaimerToggle : undefined;
@@ -498,6 +546,9 @@ function download(forUpload = false) {
   const a = document.createElement('a');
   a.href = url;
   a.download = lone ? s.pkg.zipName : forUpload ? `${stem}-upload.zip` : `${stem}.zip`;
+  // The file holds the HTML as it is now, so checked again it has another key: the marks go there too.
+  disclaimerKeys.add(keyFor(a.download, new TextEncoder().encode(s.html)));
+  saveDisclaimers();
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
@@ -556,9 +607,9 @@ app.addEventListener('change', (e) => {
   if (box.id === 'allow-net') setThirdParty(box.checked);
   if (box.dataset.disclaimer !== undefined && session && result) {
     const target = box.dataset.disclaimer;
-    if (box.checked === namedDisclaimer(target)) delete disclaimerChoices[target];
-    else disclaimerChoices[target] = box.checked;
-    saveDisclaimers(session.key);
+    if (box.checked === namedDisclaimer(target)) disclaimerChoices.delete(target);
+    else disclaimerChoices.set(target, box.checked);
+    saveDisclaimers();
     renderSummary();
     renderChecklist();
     app.querySelector<HTMLInputElement>(`input[data-disclaimer="${CSS.escape(target)}"]`)?.focus();

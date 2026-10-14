@@ -1,5 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { expect, test, type Page } from '@playwright/test';
 import { mockAdHtml, mockAdZip, mockZip } from './mock-ad';
 
@@ -180,6 +182,42 @@ test('blocks the ad\'s requests to other sites unless they are allowed', async (
   await expect(page.locator('#status')).toBeEmpty({ timeout: 90_000 });
   await expect(frame(page, '300x250').locator('#SA_cta_1')).toBeVisible();
   await expect(frame(page, '300x250').locator('html')).not.toHaveAttribute('data-blocked', 'yes');
+});
+
+test('the ad cannot send requests to other sites through this page either', async ({ page }) => {
+  // Another site, on another port: what reaches it got out.
+  const hits: string[] = [];
+  const server = createServer((req, res) => {
+    hits.push(req.url ?? '');
+    res.end();
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const site = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    // The frames share this page's origin, so the ad's code can make requests from this page.
+    const html = mockAdHtml().replace('</head>', `  <script>
+    new Image().src = '${site}/own.gif';
+    new parent.Image().src = '${site}/via-parent.gif';
+    parent.fetch('${site}/via-parent-fetch', { mode: 'no-cors' }).catch(() => {});
+    parent.navigator.sendBeacon('${site}/via-parent-beacon');
+  </script>
+</head>`);
+    await page.addInitScript(() => {
+      if (window !== top) return;
+      const seen: string[] = [];
+      Object.assign(window, { blockedHere: seen });
+      document.addEventListener('securitypolicyviolation', (e) => seen.push(e.effectiveDirective));
+    });
+    await load(page, mockZip(html));
+    await expect(page.locator('#net')).toContainText('The ad\'s requests to other sites are blocked');
+    const outcome = async () => ({
+      reached: [...new Set(hits)].sort(),
+      blocked: await page.evaluate(() => [...new Set((window as unknown as { blockedHere: string[] }).blockedHere)].sort()),
+    });
+    await expect.poll(outcome).toEqual({ reached: [], blocked: ['connect-src', 'img-src'] });
+  } finally {
+    server.close();
+  }
 });
 
 test('two tabs keep their own ad', async ({ context }) => {

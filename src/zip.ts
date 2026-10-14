@@ -35,10 +35,19 @@ export function readZip(zipName: string, bytes: Uint8Array): AdPackage {
  */
 export function readFolder(picked: { path: string; data: Uint8Array }[]): AdPackage {
   const files = new Map<string, Uint8Array>();
+  const twice = new Set<string>();
   for (const f of [...picked].sort((a, b) => (a.path < b.path ? -1 : 1))) {
-    if (!JUNK.test(f.path)) files.set(f.path, f.data);
+    if (JUNK.test(f.path)) continue;
+    if (files.has(f.path)) twice.add(f.path);
+    files.set(f.path, f.data);
   }
   if (!files.size) throw new Error('The folder is empty.');
+  // Files dragged from search results, or from two folders at once, come without their folder:
+  // one of two Responsive.html files would be dropped unseen, and the other checked as the ad.
+  if (twice.size) {
+    const list = [...twice].slice(0, 3).join(', ') + (twice.size > 3 ? ` and ${twice.size - 3} more` : '');
+    throw new Error(`Files with the same name came from different folders: ${list}. They may be different ads. Check one ad at a time: its zip, its folder, or just its HTML.`);
+  }
   const entries: string[] = [];
   const dirs = new Set<string>();
   for (const path of files.keys()) {
@@ -83,13 +92,22 @@ export function findAdHtml(files: Map<string, Uint8Array>): string {
 }
 
 /**
- * The name the page remembers choices about this ad under, such as disclaimer marks. A zip or a
- * folder goes by its own name. Just the HTML, or loose files, go by the HTML's name, which GWD
- * gives every ad (Responsive.html), so a short hash of the HTML as it came is added.
+ * The key the page remembers choices about this ad under, such as disclaimer marks: the name it
+ * came as, and a short hash of its HTML. Names repeat between ads: GWD names every ad's HTML
+ * Responsive.html, and macOS names every zip it makes Archive.zip.
  */
 export function adKey(pkg: AdPackage): string {
-  if (pkg.kind === 'zip' || (pkg.kind === 'folder' && topFolder(pkg.files.keys()))) return pkg.zipName;
-  return `${pkg.zipName}#${shortHash(pkg.files.get(pkg.htmlPath)!)}`;
+  return keyFor(pkg.zipName, pkg.files.get(pkg.htmlPath)!);
+}
+
+/** The key of an ad that comes as `name` with this HTML, such as the fixed ad as it downloads. */
+export function keyFor(name: string, html: Uint8Array): string {
+  return `${name}#${shortHash(html)}`;
+}
+
+/** The key a zip or a folder had before keys held the HTML's hash: its name alone. */
+export function legacyKey(pkg: AdPackage): string | undefined {
+  return pkg.kind === 'zip' || (pkg.kind === 'folder' && topFolder(pkg.files.keys())) ? pkg.zipName : undefined;
 }
 
 /** FNV-1a, 32 bits, as 8 hex digits. */
