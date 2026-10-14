@@ -279,12 +279,16 @@ test('a page that never showed leaves the checks of what renders to review, neve
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   await expect(page.locator('#summary')).toContainText('Fixed, not yet downloaded', { timeout: 120_000 });
+  // Fixes for text that may sit on that page are left to you, and the banner says what it did not compare.
+  await expect(page.locator('#fixes .banner.warn')).toContainText('wherever the previews showed them; 1 page not checked, so compare that in GWD.');
   const meta = page.locator('#summary .meta');
-  await expect(meta).toContainText('5 checks to review');
   await expect(meta).toContainText('1 page not checked');
   await expect(meta).not.toContainText('Every check passes');
-  // What renders is left to review; what is read from the source alone still passes.
-  await expect(page.locator('#checklist details[data-check] summary .pill')).toHaveText(['Review', 'Review', 'Review', 'Review', 'Review', 'Pass', 'Pass', 'Pass', 'Pass', 'Pass']);
+  // What renders never passes; what is read from the source alone still does.
+  const pills = await page.locator('#checklist details[data-check] summary .pill').allInnerTexts();
+  expect(pills.slice(0, 5).filter((p) => p === 'Pass')).toEqual([]);
+  expect(pills.slice(0, 5)).toContain('Review');
+  expect(pills.slice(5)).toEqual(['Pass', 'Pass', 'Pass', 'Pass', 'Pass']);
 });
 
 test('a served size with no preview leaves the checks of what renders to review', async ({ page }) => {

@@ -440,10 +440,12 @@ function applyBanner(a: ApplyResult): string {
     texts ? `${plural(texts, 'text')} moved` : '',
   ].filter(Boolean).join(' and ');
   const live = what(p.respaced.length, p.moved.length);
-  const respaced = laid.diffs.filter((d) => d.spacing);
-  const moved = laid.diffs.filter((d) => !d.spacing);
+  // The previews compare their own sizes with the ad running; the layout without scripts adds the sizes between them.
+  const between = laid.diffs.filter((d) => !d.previewed);
+  const respaced = between.filter((d) => d.spacing);
+  const moved = between.filter((d) => !d.spacing);
   const net = what(respaced.length, moved.length);
-  const where = [...new Set(laid.diffs.map((d) => d.size))];
+  const where = [...new Set(between.map((d) => d.size))];
   const sizes = listed(where);
   const texts = p.texts === 1 ? 'The one text is exactly where it was' : `All ${p.texts} texts are exactly where they were`;
   const spacing = p.spacings ? ', and every line spacing is unchanged' : '';
@@ -452,6 +454,8 @@ function applyBanner(a: ApplyResult): string {
       return `<div class="banner warn">${applied}. ${texts}${spacing}, in every preview. The sizes between them could not be laid out to compare (${esc(laid.error)}): check them in GWD, or undo.</div>`;
     }
     const every = result && result.pages > 1 ? 'in every size and on every page' : 'in every size';
+    const missed = result ? unchecked() : '';
+    if (missed) return `<div class="banner warn">${applied}. ${texts}${spacing}, wherever the previews showed them; ${missed} not checked, so compare ${missed.includes('and') ? 'those' : 'that'} in GWD.</div>`;
     return `<div class="banner ok">${applied}. ${texts}${spacing}, ${every}.</div>`;
   }
   // The sizes no preview shows are laid out without scripts, so they are told apart.

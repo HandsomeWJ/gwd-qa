@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <!-- The preview frames share this page's origin, so the ad's code can reach into this page and make
          requests from it. This policy blocks those as the frames' own (public/sw.js) blocks the ad's. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; media-src 'self'; frame-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <!-- The frames that lay fixes out (srcdoc) inherit this policy: base-uri lets their <base href> point at the ad's files, and stylesheets and fonts may come from https: as in the previews. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https:; img-src 'self' data:; font-src 'self' data: https:; connect-src 'self'; media-src 'self'; frame-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Check a Google Web Designer HTML5 ad against the GWD QA checklist, fix the safe items, and download the fixed zip. Runs entirely in your browser.">
     <title>GWD Ad QA</title>

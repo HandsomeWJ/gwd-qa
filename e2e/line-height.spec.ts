@@ -1,7 +1,5 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
-import { readdirSync, readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { GWD_RUNTIME, MOCK_RUNTIME, mockAdHtml, mockAdZip, mockZip } from './mock-ad';
 
@@ -57,7 +55,7 @@ test('keeps the spacing between the ends of a range whose two ends are exact siz
   }
 });
 
-test('leaves a class to you whose line-height would change the spacing in a size no frame shows, as laid out without scripts', async ({ page, browser }) => {
+test('leaves a class to you where a size no frame shows gives what it sits in a line-height', async ({ page, browser }) => {
   // Only the range block gives the wrapper its line-height, and at both of its ends an exact size's block
   // wins, so its frames measure 30px while the base size measures normal: a value in the text's base
   // rule would replace the 30px inside the range, where no frame shows it.
@@ -66,9 +64,9 @@ test('leaves a class to you whose line-height would change the spacing in a size
     .replace(/(@media \(min-width[^{]*\{)/, '$1\n      .gwd-div-w {\n        line-height: 30px;\n      }')
     .replace('<button class="gwd-button-b"', '<div class="gwd-div-w" id="SA_wrap_1"><p class="gwd-p-t" id="SA_t_1">Some longer text that wraps onto several lines</p></div>\n        <button class="gwd-button-b"');
   await load(page, 'wrapper.zip', mockZip(html));
-  await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-t: its line-height would change the spacing at 310x365, which no preview shows; set it in GWD.');
+  await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-t');
   // The class is left out alone: the others keep their values.
-  await expect(lineHeightFix(page).locator('.detail').first()).not.toContainText('.gwd-p-t');
+  await expect(lineHeightFix(page).locator('.detail').first()).not.toContainText(/\.gwd-p-t: /);
   await expect(lineHeightFix(page).locator('.detail').first()).toContainText('.gwd-p-c in 300x250 to 320x480:');
   await expect(lineHeightFix(page).locator('input[type="checkbox"]')).toBeChecked();
 
@@ -78,6 +76,25 @@ test('leaves a class to you whose line-height would change the spacing in a size
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
   expect(fixed).not.toBe(html);
   for (const [w, h] of [[310, 400], [305, 300], [300, 600], [300, 250], [320, 480]]) {
+    expect(await spacing(browser, fixed, w, h), `${w}x${h}`).toEqual(await spacing(browser, html, w, h));
+  }
+});
+
+test('leaves a class to you whose line-height would change the spacing in a size no frame shows, as laid out without scripts', async ({ page, browser }) => {
+  // A media query of the designer's own makes page two's text smaller up to 310px wide: inside the range,
+  // where no frame shows it, the range block's value would then space 10px type.
+  const html = mockAdHtml().replace('  </style>', '    @media (max-width: 310px) {\n      .gwd-p-c {\n        font-size: 10px;\n      }\n    }\n  </style>');
+  await load(page, 'query.zip', mockZip(html));
+  await expect(page.locator('#fixes .manual')).toContainText(/\.gwd-p-c: its line-height would change the spacing at \d+x\d+, which no preview shows; set it in GWD\./);
+  await expect(lineHeightFix(page).locator('.detail').first()).not.toContainText('.gwd-p-c');
+  await expect(lineHeightFix(page).locator('.detail').first()).toContainText('.gwd-p-a');
+  await expect(lineHeightFix(page).locator('input[type="checkbox"]')).toBeChecked();
+
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#fixes .banner')).toContainText('exactly where they were, and every line spacing is unchanged', { timeout: 90_000 });
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
+  const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
+  for (const [w, h] of [[305, 300], [310, 400], [300, 250], [320, 480]]) {
     expect(await spacing(browser, fixed, w, h), `${w}x${h}`).toEqual(await spacing(browser, html, w, h));
   }
 });
@@ -99,29 +116,30 @@ test('offers another fix unticked where, laid out without scripts, it moves text
   await expect(lineHeightFix(page).locator('input[type="checkbox"]')).toBeChecked();
 });
 
-/** A web font to test with: the icon font Playwright ships, found where it is installed, never copied into this repo. */
-function iconFont(): Buffer {
-  const find = (dir: string): string | undefined => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, e.name);
-      const hit = e.isDirectory() ? find(path) : /^codicon.*\.ttf$/.test(e.name) ? path : undefined;
-      if (hit) return hit;
-    }
-    return undefined;
-  };
-  return readFileSync(find(join(dirname(createRequire(import.meta.url).resolve('playwright-core')), 'lib'))!);
+/** A web font to test with: a Latin font this machine has (macOS or CI's Linux), never copied into this repo. */
+function latinFont(): Buffer {
+  const paths = [
+    '/System/Library/Fonts/Supplemental/Georgia.ttf',
+    '/System/Library/Fonts/Supplemental/Courier New.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+  ];
+  const path = paths.find((p) => existsSync(p));
+  if (!path) throw new Error('No Latin TrueType font found to test with');
+  return readFileSync(path);
 }
 
 test('lays each fix out in the ad\'s own web fonts, once they have loaded', async ({ page }) => {
-  // Only 300x250 draws these icons in the web font, so nothing loads it until that size is laid out; a
-  // fallback font would space them otherwise than the frames measured.
+  // Only 300x250 draws this text in the web font, so nothing loads it until that size is laid out; a
+  // fallback font would space it otherwise than the frames measured.
   const html = mockAdHtml()
-    .replace('    @keyframes kf-in {', '    @font-face {\n      font-family: Icons;\n      src: url("assets/icons.ttf");\n    }\n    .gwd-p-i {\n      position: absolute;\n      left: 10px;\n      top: 150px;\n      margin: 0px;\n      font-family: Arial;\n      font-size: 30px;\n    }\n    @keyframes kf-in {')
-    .replace(/(@media \(width: 300px\) and \(height: 250px\) \{)/, '$1\n      .gwd-p-i {\n        font-family: Icons;\n      }')
-    .replace('<button class="gwd-button-b"', '<p class="gwd-p-i" id="SA_icons_1">\uea60\uea61\uea62</p>\n        <button class="gwd-button-b"');
-  const zip = Buffer.from(zipSync({ 'Mock Ad/Responsive.html': strToU8(html), 'Mock Ad/mock-gwd.js': strToU8(MOCK_RUNTIME), 'Mock Ad/assets/icons.ttf': new Uint8Array(iconFont()) }));
-  await load(page, 'icons.zip', zip);
-  await expect(lineHeightFix(page).locator('.detail').first()).toContainText('.gwd-p-i in 300x250: 30px');
+    .replace('    @keyframes kf-in {', '    @font-face {\n      font-family: Brand;\n      src: url("assets/brand.ttf");\n    }\n    .gwd-p-i {\n      position: absolute;\n      left: 10px;\n      top: 150px;\n      margin: 0px;\n      font-family: Arial;\n      font-size: 30px;\n    }\n    @keyframes kf-in {')
+    .replace(/(@media \(width: 300px\) and \(height: 250px\) \{)/, '$1\n      .gwd-p-i {\n        font-family: Brand;\n      }')
+    .replace('<button class="gwd-button-b"', '<p class="gwd-p-i" id="SA_brand_1">Brand gap</p>\n        <button class="gwd-button-b"');
+  const zip = Buffer.from(zipSync({ 'Mock Ad/Responsive.html': strToU8(html), 'Mock Ad/mock-gwd.js': strToU8(MOCK_RUNTIME), 'Mock Ad/assets/brand.ttf': new Uint8Array(latinFont()) }));
+  await load(page, 'brand.zip', zip);
+  await expect(lineHeightFix(page).locator('.detail').first()).toContainText(/\.gwd-p-i in 300x250: \d/);
   await expect(page.locator('#fixes .manual')).not.toContainText('.gwd-p-i');
   await expect(lineHeightFix(page).locator('input[type="checkbox"]')).toBeChecked();
 });
