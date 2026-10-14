@@ -212,7 +212,7 @@ function renderNet() {
   const refers = others.length ? ` Its code refers to ${others.join(', ')}.` : ' Its code refers to no other sites apart from fonts.';
   const state = s.allowThirdParty
     ? 'The ad can contact other sites, so its trackers and pixels can fire from this preview.'
-    : 'Requests to other sites are blocked, so the ad cannot fire trackers or pixels from this preview. Fonts still load.';
+    : 'The ad\'s requests to other sites are blocked, so its trackers and pixels do not fire from this preview. Fonts still load. Code written to get around a preview can still reach other sites, for example by opening a window.';
   const clicks = !s.allowThirdParty && others.length ? ' Clicks that those sites\' scripts handle do nothing until you let the ad contact them.' : '';
   $('#net').innerHTML = `
     <label class="switch"><input type="checkbox" id="allow-net"${s.allowThirdParty ? ' checked' : ''}> Let the ad contact other sites</label>
