@@ -40,11 +40,25 @@ const TEXT_TAGS = ['p', 'span', 'button'];
 const px = (n: number) => `${+n.toFixed(2)}px`;
 // Properties that only change how things look: a value that starts to apply never moves text.
 // Not filter or backdrop-filter: they make their element the containing block of positioned text.
+// Not transition-duration, -delay or -timing-function: they animate whatever transition-property
+// names, by default all, so text that jumped would slide or grow; a transition is paint only when
+// every property it names is (paintOnlyTransition).
 const PAINT_ONLY = new Set([
   'opacity', 'visibility', 'color', 'background', 'background-color', 'background-image', 'border-color', 'outline', 'outline-color',
-  'box-shadow', 'text-shadow', 'cursor', 'z-index', 'transition', 'transition-delay', 'transition-duration', 'transition-property',
-  'transition-timing-function',
+  'box-shadow', 'text-shadow', 'cursor', 'z-index',
 ]);
+// The words of a transition that are not the property it animates.
+const TRANSITION_WORDS = new Set(['ease', 'ease-in', 'ease-out', 'ease-in-out', 'linear', 'step-start', 'step-end', 'normal', 'allow-discrete']);
+
+/** Whether every property a transition value animates only changes how things look. */
+function paintOnlyTransition(value: string): boolean {
+  if (/\b(var|env|attr)\(/i.test(value)) return false;
+  // Functions (cubic-bezier, steps) out, then each comma-separated transition; one naming no property animates all.
+  return value.replace(/[\w-]+\([^()]*\)/g, ' ').split(',').every((item) => {
+    const props = item.trim().split(/\s+/).filter((w) => /^-?[a-z][\w-]*$/i.test(w) && !TRANSITION_WORDS.has(w.toLowerCase()));
+    return props.length === 1 && (props[0].toLowerCase() === 'none' || PAINT_ONLY.has(props[0].toLowerCase()));
+  });
+}
 
 class Planner {
   readonly fixes: PlannedFix[] = [];
@@ -492,9 +506,15 @@ class Planner {
     const moving: { edits: Edit[]; notes: string[] } = { edits: [], notes: [] };
     for (const v of this.input.report.cssValues) {
       const handler = v.handler ? ` (in ${v.handler})` : '';
-      const invalid = `${v.target} ${v.prop}: ${v.value}${handler} is not valid CSS, so browsers ignore it`;
+      const file = v.file ? ` in ${v.file}` : '';
+      const invalid = `${v.target} ${v.prop}: ${v.value}${handler}${file} ${v.note ? `is ignored: ${v.note}` : 'is not valid CSS, so browsers ignore it'}`;
       if (!v.fixed) {
-        this.manualNote('cssValues', `${invalid}; correct it in GWD.`);
+        this.manualNote('cssValues', `${invalid}; correct it in ${v.file ?? 'GWD'}.`);
+        continue;
+      }
+      // Only the HTML is edited; another file's offsets are not the HTML's.
+      if (v.file) {
+        this.manualNote('cssValues', `${invalid}; write ${v.fixed} in ${v.file}.`);
         continue;
       }
       const located = Number.isFinite(v.start) && Number.isFinite(v.end);
@@ -505,7 +525,8 @@ class Planner {
         this.manualNote('cssValues', `${invalid}; write ${v.fixed} in GWD.`);
         continue;
       }
-      const into = PAINT_ONLY.has(v.prop) ? safe : moving;
+      const transition = v.prop === 'transition' || v.prop === 'transition-property';
+      const into = (transition ? paintOnlyTransition(v.fixed) : PAINT_ONLY.has(v.prop)) ? safe : moving;
       into.edits.push({ start: v.start, end: v.end, text: v.fixed });
       into.notes.push(`${v.target} ${v.prop}: ${v.value} -> ${v.fixed}${handler}`);
     }
@@ -515,7 +536,7 @@ class Planner {
       'Write decimal points in CSS values where it moves text',
       moving.notes.join(', '),
       moving.edits,
-      'Browsers ignore these values today, so once valid they size or place what they style. Check the result in the preview.',
+      'Browsers ignore these values today, so once valid they size, place or animate what they style. Check the result in the preview.',
     );
   }
 }

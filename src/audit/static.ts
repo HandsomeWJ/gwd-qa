@@ -1,7 +1,7 @@
 // Source-level checks: what the HTML alone can prove, plus the copy list for a typo review.
 
 import { frameOffset, lastCompound, parseCss, type CssModel, type Decl, type KeyframesRule } from '../css/parse';
-import { cssSupports, cssValueIssues, describeIssue, type CssValidator, type CssValueIssue } from './cssvalues';
+import { checkCssValues, cssSupports, describeIssue, type AdFiles, type CssValidator, type CssValueIssue } from './cssvalues';
 import type { CopyItem, Finding } from './types';
 
 const POSITION = ['top', 'left', 'right', 'bottom'];
@@ -63,14 +63,15 @@ export function servedSizes(doc: Document, css: CssModel): string[] {
   return w && h ? [`${parseFloat(w)}x${parseFloat(h)}`] : [];
 }
 
-export function staticAudit(html: string, css: CssModel = parseCss(html), valid: CssValidator = cssSupports): StaticReport {
+/** `ad` has the files the HTML loads, whose stylesheets and scripts the CSS values check reads too. */
+export function staticAudit(html: string, css: CssModel = parseCss(html), valid: CssValidator = cssSupports, ad?: AdFiles): StaticReport {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const findings: Finding[] = [];
   const fadeDecls: Decl[] = [];
   const unchanged: StaticReport['unchanged'] = [];
-  const cssValues = cssValueIssues(html, css, valid);
+  const { issues: cssValues, unknown } = checkCssValues(html, css, valid, ad);
   // The browser ignores an invalid opacity, so it never starts a fade at 0.
-  const ignored = new Set(cssValues.map((v) => v.start));
+  const ignored = new Set(cssValues.filter((v) => !v.file).map((v) => v.start));
   const opacityOf = (decls: Decl[]) => decls.find((d) => d.prop === 'opacity' && !ignored.has(d.valueStart));
 
   const environment = doc.querySelector('meta[name="environment"]')?.getAttribute('content') ?? null;
@@ -143,8 +144,10 @@ export function staticAudit(html: string, css: CssModel = parseCss(html), valid:
   }
 
   for (const v of cssValues) {
-    findings.push({ check: 'cssValues', level: 'fail', target: v.target, message: describeIssue(v), ...(v.fixed ? {} : { hint: 'Correct the value in GWD.' }) });
+    const hint = v.file ? `Correct the value in ${v.file}.` : v.fixed ? null : 'Correct the value in GWD.';
+    findings.push({ check: 'cssValues', level: 'fail', target: v.target, message: describeIssue(v), ...(hint ? { hint } : {}) });
   }
+  for (const u of unknown) findings.push({ check: 'cssValues', level: 'note', target: u.target, message: u.message, unknown: true });
 
   return { sizes: servedSizes(doc, css), environment, findings, copy: copyList(doc), fadeDecls, unchanged, cssValues };
 }

@@ -1,10 +1,11 @@
 // Finds CSS values a browser rejects, and so silently ignores, such as opacity: 0,3 typed with a
 // decimal comma. Reads <style> blocks, style="" attributes, and the styles that GWD events and
 // scripts set: setInlineStyle(), style.cssText, setAttribute('style'), style.<prop> and
-// style.setProperty().
+// style.setProperty(). Stylesheets and scripts the ad loads from its own files are read too.
 
-import { parseDeclList, sizeOfMedia, startTags, type CssModel, type Decl, type Tag } from '../css/parse';
+import { parseCss, parseDeclList, sizeOfMedia, startTags, type CssModel, type Decl, type Tag } from '../css/parse';
 import { describeSize } from '../sizes';
+import { dirOf, GWD_RUNTIME, type AdPackage } from '../zip';
 
 /** Whether a browser accepts `value` for `prop`. */
 export type CssValidator = (prop: string, value: string) => boolean;
@@ -20,15 +21,28 @@ export interface CssValueIssue {
   via: string;
   /** The GWD event handler or function a script sets it in, when it has a name. */
   handler: string | null;
+  /** The stylesheet or script it is in, when that is one of the ad's other files; else it is in the HTML. */
+  file?: string;
   prop: string;
   value: string; // as the browser reads it, without !important
-  start: number; // the value's source text in the HTML
+  start: number; // the value's source text in the HTML, or in `file`
   end: number;
   /** The value with its decimal commas made points, when that makes it valid. */
   fixed: string | null;
+  /** Why the browser ignores it, when the value is not what is wrong. */
+  note?: string;
 }
 
-type Where = Pick<CssValueIssue, 'target' | 'via' | 'handler'>;
+/** Something the check could not read or decide, so the user must look. */
+export interface CssValueUnknown {
+  target: string;
+  message: string;
+}
+
+/** The ad's files, which the stylesheets and scripts it loads are read from. */
+export type AdFiles = Pick<AdPackage, 'files' | 'htmlPath'>;
+
+type Where = Pick<CssValueIssue, 'target' | 'via' | 'handler' | 'file'>;
 
 // Starts at the '!', so a long run of spaces in a value costs no backtracking.
 const IMPORTANT = /!\s*important$/i;
@@ -36,31 +50,51 @@ const PROP = /^-{0,2}[a-z][a-z0-9-]*$/;
 const JS_TYPE = /^((text|application)\/(x-)?(java|ecma)script|text\/jscript|module)$/i;
 // GWD's components define its elements; an ad's own scripts never do.
 const GWD_ELEMENT = /\b(customElements\.define|document\.registerElement)\(\s*["']gwd-/;
+// Longer a.b.c… chains are not spelled out, so that naming what a script styles stays cheap.
+const MAX_CHAIN = 32;
 
 const withoutImportant = (value: string) => {
   const m = IMPORTANT.exec(value);
   return m ? value.slice(0, m.index).trimEnd() : value;
 };
 
-const pointDecimals = (s: string) => s.replace(/(?<=\d),(?=\d)/g, '.');
+/** Where the url( at s[k] ends: past its ')', or at the end of the value. */
+function urlEnd(s: string, k: number): number {
+  let e = k + 4;
+  while (e < s.length && /\s/.test(s[e])) e++;
+  if (s[e] === '"' || s[e] === "'") e = stringEnd(s, e) + 1;
+  while (e < s.length && s[e] !== ')') e += s[e] === '\\' ? 2 : 1;
+  return Math.min(e + 1, s.length);
+}
 
-/** pointDecimals() outside brackets only, so that function arguments written without spaces keep their commas. */
-function pointTopDecimals(s: string): string {
+/**
+ * The value with its decimal commas made points: all of them, or (`top`) only those outside
+ * brackets, so that function arguments written without spaces keep their commas. Never inside
+ * url() or a string, where a comma is part of a file name, an SVG path or text.
+ */
+function pointDecimals(s: string, top: boolean): string {
   let out = '';
   let depth = 0;
-  for (let k = 0; k < s.length; k++) {
+  for (let k = 0; k < s.length; ) {
     const c = s[k];
+    const kept = c === '"' || c === "'" ? stringEnd(s, k) + 1 : (c === 'u' || c === 'U') && /^url\($/i.test(s.slice(k, k + 4)) && !/[\w-]/.test(s[k - 1] ?? '') ? urlEnd(s, k) : -1;
+    if (kept > k) {
+      out += s.slice(k, kept);
+      k = kept;
+      continue;
+    }
     if (c === '(') depth++;
     else if (c === ')') depth = Math.max(0, depth - 1);
-    out += c === ',' && !depth && /\d/.test(s[k - 1] ?? '') && /\d/.test(s[k + 1] ?? '') ? '.' : c;
+    out += c === ',' && (!top || !depth) && /\d/.test(s[k - 1] ?? '') && /\d/.test(s[k + 1] ?? '') ? '.' : c;
+    k++;
   }
   return out;
 }
 
 /**
- * GWD's own runtime, inlined into the HTML: a component (data-source, data-exports-type), the
- * events support or another runtime file. The ad cannot change it, and it compares and picks
- * values rather than setting them ("none" != c ? c : "auto").
+ * GWD's own runtime: a component (data-source, data-exports-type), the events support or another
+ * runtime file, inlined into the HTML or loaded from one of its files. The ad cannot change it,
+ * and it compares and picks values rather than setting them ("none" != c ? c : "auto").
  */
 function gwdRuntime(tag: Tag, content: string): boolean {
   const attrs = [...tag.attrs.keys()];
@@ -71,66 +105,209 @@ function gwdRuntime(tag: Tag, content: string): boolean {
   );
 }
 
-/** What is wrong with a value, and where a script or a style attribute sets it. */
+/** What is wrong with a value, and where a script, a style attribute or another file sets it. */
 export function describeIssue(v: CssValueIssue): string {
+  const file = v.file ? `, in ${v.file}` : '';
   const where = v.via === 'style attribute'
     ? ' It is in its style attribute.'
-    : v.via ? ` ${v.via} sets it${v.handler ? ` in ${v.handler}` : ''}.` : '';
-  return `"${v.prop}: ${v.value}" is not valid CSS, so browsers ignore it${v.fixed ? `; write ${v.fixed}` : ''}.${where}`;
+    : v.via ? ` ${v.via} sets it${v.handler ? ` in ${v.handler}` : ''}${file}.` : v.file ? ` It is in ${v.file}.` : '';
+  const why = v.note ? `is ignored: ${v.note}` : `is not valid CSS, so browsers ignore it${v.fixed ? `; write ${v.fixed}` : ''}`;
+  return `"${v.prop}: ${v.value}" ${why}.${where}`;
 }
 
-export function cssValueIssues(html: string, css: CssModel, valid: CssValidator = cssSupports): CssValueIssue[] {
+export function cssValueIssues(html: string, css: CssModel, valid: CssValidator = cssSupports, ad?: AdFiles): CssValueIssue[] {
+  return checkCssValues(html, css, valid, ad).issues;
+}
+
+/**
+ * The CSS values browsers ignore, and what the check could not read. `ad` has the files the HTML
+ * loads; without it, every stylesheet or script it loads from its own files is one not read.
+ */
+export function checkCssValues(
+  html: string,
+  css: CssModel,
+  valid: CssValidator = cssSupports,
+  ad?: AdFiles,
+): { issues: CssValueIssue[]; unknown: CssValueUnknown[] } {
   const issues: CssValueIssue[] = [];
+  const unknown: CssValueUnknown[] = [];
   const known = new Map<string, boolean>();
-  const check = (prop: string, value: string, start: number, end: number, where: Where) => {
-    // Vendor and unknown properties are skipped: a browser that does not know one ignores it by design.
-    if (prop.startsWith('-') || !value) return;
+  // Unknown properties are skipped, vendor ones included: a browser that does not know one ignores it by design.
+  const knows = (prop: string) => {
     if (!known.has(prop)) known.set(prop, valid(prop, 'inherit'));
-    if (!known.get(prop) || valid(prop, value)) return;
-    // Every decimal comma made a point; failing that, only those outside functions, as in "1,5px rgba(0,0,0,0.5)".
-    const all = pointDecimals(value);
-    const top = pointTopDecimals(value);
-    const fixed = all !== value && valid(prop, all) ? all : top !== value && top !== all && valid(prop, top) ? top : null;
+    return known.get(prop)!;
+  };
+  const check = (prop: string, value: string, start: number, end: number, where: Where) => {
+    if (!value || !knows(prop) || valid(prop, value)) return;
+    // Decimal commas made points outside functions, as in "1,5px rgba(0,0,0,0.5)"; failing that, every one.
+    const top = pointDecimals(value, true);
+    const all = pointDecimals(value, false);
+    const fixed = top !== value && valid(prop, top) ? top : all !== value && all !== top && valid(prop, all) ? all : null;
     issues.push({ ...where, prop, value, start, end, fixed });
   };
-  /** `at` maps an offset in the text the declarations were read from to the HTML. */
+  /** `at` maps an offset in the text the declarations were read from to the HTML (or the file). */
   const checkDecls = (decls: Decl[], where: Where, at: (i: number) => number = (i) => i) => {
     for (const d of decls) {
       const value = withoutImportant(d.value);
       check(d.prop, value, at(d.valueStart), at(d.valueStart + value.length), where);
     }
   };
+  /**
+   * A property set with style.setProperty(name, value), which GWD's setInlineStyle() also calls:
+   * the name is taken as written, spaces and all, and !important belongs in its own argument.
+   */
+  const setProperty = (name: string, src: Source, from: number, to: number, where: Where) => {
+    const value = src.text.slice(from, to);
+    const trimmed = name.trim();
+    const custom = trimmed.startsWith('--');
+    // A custom property's name is its own; whether one with spaces around it is set is not checked.
+    if (!value || !trimmed || (custom && name !== trimmed)) return;
+    const prop = custom ? trimmed : trimmed.toLowerCase(); // as setProperty() reads it
+    if (!knows(prop)) return;
+    const note = name !== trimmed
+      ? `${where.via} takes the spaces around the name as part of it, so browsers know no such property`
+      : IMPORTANT.test(value) ? `${where.via} takes !important as part of the value, which browsers then reject` : null;
+    if (!note) check(prop, value, src.at[from], src.at[to], where);
+    else issues.push({ ...where, prop: name !== trimmed ? name : prop, value, start: src.at[from], end: src.at[to], fixed: null, note });
+  };
 
   const inMedia = (media: string | null) => (media ? ` in ${describeSize(sizeOfMedia(media) ?? media)}` : '');
-  const inBlock = (target: string): Where => ({ target, via: '', handler: null });
-  for (const rule of css.rules) checkDecls(rule.decls, inBlock(rule.selector + inMedia(rule.media)));
-  for (const block of css.keyframes) {
-    for (const frame of block.frames) checkDecls(frame.decls, inBlock(`${block.name} ${frame.selector}${inMedia(block.media)}`));
+  const checkSheet = (model: CssModel, file?: string, at?: (i: number) => number) => {
+    const inBlock = (target: string): Where => ({ target, via: '', handler: null, ...(file ? { file } : {}) });
+    for (const rule of model.rules) checkDecls(rule.decls, inBlock(rule.selector + inMedia(rule.media)), at);
+    for (const block of model.keyframes) {
+      for (const frame of block.frames) checkDecls(frame.decls, inBlock(`${block.name} ${frame.selector}${inMedia(block.media)}`), at);
+    }
+  };
+  /** What a script sets, inline in the HTML or in `file`. */
+  const hits = (file?: string): ScriptHits => {
+    const inFile = (where: Where): Where => (file ? { ...where, file } : where);
+    return {
+      list: (src, where) => {
+        const decls = declList(src.text);
+        if (decls) checkDecls(decls, inFile(where), (i) => src.at[i]);
+      },
+      inline: (src, where) => {
+        for (const d of gwdInlineStyles(src.text)) setProperty(d.name, src, d.valueStart, d.valueEnd, inFile(where));
+      },
+      property: (name, src, where) => {
+        const lead = src.text.length - src.text.trimStart().length;
+        setProperty(name, src, lead, src.text.trimEnd().length, inFile(where));
+      },
+      single: (prop, src, where) => {
+        const value = src.text.trim();
+        const lead = src.text.length - src.text.trimStart().length;
+        check(prop, value, src.at[lead], src.at[lead + value.length], inFile(where));
+      },
+      unknown: (target, message) => unknown.push({ target, message: file ? `${message} It is in ${file}.` : message }),
+    };
+  };
+
+  checkSheet(css);
+  // The ad's own stylesheets and scripts; each is read once.
+  const files = new AdFileReader(ad, unknown);
+  const sheet = (path: string, label: string, chain = 0) => {
+    if (GWD_RUNTIME.test(path.split('/').pop()!)) return;
+    const text = files.read(path, label, 'its CSS values were not checked');
+    if (text === null) return;
+    // parseCss reads <style> elements, so the file is read as one; '</style' in it is made inert.
+    const wrapped = `<style>${text.replace(/<\/(?=style)/gi, '< ')}</style>`;
+    checkSheet(parseCss(wrapped), path, (i) => i - '<style>'.length);
+    if (chain < MAX_IMPORTS) for (const ref of imports(text)) files.ref(ref, path, (p, l) => sheet(p, l, chain + 1));
+  };
+  for (const block of css.styleBlocks) {
+    for (const ref of imports(html.slice(block.open, block.close))) files.ref(ref, ad?.htmlPath ?? '', sheet);
   }
 
   for (const tag of startTags(html)) {
     const style = tag.attrs.get('style');
     if (style) {
       const src = htmlText(style.value, style.start);
-      checkDecls(parseDeclList(src.text), { target: tagLabel(tag), via: 'style attribute', handler: null }, (i) => src.at[i]);
+      if (src.undecoded) unknown.push({ target: tagLabel(tag), message: `Its style attribute has ${src.undecoded}, which could not be decoded here, so its CSS values were not checked.` });
+      else checkDecls(parseDeclList(src.text), { target: tagLabel(tag), via: 'style attribute', handler: null }, (i) => src.at[i]);
+    }
+    if (tag.name === 'link') {
+      const rel = (tag.attrs.get('rel')?.value ?? '').toLowerCase().split(/\s+/);
+      const type = tag.attrs.get('type')?.value.trim() || 'text/css';
+      const href = tag.attrs.get('href');
+      if (!href || !rel.includes('stylesheet') || rel.includes('alternate') || tag.attrs.has('disabled') || !/^text\/css$/i.test(type) || gwdRuntime(tag, '')) continue;
+      files.ref(htmlText(href.value, href.start).text, ad?.htmlPath ?? '', sheet);
+      continue;
     }
     const type = tag.attrs.get('type')?.value.trim() || 'text/javascript';
-    if (tag.name !== 'script' || !tag.content || tag.attrs.has('src') || tag.attrs.has('gwd-served-sizes') || !JS_TYPE.test(type)) continue;
+    if (tag.name !== 'script' || tag.attrs.has('gwd-served-sizes') || !JS_TYPE.test(type)) continue;
+    const src = tag.attrs.get('src');
+    if (src) {
+      // A script with a src runs that file, never its own content.
+      const ref = htmlText(src.value, src.start).text;
+      if (!ref.trim() || gwdRuntime(tag, '')) continue;
+      files.ref(ref, ad?.htmlPath ?? '', (path, label) => {
+        if (GWD_RUNTIME.test(path.split('/').pop()!)) return;
+        const text = files.read(path, label, 'the styles it sets were not checked');
+        if (text !== null && !GWD_ELEMENT.test(text)) scanScript(text, 0, text.length, hits(path));
+      });
+      continue;
+    }
+    if (!tag.content) continue;
     const { start, end } = tag.content;
     if (gwdRuntime(tag, html.slice(start, end))) continue;
-    scanScript(html, start, end, {
-      list: (src, where) => {
-        const decls = declList(src.text);
-        if (decls) checkDecls(decls, where, (i) => src.at[i]);
-      },
-      single: (prop, src, where) => {
-        const value = src.text.trim();
-        const lead = src.text.length - src.text.trimStart().length;
-        check(prop, value, src.at[lead], src.at[lead + value.length], where);
-      },
-    });
+    scanScript(html, start, end, hits());
   }
-  return issues.sort((a, b) => a.start - b.start);
+  const order = (v: CssValueIssue) => (v.file ? files.order(v.file) : -1);
+  return { issues: issues.sort((a, b) => order(a) - order(b) || a.start - b.start), unknown };
+}
+
+// @import chains deeper than this are never real CSS.
+const MAX_IMPORTS = 8;
+
+/** The URLs a stylesheet's @import rules load. */
+function imports(css: string): string[] {
+  const bare = css.replace(/\/\*[\s\S]*?(\*\/|$)/g, ' ');
+  return [...bare.matchAll(/@import\s+(?:url\(\s*(["']?)([^"')]*)\1\s*\)|(["'])([^"'\n]*)\3)/gi)].map((m) => (m[2] ?? m[4]).trim());
+}
+
+/**
+ * Reads the stylesheets and scripts the ad loads from its own files, each once. Another site's
+ * file is never the ad's to fix; one the ad does not have is reported as not read.
+ */
+class AdFileReader {
+  private readonly seen = new Map<string, number>();
+  private readonly decoder = new TextDecoder();
+
+  constructor(private readonly ad: AdFiles | undefined, private readonly unknown: CssValueUnknown[]) {}
+
+  /** Resolves `ref` against the file at `from`, as the preview frame does, and calls `then` once per file. */
+  ref(ref: string, from: string, then: (path: string, label: string) => void) {
+    const base = `https://ad.invalid/${dirOf(from).split('/').map(encodeURIComponent).join('/')}`;
+    let url: URL;
+    try {
+      url = new URL(ref, base);
+    } catch {
+      return;
+    }
+    if (url.origin !== 'https://ad.invalid') return; // another site's file, or a data: URL
+    let path = url.pathname.slice(1);
+    try {
+      path = decodeURIComponent(path);
+    } catch {
+      // keep the raw path when it is not valid percent-encoding
+    }
+    if (this.seen.has(path)) return;
+    this.seen.set(path, this.seen.size);
+    then(path, ref.trim());
+  }
+
+  /** The file's text, or null after noting that it was not read. */
+  read(path: string, label: string, what: string): string | null {
+    const data = this.ad?.files.get(path);
+    if (data) return this.decoder.decode(data);
+    this.unknown.push({ target: label, message: `The ad loads ${label}, which is not among the files checked, so ${what}.` });
+    return null;
+  }
+
+  order(path: string): number {
+    return this.seen.get(path) ?? this.seen.size;
+  }
 }
 
 /** The declarations, when the whole text is a declaration list ("opacity: 0; color: red;"); else null. */
@@ -146,10 +323,49 @@ function declList(text: string): Decl[] | null {
   return decls.length && /^[\s;]*$/.test(rest) && decls.every((d) => PROP.test(d.prop) && d.value) ? decls : null;
 }
 
+/**
+ * The properties GWD's setInlineStyle() sets, read the way gwd-events-support.1.0.js reads them:
+ * the text split at each ';' with the spaces around it, each piece cut at its colons (but not one
+ * before '//'), the name kept as written and the value trimmed, !important and all. Each goes to
+ * style.setProperty(name, value). It stops at the first piece with no name or no value.
+ */
+function gwdInlineStyles(text: string): { name: string; valueStart: number; valueEnd: number }[] {
+  const out: { name: string; valueStart: number; valueEnd: number }[] = [];
+  const space = (c: string | undefined) => c !== undefined && /\s/.test(c);
+  for (let from = 0; from <= text.length; ) {
+    // split(/\s*;\s*/), without the regular expression's backtracking over long runs of spaces.
+    const semi = text.indexOf(';', from);
+    let end = semi < 0 ? text.length : semi;
+    let next = semi < 0 ? text.length + 1 : semi + 1;
+    if (semi >= 0) {
+      while (end > from && space(text[end - 1])) end--;
+      while (next < text.length && space(text[next])) next++;
+    }
+    if (end > from) {
+      const colon = (k: number) => {
+        for (let c = text.indexOf(':', k); c >= 0 && c < end; c = text.indexOf(':', c + 1)) if (!text.startsWith('//', c + 1)) return c;
+        return end;
+      };
+      const first = colon(from);
+      const valueEnd = first < end ? colon(first + 1) : end;
+      let vs = first + 1;
+      let ve = valueEnd;
+      while (vs < ve && space(text[vs])) vs++;
+      while (ve > vs && space(text[ve - 1])) ve--;
+      if (first === from || first >= end || ve <= vs) break;
+      out.push({ name: text.slice(from, first), valueStart: vs, valueEnd: ve });
+    }
+    from = next;
+  }
+  return out;
+}
+
 /** Text as the browser reads it, with the source offset of each character (and one past the end). */
 interface Source {
   text: string;
   at: number[];
+  /** A character reference that could not be decoded, so the text may not be what the browser reads. */
+  undecoded?: string;
 }
 
 function decode(raw: string, base: number, escape: RegExp, unescape: (m: RegExpExecArray) => string): Source {
@@ -171,22 +387,52 @@ function decode(raw: string, base: number, escape: RegExp, unescape: (m: RegExpE
   return { text, at };
 }
 
-const ENTITY = /&(#x[\da-f]+|#\d+|[a-z]+);/gi;
-// Maps, so that a name such as "constructor" finds nothing rather than Object's own members.
-const NAMED = new Map([['amp', '&'], ['lt', '<'], ['gt', '>'], ['quot', '"'], ['apos', "'"], ['nbsp', '\u00a0']]);
+// A numeric reference needs no ';', as in browsers; a named one is read only with it.
+const ENTITY = /&(?:#x([\da-f]+);?|#(\d+);?|([a-z][a-z\d]*);)/gi;
+// Used where there is no HTML parser to ask. Maps, so that a name such as "constructor" finds nothing rather than Object's own members.
+const NAMED = new Map([['amp', '&'], ['lt', '<'], ['gt', '>'], ['quot', '"'], ['apos', "'"], ['nbsp', ' ']]);
+// What browsers read &#128; to &#159; as (windows-1252).
+const C1 = '€\x81‚ƒ„…†‡ˆ‰Š‹Œ\x8dŽ\x8f\x90‘’“”•–—˜™š›œ\x9džŸ';
+// The longest name HTML has is 31 letters; past this many different names the parser is asked no more.
+const MAX_NAMED = 4096;
+const named = new Map<string, string>();
 const JS_ESCAPE = /\\(u\{[\da-fA-F]+\}|u[\da-fA-F]{4}|x[\da-fA-F]{2}|\r\n|[\s\S])/g;
 const JS_CHARS = new Map([
   ['n', '\n'], ['t', '\t'], ['r', '\r'], ['b', '\b'], ['f', '\f'], ['v', '\v'], ['0', '\0'],
-  ['\n', ''], ['\r', ''], ['\r\n', ''], ['\u2028', ''], ['\u2029', ''],
+  ['\n', ''], ['\r', ''], ['\r\n', ''], [' ', ''], [' ', ''],
 ]);
 
 const fromCode = (code: number, fallback: string) => (code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : fallback);
 
+/** A numeric character reference as browsers read it. */
+function numericRef(code: number): string {
+  if (code >= 0x80 && code <= 0x9f) return C1[code - 0x80];
+  return code >= 0xd800 && code <= 0xdfff ? '�' : fromCode(code, '�');
+}
+
+/** &name; as a browser reads it in an attribute, asking its HTML parser; undefined where it cannot be asked. */
+function namedRef(ref: string, name: string): string | undefined {
+  if (name.length > 32) return ref; // no such name
+  let text = named.get(name);
+  if (text === undefined && typeof document !== 'undefined' && named.size < MAX_NAMED) {
+    const probe = document.createElement('div');
+    probe.innerHTML = `<i title="${ref}"></i>`; // only letters and digits between '&' and ';'
+    text = probe.firstElementChild?.getAttribute('title') ?? undefined;
+    if (text !== undefined) named.set(name, text);
+  }
+  return text ?? NAMED.get(name);
+}
+
+/** An attribute's text as the browser reads it; `undecoded` names a reference it could not read. */
 function htmlText(raw: string, base: number): Source {
-  return decode(raw, base, ENTITY, ([all, name]) => {
-    if (name[0] !== '#') return NAMED.get(name.toLowerCase()) ?? all;
-    return fromCode(name[1].toLowerCase() === 'x' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10), all);
+  let undecoded: string | undefined;
+  const src = decode(raw, base, ENTITY, ([ref, hex, dec, name]) => {
+    if (!name) return numericRef(hex ? parseInt(hex, 16) : parseInt(dec, 10));
+    const text = namedRef(ref, name);
+    if (text === undefined) undecoded ??= ref;
+    return text ?? ref;
   });
+  return undecoded ? { ...src, undecoded } : src;
 }
 
 function jsText(raw: string, base: number): Source {
@@ -357,12 +603,18 @@ function assignee(toks: Tok[], k: number): string | null {
   const op = toks[k - 1];
   if (isP(op, ':')) return toks[k - 2]?.kind === 'name' || toks[k - 2]?.kind === 'str' ? toks[k - 2].text : null;
   if (!isP(op, '=')) return null;
+  return memberChain(toks, k - 2);
+}
+
+/** The a.b.c chain of names that ends at toks[k], or null when there is none or it is too long to spell out. */
+function memberChain(toks: Tok[], k: number): string | null {
   const chain: string[] = [];
-  for (let j = k - 2; toks[j]?.kind === 'name'; j -= 2) {
-    chain.unshift(toks[j].text);
+  for (let j = k; toks[j]?.kind === 'name'; j -= 2) {
+    if (chain.length === MAX_CHAIN) return null;
+    chain.push(toks[j].text);
     if (!isP(toks[j - 1], '.')) break;
   }
-  return chain.length ? chain.join('.') : null;
+  return chain.length ? chain.reverse().join('.') : null;
 }
 
 /** The name of the function whose body the '{' at toks[t] opens, when it is one and has a name. */
@@ -380,8 +632,16 @@ function functionName(toks: Tok[], partner: number[], t: number): string | null 
 }
 
 interface ScriptHits {
+  /** A declaration list, read as cssText and style attributes are. */
   list: (src: Source, where: Where) => void;
+  /** The styles string of GWD's setInlineStyle(). */
+  inline: (src: Source, where: Where) => void;
+  /** style.setProperty(name, value). */
+  property: (name: string, src: Source, where: Where) => void;
+  /** One property's whole value. */
   single: (prop: string, src: Source, where: Where) => void;
+  /** A style it sets that cannot be checked here. */
+  unknown: (target: string, message: string) => void;
 }
 
 /** style.fontSize -> font-size; vendor names (webkitTransform) get their leading dash. */
@@ -407,7 +667,17 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
     if (!str(k)) return false;
     if (!next) return true;
     const newLine = /[\n\r\u2028\u2029]/.test(src.slice(toks[k].end + 1, next.start));
-    if (next.kind === 'punct') return ';,)]}:'.includes(next.text) || (newLine && '{!~'.includes(next.text));
+    if (next.kind === 'punct') {
+      if (';,)]}:'.includes(next.text)) return true;
+      if (!newLine) return false;
+      // The tokens are single characters, so '!=' and '++' come as two in a row.
+      const after = toks[k + 2];
+      const twice = (c: string) => isP(after, c) && after.start === next.end;
+      if (next.text === '!') return !twice('='); // a '!=' or '!==' compares with it
+      // A '++' or '--' on a new line always starts a new statement; '-->' there starts a comment.
+      if (next.text === '+' || next.text === '-') return twice(next.text) && !(next.text === '-' && isP(toks[k + 3], '>') && toks[k + 3].start === after.end);
+      return '{~'.includes(next.text);
+    }
     if (!newLine) return false;
     if (next.kind === 'name') return next.text !== 'in' && next.text !== 'instanceof';
     if (next.kind === 'str') return src[next.start - 1] !== '`'; // a template right after it would be a tagged call
@@ -422,17 +692,12 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
       const open = partner[dot - 1];
       if (/^(getElementById|querySelector)$/.test(toks[open - 1]?.text ?? '') && open + 2 === dot - 1 && str(open + 1)) return text(open + 1).text;
     }
-    const chain: string[] = [];
-    for (let k = dot - 1; toks[k]?.kind === 'name'; k -= 2) {
-      chain.unshift(toks[k].text);
-      if (!isP(toks[k - 1], '.')) break;
-    }
-    return chain.join('.') || 'an element';
+    return memberChain(toks, dot - 1) ?? 'an element';
   };
 
-  /** The string assigned by toks[k] ('=' or '+='), or -1. */
-  const assigned = (k: number) => {
-    const v = isP(toks[k], '=') && !isP(toks[k + 1], '=') ? k + 1 : isP(toks[k], '+') && isP(toks[k + 1], '=') ? k + 2 : -1;
+  /** The string assigned by toks[k] ('=', or '+=' when `adds`), or -1. */
+  const assigned = (k: number, adds: boolean) => {
+    const v = isP(toks[k], '=') && !isP(toks[k + 1], '=') ? k + 1 : adds ? k + 2 : -1;
     return v >= 0 && whole(v) ? v : -1;
   };
 
@@ -452,7 +717,7 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
       // A long expression is not spelled out: calls nested in each other would spell out the same text again and again.
       const words = el[1] - el[0] > 32 ? null : toks.slice(el[0], el[1]).map((w) => (w.kind === 'str' ? `'${w.text}'` : w.text));
       const target = single(el) >= 0 ? text(el[0]).text : words?.join('') ?? 'an element';
-      hits.list(text(k), { target, via: 'setInlineStyle', handler });
+      hits.inline(text(k), { target, via: 'setInlineStyle', handler });
     } else if (tok.text === 'setAttribute' && isP(toks[t + 1], '(')) {
       const [name, styles] = callArgs(toks, partner, t + 1);
       const n = single(name);
@@ -465,15 +730,21 @@ function scanScript(html: string, from: number, to: number, hits: ScriptHits) {
         const [name, value] = callArgs(toks, partner, t + 3);
         const n = single(name);
         const k = single(value);
-        if (n >= 0 && k >= 0) hits.single(text(n).text.trim().toLowerCase(), text(k), { target: objectBefore(t - 1), via: 'style.setProperty', handler });
+        if (n >= 0 && k >= 0) hits.property(text(n).text, text(k), { target: objectBefore(t - 1), via: 'style.setProperty', handler });
         continue;
       }
-      const k = assigned(t + 3);
+      // '+=' adds to the value the element has then: whole declarations to cssText, but only the end of one to a property.
+      const adds = isP(toks[t + 3], '+') && isP(toks[t + 4], '=');
+      const k = assigned(t + 3, adds);
       if (k < 0) continue;
       // Named only for a hit, so that a long a.style.b.style… chain is walked once, not at every 'style'.
       const target = objectBefore(t - 1);
       if (member === 'cssText') hits.list(text(k), { target, via: 'style.cssText', handler });
-      else hits.single(cssName(member), text(k), { target, via: `style.${member}`, handler });
+      else if (adds) {
+        const part = text(k).text;
+        const shown = part.length > 40 ? `${part.slice(0, 40)}…` : part;
+        hits.unknown(target, `style.${member} += "${shown}"${handler ? ` in ${handler}` : ''} adds to the value it has then, so whether browsers accept the result is not known here.`);
+      } else hits.single(cssName(member), text(k), { target, via: `style.${member}`, handler });
     }
   }
 }
