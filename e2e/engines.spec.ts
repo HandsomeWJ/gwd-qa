@@ -7,11 +7,12 @@ const NAMES = { chromium: 'Chrome', webkit: 'Safari', firefox: 'Firefox' } as co
 
 test('previews and checks the ad in this browser, and fixes it only in Chrome', async ({ page, browserName }) => {
   // Outside Chromium the host-resolver rules do not apply: copies are refused here instead.
-  const google: string[] = [];
-  await page.route(/^https:\/\/script\.google(usercontent)?\.com\//, (route) => {
-    google.push(route.request().url());
-    return route.abort();
+  const google = /^https:\/\/script\.google(usercontent)?\.com\//;
+  const reached: string[] = [];
+  page.on('requestfinished', (request) => {
+    if (google.test(request.url())) reached.push(request.url());
   });
+  await page.route(google, (route) => route.abort());
   const name = NAMES[browserName];
   await page.goto('./');
   await expect(page.locator('#drop')).toContainText('Works in Chrome, Safari and Firefox');
@@ -35,5 +36,5 @@ test('previews and checks the ad in this browser, and fixes it only in Chrome', 
     await expect(apply).toHaveCount(0);
     await expect(page.locator('#checklist')).not.toContainText('auto-fix ready');
   }
-  expect(google.every((u) => u.startsWith('https://script.google.com/macros/s/e2e-test/'))).toBe(true);
+  expect(reached).toEqual([]);
 });
