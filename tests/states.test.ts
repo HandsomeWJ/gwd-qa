@@ -97,8 +97,37 @@ describe('findStates', () => {
   it('skips GWD\'s own runtime and an ad with no states', () => {
     const s = states(page(`  <style>.gwd-p-a { font-size: 16px; } .gwd-p-a:hover { color: blue; }</style>
   <script data-source="gwd-events-support.1.0.js">gwd.actions.events.setInlineStyle('x', 'font-size: 9px');</script>`));
-    expect(s).toEqual({ rules: [], styles: [], classes: [], unknown: [] });
+    expect(s).toEqual({ rules: [], styles: [], classes: [], unknown: [], showers: { rules: [], keyframes: [], animators: [], scripts: [] } });
     expect(hasStates(s)).toBe(false);
+  });
+
+  it('lists what could show a hidden element: rules and keyframes that set visibility, and scripts that set it or change classes', () => {
+    const s = states(page(`  <style>
+    .gwd-div-a:hover { visibility: visible; }
+    .gwd-div-b { visibility: hidden; }
+    @keyframes kf-show { 0% { visibility: hidden; } 100% { visibility: visible; } }
+    @keyframes kf-hide { 0% { visibility: hidden; } 100% { visibility: collapse; } }
+    .gwd-play-animation .gwd-div-c { animation: 1s linear 0s 1 normal forwards kf-show; }
+    .gwd-play-animation .gwd-div-d { animation: 1s linear 0s 1 normal forwards kf-hide; }
+  </style>
+  <script>
+    gwd.auto_click = function(event) {
+      gwd.actions.events.setInlineStyle('SA_show_1', 'visibility: visible;');
+      gwd.actions.events.setInlineStyle('SA_hide_1', 'visibility: hidden;');
+      document.getElementById('SA_class_1').classList.add('gwd-on');
+      event.target.style.visibility = 'inherit';
+    };
+  </script>`));
+    expect(s.showers).toEqual({
+      rules: ['.gwd-div-a:hover'],
+      keyframes: ['kf-show'],
+      animators: ['.gwd-play-animation .gwd-div-c'],
+      scripts: [
+        { ref: 'SA_show_1', label: 'setInlineStyle on SA_show_1 in gwd.auto_click' },
+        { ref: 'SA_class_1', label: 'classList.add on SA_class_1 in gwd.auto_click' },
+        { ref: null, label: 'style.visibility on event.target in gwd.auto_click' },
+      ],
+    });
   });
 
   it('describes the states by their first two', () => {

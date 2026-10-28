@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { applyEdits, mergeEdits } from '../src/css/edit';
 import { parseCss } from '../src/css/parse';
 import type { CssValidator } from '../src/audit/cssvalues';
+import type { HiddenSubtree } from '../src/audit/observe';
+import type { Showers } from '../src/audit/states';
 import { staticAudit } from '../src/audit/static';
 import type { Box, Inheritor } from '../src/audit/types';
 import { planFixes, withoutPart } from '../src/fix/plan';
@@ -12,11 +14,11 @@ const M250 = '(width: 300px) and (height: 250px)';
 const M600 = '(width: 300px) and (height: 600px)';
 const RANGE = '(min-width: 300px) and (max-width: 320px) and (min-height: 250px) and (max-height: 480px)';
 
-function plan(html: string, boxes: Box[], media: Record<string, string[]>, safety: { animation: string }[] = [], more: { incomplete?: string[]; valid?: CssValidator } = {}) {
+function plan(html: string, boxes: Box[], media: Record<string, string[]>, safety: { animation: string; hidden?: HiddenSubtree }[] = [], more: { incomplete?: string[]; valid?: CssValidator; showers?: Showers } = {}) {
   const css = parseCss(html);
   const report = staticAudit(html, css, more.valid);
   const incomplete = more.incomplete && new Set(more.incomplete);
-  const p = planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report, safety, ...(incomplete ? { incomplete } : {}) });
+  const p = planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report, safety, ...(incomplete ? { incomplete } : {}), ...(more.showers ? { showers: more.showers } : {}) });
   const fix = (check: string) => p.fixes.find((f) => f.check === check);
   const applied = (check: string) => applyEdits(html, mergeEdits(fix(check)?.edits ?? []));
   return { p, fix, applied };
@@ -504,6 +506,49 @@ describe('keyframes and fades', () => {
       "gwd-gen-hand_gwd-keyframes in 300x600: deleting transform would change how it looks, because those values differ from the element's own style.",
       "gwd-gen-hand_gwd-keyframes in 300x250: deleting transform would change how it looks, because those values differ from the element's own style.",
     ]);
+  });
+
+  describe('on an element that never shows', () => {
+    const hand = 'gwd-gen-hand_gwd-keyframes';
+    const hidden: HiddenSubtree = { ids: ['SA_hand_1', 'SA_tip_1'], classes: ['gwd-div-hand', 'gwd-p-tip'], animations: [hand], path: '1/3/0' };
+    const none: Showers = { rules: [], keyframes: [], animators: [], scripts: [] };
+    const run = (showers: Showers | undefined, safety: { animation: string; hidden?: HiddenSubtree }[] = [{ animation: hand, hidden }], incomplete?: string[]) =>
+      plan(html, [], { '300x250': [M250] }, safety, { ...(showers ? { showers } : {}), ...(incomplete ? { incomplete } : {}) });
+
+    it('deletes the unchanged values, as nothing can show it', () => {
+      const { fix, p } = run(none);
+      expect(p.manual).toEqual([]);
+      expect(fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks, 2 of them on elements that never show');
+      // the check after applying counts the texts in it apart
+      expect(fix('keyframes')?.hidden).toEqual(['1/3/0']);
+      // a script that changes another element by name does not count
+      expect(run({ ...none, scripts: [{ ref: 'SA_other_1', label: 'setInlineStyle on SA_other_1' }] }).fix('keyframes')).toBeDefined();
+      // nor a rule that shows something else
+      expect(run({ ...none, rules: ['.gwd-div-other:hover'] }).fix('keyframes')).toBeDefined();
+    });
+
+    it('leaves it to you where anything could show it, or it was not seen everywhere', () => {
+      const left = (r: ReturnType<typeof run>) => {
+        expect(r.fix('keyframes')).toBeUndefined();
+        return r.p.manual[0]?.detail ?? '';
+      };
+      expect(left(run(undefined))).toContain(`${hand}: deleting transform`);
+      // another element runs it and shows
+      expect(left(run(none, [{ animation: hand, hidden }, { animation: hand }]))).toContain(hand);
+      // a rule, in any state, that makes it or something in it visible; one with no class or id may match anything
+      expect(left(run({ ...none, rules: ['.gwd-div-hand:hover'] }))).toContain(hand);
+      expect(left(run({ ...none, rules: ['#SA_tip_1'] }))).toContain(hand);
+      expect(left(run({ ...none, rules: ['div'] }))).toContain(hand);
+      // keyframes that make it visible, running on it or started by a rule that may match it
+      expect(left(run({ ...none, keyframes: [hand] }))).toContain(hand);
+      expect(left(run({ ...none, animators: ['.clicked .gwd-p-tip'] }))).toContain(hand);
+      // a script that shows it or changes its classes, or does so to elements the code does not name
+      expect(left(run({ ...none, scripts: [{ ref: 'SA_hand_1', label: 'setInlineStyle on SA_hand_1' }] }))).toContain(hand);
+      expect(left(run({ ...none, scripts: [{ ref: null, label: 'style.visibility on event.target' }] }))).toContain(hand);
+      expect(left(run({ ...none, scripts: [{ ref: 'SA_page_1 grp-tip', label: 'setInlineStyle on SA_page_1 grp-tip' }] }))).toContain(hand);
+      // a page that never showed could hold what shows it
+      expect(left(run(none, undefined, ['300x250']))).toContain(hand);
+    });
   });
 
   it('starts text fades at 0.001', () => {

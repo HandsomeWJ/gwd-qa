@@ -37,7 +37,21 @@ export interface States {
   classes: ScriptClass[];
   /** What scripts change on elements the code does not name, which cannot be laid out here. */
   unknown: string[];
+  showers?: Showers;
 }
+
+/** What in the ad's CSS and scripts could make an element visible that its own style hides. */
+export interface Showers {
+  /** Selectors of rules, in any size or state, that set visibility to anything but hidden. */
+  rules: string[];
+  /** Keyframes that do, and the selectors of rules that run them. */
+  keyframes: string[];
+  animators: string[];
+  /** Scripts that set visibility to anything but hidden, or change classes, on an element: `ref` as on ScriptStyle, null for one the code does not name. */
+  scripts: { ref: string | null; label: string }[];
+}
+
+const HIDES = /^(hidden|collapse)(\s*!important)?$/i;
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const hasClass = (selector: string, name: string) => new RegExp(`\\.${escapeRegExp(name)}(?![\\w-])`).test(selector);
@@ -50,10 +64,13 @@ export function findStates(html: string, css: CssModel, ad?: AdFiles): States {
   const animated: string[] = [];
   const styles: ScriptStyle[] = [];
   const changes: ScriptClass[] = [];
+  const showers: Showers = { rules: [], keyframes: [], animators: [], scripts: [] };
+  const animations: { selector: string; names: string[] }[] = [];
   const label = (where: Where) => `${where.via} on ${where.target}${where.handler ? ` in ${where.handler}` : ''}`;
   const set = (prop: string, value: string, where: Where, ref: string | null) => {
     const name = prop.trim().toLowerCase();
     if (SPACING.test(name) && value.trim()) styles.push({ ref, prop: name, value: value.trim(), label: label(where) });
+    if (name === 'visibility' && !HIDES.test(value.trim())) showers.scripts.push({ ref, label: label(where) });
   };
   const hits: ScriptHits = {
     list: (src, where, ref) => {
@@ -70,6 +87,7 @@ export function findStates(html: string, css: CssModel, ad?: AdFiles): States {
     unknown: () => {},
     classes: (op, names, where, ref) => {
       for (const name of names) changes.push({ ref, op, name, label: label(where) });
+      showers.scripts.push({ ref, label: label(where) });
     },
   };
   readAd(html, css, ad, [], {
@@ -79,7 +97,14 @@ export function findStates(html: string, css: CssModel, ad?: AdFiles): States {
           spacingRules.push(r.selector);
           if (new RegExp(STATE.source, 'i').test(r.selector)) rules.push(r.selector);
         }
-        if (r.decls.some((d) => ANIMATION.test(d.prop))) animated.push(r.selector);
+        if (r.decls.some((d) => ANIMATION.test(d.prop))) {
+          animated.push(r.selector);
+          animations.push({ selector: r.selector, names: r.decls.filter((d) => ANIMATION.test(d.prop)).flatMap((d) => d.value.split(/[\s,]+/)) });
+        }
+        if (r.decls.some((d) => d.prop === 'visibility' && !HIDES.test(d.value.trim()))) showers.rules.push(r.selector);
+      }
+      for (const k of model.keyframes) {
+        if (k.frames.some((fr) => fr.decls.some((d) => d.prop === 'visibility' && !HIDES.test(d.value.trim())))) showers.keyframes.push(k.name);
       }
     },
     script: (text, from, to) => scanScript(text, from, to, hits),
@@ -91,11 +116,13 @@ export function findStates(html: string, css: CssModel, ad?: AdFiles): States {
     // one taken off them cannot be.
     ...classes.filter((c) => c.ref === null && c.op === 'remove').map((c) => `${c.label} takes off ${c.name}`),
   ];
+  showers.animators = animations.filter((a) => a.names.some((n) => showers.keyframes.includes(n))).map((a) => a.selector);
   return {
     rules: [...new Set(rules)],
     styles: styles.filter((s) => s.ref !== null),
     classes: classes.filter((c) => c.ref !== null || c.op !== 'remove'),
     unknown,
+    showers,
   };
 }
 
@@ -107,6 +134,12 @@ export function describeStates(s: States): string {
   const what = [...new Set([...s.rules, ...s.styles.map((x) => x.label), ...s.classes.map((x) => x.label)])];
   const shown = what.slice(0, 2).join('; ') + (what.length > 2 ? `; and ${what.length - 2} more` : '');
   return `in its hover, focus or click state (${shown})`;
+}
+
+/** The id a GWD reference starts from, and whether it steps into a group from there; null for one relative to a group's instances. */
+export function refStart(ref: string): { id: string; deep: boolean } | null {
+  const r = parseRef(ref);
+  return r && r.id ? { id: r.id, deep: r.path.length > 0 } : null;
 }
 
 /** A GWD element reference: "id grp-id…" from an element with that id, or " group grp-id…" in each instance of a group. */

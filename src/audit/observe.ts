@@ -27,6 +27,28 @@ export interface SafetyMismatch {
   prop: string;
   keyframes: string;
   normal: string;
+  /** Set where the element draws nothing in this frame, nor anything in it, and cannot push what does. */
+  hidden?: HiddenSubtree;
+}
+
+/**
+ * An element its own style hides (visibility, from a rule, not its style attribute), absolutely
+ * positioned, with nothing in it made visible: what names it and what runs on it, which decide
+ * whether anything in the ad's CSS or scripts could show it.
+ */
+export interface HiddenSubtree {
+  ids: string[];
+  classes: string[];
+  animations: string[];
+  /** Its place in the document (domPath), which CSS edits never change: what positions() tells texts apart by. */
+  path: string;
+}
+
+/** An element's place in its document: the index among its parent's elements, at each level from the root. */
+export function domPath(el: Element): string {
+  const steps: number[] = [];
+  for (let x: Element | null = el; x?.parentElement; x = x.parentElement) steps.unshift([...x.parentElement.children].indexOf(x));
+  return steps.join('/');
 }
 
 export interface Observation {
@@ -633,7 +655,39 @@ function boxesIn(f: AdFrame, scope: Element, multi: boolean, ctx: Context): Box[
   return out;
 }
 
-/** An unchanged keyframes value is only safe to delete when it equals the element's normal style. */
+/** The element and everything in it, open shadow roots included. */
+function subtree(el: Element): Element[] {
+  const out: Element[] = [];
+  const walk = (root: Element | ShadowRoot) => {
+    for (const x of root.querySelectorAll('*')) {
+      out.push(x);
+      if (x.shadowRoot) walk(x.shadowRoot);
+    }
+  };
+  out.push(el);
+  if (el.shadowRoot) walk(el.shadowRoot);
+  walk(el);
+  return out;
+}
+
+/** The element as a HiddenSubtree, when it draws nothing now and cannot move what does; else undefined. */
+function hiddenSubtree(win: Window, el: Element): HiddenSubtree | undefined {
+  const hides = (v: string) => /^(hidden|collapse)$/.test(v.trim());
+  const cs = win.getComputedStyle(el);
+  if (!hides(cs.visibility) || !/^(absolute|fixed)$/.test(cs.position)) return undefined;
+  if ((el as HTMLElement).style?.visibility || !hides(declared(win, el, ['visibility']).visibility)) return undefined;
+  const all = subtree(el);
+  if (all.some((x) => win.getComputedStyle(x).visibility === 'visible')) return undefined;
+  const ids = all.map((x) => x.id).filter(Boolean);
+  const classes = [...new Set(all.flatMap((x) => [...x.classList]))];
+  const animations = [...new Set(all.flatMap((x) => win.getComputedStyle(x).animationName.split(/,\s*/)).filter((n) => n && n !== 'none'))];
+  return { ids, classes, animations, path: domPath(el) };
+}
+
+/**
+ * An unchanged keyframes value is only safe to delete when it equals the element's normal style, or
+ * when the element never shows (see HiddenSubtree; the planner checks what could show it).
+ */
 function keyframeSafety(f: AdFrame, scope: Element): { checked: number; mismatches: SafetyMismatch[] } {
   const { win } = frameParts(f);
   const mismatches: SafetyMismatch[] = [];
@@ -649,13 +703,14 @@ function keyframeSafety(f: AdFrame, scope: Element): { checked: number; mismatch
       anim.currentTime = Number((anim.effect as KeyframeEffect).getTiming().delay ?? 0) + 1;
       const style = win.getComputedStyle(el) as unknown as Record<string, string>;
       const animated = unchanged.map((p) => style[p]);
+      const hidden = hiddenSubtree(win, el);
       const saved = (el as HTMLElement).style.animation;
       (el as HTMLElement).style.animation = 'none';
       unchanged.forEach((p, i) => {
         checked++;
         const normal = (win.getComputedStyle(el) as unknown as Record<string, string>)[p];
         if (normal !== animated[i]) {
-          mismatches.push({ size: f.label, target: label(el), animation: (anim as CSSAnimation).animationName, prop: p, keyframes: animated[i], normal });
+          mismatches.push({ size: f.label, target: label(el), animation: (anim as CSSAnimation).animationName, prop: p, keyframes: animated[i], normal, ...(hidden ? { hidden } : {}) });
         }
       });
       (el as HTMLElement).style.animation = saved;
@@ -737,7 +792,7 @@ export async function positions(frames: AdFrame[]): Promise<Map<string, string>>
           range.selectNodeContents(node);
           for (const b of range.getClientRects()) rects.push([b.left, b.top, b.width, b.height].map((v) => v.toFixed(2)).join(','));
         }
-        out.push([key, `${rects.join(' | ')} ${win.getComputedStyle(el).display}`]);
+        out.push([key, `${rects.join(' | ')} ${win.getComputedStyle(el).display} @${domPath(el)}`]);
       }
       // Line spacing too, element by element: unlike positions it does not depend on what is
       // showing at this moment, so text that is hidden or not yet typed is compared as well.
@@ -760,18 +815,28 @@ export async function positions(frames: AdFrame[]): Promise<Map<string, string>>
 // The keys positions() gives line spacings; every other key is a text's position.
 const LINE_HEIGHT_KEY = / line-height( \(\d+\))?$/;
 
-/** Compares two positions() snapshots, counting texts and line spacings apart. A key that is gone counts as changed. */
-export function comparePositions(before: Map<string, string>, after: Map<string, string>) {
+/**
+ * Compares two positions() snapshots, counting texts and line spacings apart. A key that is gone counts
+ * as changed. Texts inside `hidden` elements (domPaths of elements a fix proved never show) are counted
+ * apart too: they may move with those elements, which nobody sees.
+ */
+export function comparePositions(before: Map<string, string>, after: Map<string, string>, hidden: string[] = []) {
   const keys = [...before.keys()];
   const differs = (k: string) => after.get(k) !== before.get(k);
+  const inHidden = (k: string) => {
+    const path = /@([\d/]*)$/.exec(before.get(k) ?? '')?.[1];
+    return path !== undefined && hidden.some((root) => path === root || path.startsWith(`${root}/`));
+  };
   const texts = keys.filter((k) => !LINE_HEIGHT_KEY.test(k));
   const spacings = keys.filter((k) => LINE_HEIGHT_KEY.test(k));
+  const unseen = texts.filter((k) => after.has(k) && differs(k) && inHidden(k));
   return {
-    changed: keys.filter((k) => after.has(k) && differs(k)),
+    changed: keys.filter((k) => after.has(k) && differs(k) && !unseen.includes(k)),
     missing: keys.filter((k) => !after.has(k)),
     added: [...after.keys()].filter((k) => !before.has(k)),
-    texts: texts.length,
-    moved: texts.filter(differs),
+    texts: texts.length - unseen.length,
+    moved: texts.filter((k) => differs(k) && !unseen.includes(k)),
+    unseen,
     spacings: spacings.length,
     respaced: spacings.filter(differs),
   };

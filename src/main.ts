@@ -480,14 +480,18 @@ function applyBanner(a: ApplyResult): string {
   const sizes = listed(where);
   const texts = p.texts === 1 ? 'The one text is exactly where it was' : `All ${p.texts} texts are exactly where they were`;
   const spacing = p.spacings ? ', and every line spacing is unchanged' : '';
+  // Texts inside elements the keyframes fix proved never show may move with them.
+  const unseen = p.unseen.length
+    ? ` ${p.unseen.length === 1 ? 'One text' : `${p.unseen.length} texts`} inside elements that never show moved with ${p.unseen.length === 1 ? 'its element' : 'them'}, where nobody sees ${p.unseen.length === 1 ? 'it' : 'them'}.`
+    : '';
   if (!live && !net && !stateWhat) {
     if (laid.error) {
-      return `<div class="banner warn">${applied}. ${texts}${spacing}, in every preview. The sizes between them could not be laid out to compare (${esc(laid.error)}): check them in GWD, or undo.</div>`;
+      return `<div class="banner warn">${applied}. ${texts}${spacing}, in every preview.${unseen} The sizes between them could not be laid out to compare (${esc(laid.error)}): check them in GWD, or undo.</div>`;
     }
     const every = result && result.pages > 1 ? 'in every size and on every page' : 'in every size';
     const missed = result ? unchecked() : '';
-    if (missed) return `<div class="banner warn">${applied}. ${texts}${spacing}, wherever the previews showed them; ${missed} not checked, so compare ${missed.includes('and') ? 'those' : 'that'} in GWD.</div>`;
-    return `<div class="banner ok">${applied}. ${texts}${spacing}, ${every}.</div>`;
+    if (missed) return `<div class="banner warn">${applied}. ${texts}${spacing}, wherever the previews showed them; ${missed} not checked, so compare ${missed.includes('and') ? 'those' : 'that'} in GWD.${unseen}</div>`;
+    return `<div class="banner ok">${applied}. ${texts}${spacing}, ${every}.${unseen}</div>`;
   }
   // The sizes no preview shows are laid out without scripts, so they are told apart.
   const inStateText = stateWhat ? ` ${state[0].toUpperCase()}${state.slice(1)}, ${stateWhat} at ${stateSizes}.` : '';

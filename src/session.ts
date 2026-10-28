@@ -175,7 +175,7 @@ export class Session {
     const report = staticAudit(this.html, css, undefined, this.pkg);
     const seen = await observe(this.frames, css, this.states()); // shows each page in turn, pausing animations
     const findings = [...report.findings, ...renderFindings(seen.boxes)];
-    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, incomplete: seen.incomplete });
+    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, showers: this.states().showers, incomplete: seen.incomplete });
     // Laid out while the frames restart: no fix is offered that moves text in a size no frame shows.
     const net = this.layoutNet();
     const html = this.html;
@@ -204,7 +204,7 @@ export class Session {
     await updateFile(this.id, this.pkg.htmlPath, encoder.encode(this.html));
     await this.reloadAll();
     this.assertStarted();
-    const moved = comparePositions(before, await positions(this.frames));
+    const moved = comparePositions(before, await positions(this.frames), fixes.flatMap((f) => f.hidden ?? []));
     // The sizes no frame shows too, laid out without scripts while the frames restart.
     const net = this.layoutNet();
     const started = performance.now();

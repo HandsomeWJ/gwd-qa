@@ -4,7 +4,9 @@
 // (type below 8px).
 
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
-import { elementClass, sizeOfMedia, type CssModel, type Decl, type KeyframesRule, type MediaBlock, type StyleRule } from '../css/parse';
+import { elementClass, lastCompound, sizeOfMedia, type CssModel, type Decl, type KeyframesRule, type MediaBlock, type StyleRule } from '../css/parse';
+import type { HiddenSubtree } from '../audit/observe';
+import { refStart, type Showers } from '../audit/states';
 import type { StaticReport } from '../audit/static';
 import type { Box, CheckId, Inheritor } from '../audit/types';
 import { describeSize, parseSize } from '../sizes';
@@ -16,6 +18,8 @@ export interface PlannedFix {
   edits: Edit[];
   /** For a fix made of independent parts, such as one per class: each can be left out alone (withoutPart). */
   parts?: FixPart[];
+  /** domPaths of elements it proved never show, whose texts may move with them (see comparePositions). */
+  hidden?: string[];
 }
 
 export interface FixPart {
@@ -36,8 +40,10 @@ export interface PlanInput {
   /** Per frame label, the media conditions that apply in that frame. */
   media: Map<string, Set<string>>;
   report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues'>;
-  /** Keyframes whose unchanged values differ from the element's own style. */
-  safety: { animation: string }[];
+  /** Keyframes whose unchanged values differ from the element's own style, and whether that element never shows. */
+  safety: { animation: string; hidden?: HiddenSubtree }[];
+  /** What in the ad's CSS and scripts could show a hidden element; without it, none counts as hidden. */
+  showers?: Showers;
   /** Labels of the frames where a page never showed. */
   incomplete?: Set<string>;
 }
@@ -56,6 +62,14 @@ const PAINT_ONLY = new Set([
 ]);
 // The words of a transition that are not the property it animates.
 const TRANSITION_WORDS = new Set(['ease', 'ease-in', 'ease-out', 'ease-in-out', 'linear', 'step-start', 'step-end', 'normal', 'allow-discrete']);
+
+/** Whether a selector's subject could be one of these elements: it names one of their classes or ids, or none at all. */
+function mayMatch(selector: string, ids: Set<string>, classes: Set<string>): boolean {
+  return selector.split(',').some((part) => {
+    const names = [...lastCompound(part).matchAll(/([.#])(-?[_a-zA-Z][\w-]*)/g)];
+    return !names.length || names.some(([, kind, name]) => (kind === '.' ? classes : ids).has(name));
+  });
+}
 
 /** Whether every property a transition value animates only changes how things look. */
 function paintOnlyTransition(value: string): boolean {
@@ -600,15 +614,43 @@ class Planner {
     return frames.length && frames.length < this.input.media.size ? ` in ${frames.join(', ')}` : '';
   }
 
+  /**
+   * Whether an element that draws nothing now can never be shown: no rule or keyframes in any size or
+   * state make it, or anything in it, visible, and no script sets its visibility or changes its classes,
+   * nor does so to elements the code does not name. Every page must have shown in every size.
+   */
+  neverShows(h: HiddenSubtree | undefined): boolean {
+    const showers = this.input.showers;
+    if (!h || !showers || this.input.incomplete?.size) return false;
+    const ids = new Set(h.ids);
+    const classes = new Set(h.classes);
+    if ([...showers.rules, ...showers.animators].some((sel) => mayMatch(sel, ids, classes))) return false;
+    if (h.animations.some((a) => showers.keyframes.includes(a))) return false;
+    return !showers.scripts.some(({ ref }) => {
+      const start = ref === null ? null : refStart(ref);
+      return !start || start.deep || ids.has(start.id);
+    });
+  }
+
   keyframes() {
-    const unsafe = new Set(this.input.safety.map((m) => m.animation));
+    // Where an unchanged value differs from the element's own style, deleting it moves or restyles that
+    // element: safe only where every such element never shows.
+    const mismatched = new Map<string, PlanInput['safety']>();
+    for (const m of this.input.safety) mismatched.set(m.animation, [...(mismatched.get(m.animation) ?? []), m]);
     const edits: Edit[] = [];
     let count = 0;
     let blocks = 0;
+    let hidden = 0;
+    const roots = new Set<string>();
     for (const { block, props } of this.input.report.unchanged) {
-      if (unsafe.has(block.name)) {
+      const ms = mismatched.get(block.name);
+      if (ms && !ms.every((m) => this.neverShows(m.hidden))) {
         this.manualNote('keyframes', `${block.name}${this.runsIn(block)}: deleting ${props.join(', ')} would change how it looks, because those values differ from the element's own style.`);
         continue;
+      }
+      if (ms) {
+        hidden++;
+        ms.forEach((m) => roots.add(m.hidden!.path));
       }
       blocks++;
       for (const frame of block.frames) {
@@ -618,7 +660,10 @@ class Planner {
         }
       }
     }
-    this.add('keyframes', 'Delete keyframe properties that never change', `${count} declarations in ${blocks} keyframes blocks`, edits);
+    const where = hidden ? `, ${hidden} of them on elements that never show` : '';
+    this.add('keyframes', 'Delete keyframe properties that never change', `${count} declarations in ${blocks} keyframes blocks${where}`, edits);
+    const fix = this.fixes.find((f) => f.check === 'keyframes');
+    if (fix && roots.size) fix.hidden = [...roots];
   }
 
   cssValues() {

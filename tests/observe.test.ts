@@ -16,6 +16,18 @@ describe('comparePositions', () => {
     expect(same).toMatchObject({ texts: 3, moved: [], spacings: 3, respaced: [] });
   });
 
+  it('counts apart the texts inside elements a fix proved never show', () => {
+    const at = new Map([
+      ['300x250 p#a "Headline"', '10,10,80,18 block @1/2'],
+      ['300x250 p#t "Ghost"', '40,200,80,18 block @1/3/0'],
+      ['300x250 p#t "Ghost" (2)', '40,220,80,18 block @1/30'],
+    ]);
+    const after = new Map([...at].map(([k, v]) => [k, v.replace('40,', '10,')]));
+    // only what sits inside 1/3 is unseen; 1/30 is another element
+    expect(comparePositions(at, after, ['1/3'])).toMatchObject({ texts: 2, moved: ['300x250 p#t "Ghost" (2)'], unseen: ['300x250 p#t "Ghost"'] });
+    expect(comparePositions(at, after)).toMatchObject({ texts: 3, moved: ['300x250 p#t "Ghost"', '300x250 p#t "Ghost" (2)'], unseen: [] });
+  });
+
   it('lists moved texts and changed line spacings apart, a missing one as changed', () => {
     const after = new Map(before);
     after.set('300x250 p#a "Headline"', '10,11,80,18 block');
