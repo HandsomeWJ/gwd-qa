@@ -64,7 +64,7 @@ export function mockAdHtml(headline = 'Headline', runtime = ['mock-gwd.js']): st
   <script type="text/javascript" gwd-events="handlers">
     window.gwd = window.gwd || {};
     gwd.framechange_savings = function(event) {
-      gwd.actions.events.setInlineStyle('SA_cta_1', 'opacity: 0,3;');
+      gwd.actions.events.setInlineStyle('SA_dot_1', 'opacity: 0,3;');
     };
   </script>
   <style type="text/css">
@@ -155,6 +155,7 @@ export function mockAdHtml(headline = 'Headline', runtime = ['mock-gwd.js']): st
         <p class="gwd-p-a" id="SA_headline_1">${headline} <span class="gwd-span-x">one</span></p>
         <button class="gwd-button-b" id="SA_cta_1">Go</button>
         <p class="gwd-p-f" id="SA_body_1">Save<br><span class="gwd-span-big">50%</span> today</p>
+        <div id="SA_dot_1"></div>
         <img src="https://pixel.invalid/p.gif" width="1" height="1" alt="">
       </gwd-page>
       <gwd-page id="page2">

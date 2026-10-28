@@ -17,8 +17,8 @@ function plan(html: string, boxes: Box[], media: Record<string, string[]>, safet
   const report = staticAudit(html, css, more.valid);
   const incomplete = more.incomplete && new Set(more.incomplete);
   const p = planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report, safety, ...(incomplete ? { incomplete } : {}) });
-  const fix = (check: string, moves = false) => p.fixes.find((f) => f.check === check && !!f.moves === moves);
-  const applied = (check: string, moves = false) => applyEdits(html, mergeEdits(fix(check, moves)?.edits ?? []));
+  const fix = (check: string) => p.fixes.find((f) => f.check === check);
+  const applied = (check: string) => applyEdits(html, mergeEdits(fix(check)?.edits ?? []));
   return { p, fix, applied };
 }
 
@@ -331,14 +331,14 @@ describe('line-height', () => {
     ]);
   });
 
-  it('leaves a class to you where a page it sits on never showed in a size, and offers class-wide fixes there unticked', () => {
+  it('leaves a class to you where a page it sits on never showed in a size, for every class-wide fix', () => {
     // page2 never showed in 300x250; 300x600 showed both pages, with .gwd-p-head and the button on page2.
     const missing = { marginBlockStart: '', marginBlockEnd: '' };
     const boxes = [
       box({ ...head, frame: '300x600', page: 'page1', normalLineHeight: 19.5, declared: missing }),
       box({ ...head, frame: '300x600', page: 'page2', normalLineHeight: 19.5, declared: missing }),
       box({ classes: ['gwd-p-swap'], frame: '300x600', page: 'page1', declared: { lineHeight: '14px', ...missing } }),
-      box({ tag: 'button', classes: ['gwd-empty'], frame: '300x600', page: 'page2', declared: { lineHeight: '20px', width: '100px', height: '30px' }, computed: { color: 'rgb(1, 2, 3)', padding: [1, 6, 1, 6], paddingText: '1px 6px' } }),
+      box({ tag: 'button', classes: ['gwd-empty'], frame: '300x600', page: 'page2', declared: { lineHeight: '20px', width: '100px', height: '30px' }, computed: { color: 'rgb(1, 2, 3)', padding: [1, 6, 1, 6], paddingText: '1px 6px', textAlign: 'center' } }),
       box({ ...head, frame: '300x250', page: 'page1', normalLineHeight: 15, declared: missing }),
       box({ classes: ['gwd-p-swap'], frame: '300x250', page: 'page1', declared: { lineHeight: '14px', ...missing } }),
     ];
@@ -354,12 +354,11 @@ describe('line-height', () => {
     expect(p.manual.map((m) => m.detail)).toEqual([
       '.gwd-empty may sit on a page that never showed in 300x250, so it was not checked there; set its padding in GWD.',
       '.gwd-empty may sit on a page that never showed in 300x250, so it was not checked there; set its color in GWD.',
+      '.gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there; add margin-block: 0px auto in GWD.',
       '.gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there; set its line-height in GWD.',
     ]);
     // .gwd-p-swap sits only on page1, which showed everywhere
     expect(fix('marginBlock')?.detail).toBe('.gwd-p-swap');
-    expect(fix('marginBlock', true)?.detail).toBe('.gwd-p-head');
-    expect(fix('marginBlock', true)?.moves).toBe('It may move text: .gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there. The checklist still asks for it; check the result in the preview.');
   });
 
   it('treats every class as on a page that never showed where no frame showed every page', () => {
@@ -438,12 +437,18 @@ describe('buttons', () => {
     expect(applied('buttonPadding')).toContain('      height: 24px;\n      padding: 0px;\n      text-indent: 20px;\n      position: absolute;');
   });
 
-  it('offers zeroing browser padding on a content-sized button as a fix that moves text', () => {
+  it("zeroes the browser's padding only where the button keeps its size and centres its text", () => {
     const cta = { tag: 'button', classes: ['gwd-button-cta'], declared: { lineHeight: '20px', color: 'rgb(255, 255, 255)' } };
     const noPad = html.replace('      font-size: 17px;\n      padding: 0px;\n', '      font-size: 17px;\n');
-    const { fix } = plan(noPad, [box({ ...cta, computed: { padding: [1, 6, 1, 6], paddingText: '1px 6px' } })], { '300x250': [M250] });
-    expect(fix('buttonPadding')).toBeUndefined();
-    expect(fix('buttonPadding', true)?.detail).toBe('.gwd-button-cta');
+    const uaPadding = { padding: [1, 6, 1, 6] as [number, number, number, number], paddingText: '1px 6px', textAlign: 'center' };
+    const sized = { width: '100px', height: '30px' };
+    expect(plan(noPad, [box({ ...cta, declared: { ...cta.declared, ...sized }, computed: uaPadding })], { '300x250': [M250] }).fix('buttonPadding')?.detail).toBe('.gwd-button-cta');
+    const content = plan(noPad, [box({ ...cta, computed: uaPadding })], { '300x250': [M250] });
+    expect(content.fix('buttonPadding')).toBeUndefined();
+    expect(content.p.manual.map((m) => m.detail)).toEqual([".gwd-button-cta sizes to its content, so zeroing the browser's default padding (1px 6px) would move its text; set its padding in GWD."]);
+    const left = plan(noPad, [box({ ...cta, declared: { ...cta.declared, ...sized }, computed: { ...uaPadding, textAlign: 'left' } })], { '300x250': [M250] });
+    expect(left.fix('buttonPadding')).toBeUndefined();
+    expect(left.p.manual.map((m) => m.detail)).toEqual([".gwd-button-cta does not centre its text, so zeroing the browser's default padding (1px 6px) would move its text; set its padding in GWD."]);
   });
 
   it('declares the color a button renders, unless sizes render different ones', () => {
@@ -459,14 +464,15 @@ describe('buttons', () => {
 describe('margin-block', () => {
   const html = fixture('mini-ad.html');
 
-  it('is safe on positioned text, and marked as moving where a default margin is in play', () => {
+  it('is added to positioned text, and left to you where a default margin is in play', () => {
     const missing = { marginBlockStart: '', marginBlockEnd: '' };
-    const { fix } = plan(html, [
+    const { fix, p } = plan(html, [
       box({ classes: ['gwd-p-head'], declared: { lineHeight: '14px', ...missing } }),
       box({ classes: ['gwd-p-swap'], declared: { lineHeight: '14px', ...missing }, computed: { position: 'static', marginTop: 16, marginBottom: 16 } }),
     ], {});
     expect(fix('marginBlock')?.detail).toBe('.gwd-p-head');
-    expect(fix('marginBlock', true)?.moves).toContain('.gwd-p-swap has margin 16px / 16px today');
+    expect(fix('marginBlock')?.parts?.map((x) => x.name)).toEqual(['.gwd-p-head']);
+    expect(p.manual.map((m) => m.detail)).toEqual(['.gwd-p-swap has margin 16px / 16px today, so margin-block: 0px auto would move its text; add it in GWD and put the text back in place.']);
   });
 });
 
@@ -483,5 +489,37 @@ describe('keyframes and fades', () => {
   it('starts text fades at 0.001', () => {
     const out = plan(html, [], {}).applied('textFade');
     expect(out.match(/opacity: 0\.001;/g)).toHaveLength(2);
+  });
+});
+
+describe('GWD groups', () => {
+  // A group's elements are styled through '[data-gwd-group="Perks"] .gwd-grp-k2.<their own class>'.
+  const html = fixture('group-ad.html');
+  const one = { tag: 'span', classes: ['gwd-span-one', 'gwd-grp-k2'], target: 'span.gwd-span-one.gwd-grp-k2' };
+  const two = { tag: 'span', classes: ['gwd-grp-k2', 'gwd-span-two', 'gwd-gen-in'], target: 'span.gwd-grp-k2.gwd-span-two.gwd-gen-in' };
+
+  it("adds margin-block to a group element's own rule", () => {
+    const { fix, applied, p } = plan(html, [box({ ...one, declared: { lineHeight: '16px', marginBlockStart: '', marginBlockEnd: '' } })], {});
+    expect(fix('marginBlock')?.detail).toBe('.gwd-span-one');
+    expect(applied('marginBlock')).toContain('    [data-gwd-group="Perks"] .gwd-grp-k2.gwd-span-one {\n      position: absolute;\n      line-height: 16px;\n      opacity: 0;\n      margin-block: 0px auto;\n    }');
+    expect(p.manual).toEqual([]);
+  });
+
+  it("puts a group element's line-height in its own rules, and new rules in its group's form", () => {
+    const sized = html.replace('  </style>', '    @media (width: 300px) and (height: 600px) {}\n  </style>');
+    const { fix, applied } = plan(sized, [
+      box({ ...two, frame: '300x250', size: '300x250', normalLineHeight: 12, computed: { fontSize: 10 } }),
+      box({ ...two, frame: '300x600', size: '300x600', normalLineHeight: 15, computed: { fontSize: 12 } }),
+    ], { '300x250': [M250], '300x600': [M600] });
+    expect(fix('lineHeight')?.detail).toBe('.gwd-span-two in 300x250: 12px, .gwd-span-two in 300x600: 15px');
+    expect(applied('lineHeight')).toContain('      [data-gwd-group="Perks"] .gwd-span-two.gwd-grp-k2 {\n        font-size: 10px;\n        line-height: 12px;\n      }');
+    expect(applied('lineHeight')).toContain('    @media (width: 300px) and (height: 600px) {\n      [data-gwd-group="Perks"] .gwd-span-two.gwd-grp-k2 {\n        line-height: 15px;\n      }\n    }');
+  });
+
+  it('starts the group texts and what holds them at 0.001', () => {
+    const out = plan(html, [], {}).applied('textFade');
+    expect(out).toContain('    .gwd-div-cta {\n      position: absolute;\n      opacity: 0.001;');
+    expect(out).toContain('      line-height: 16px;\n      opacity: 0.001;');
+    expect(out).toContain('    .gwd-image-dot {\n      position: absolute;\n      opacity: 0;');
   });
 });

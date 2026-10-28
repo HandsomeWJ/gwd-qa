@@ -34,7 +34,6 @@ describe('guardPlan', () => {
     const { check } = checker([[['gwd-p-t'], diff()]]);
     await guardPlan(plan, HTML, check);
     const [fix] = plan.fixes;
-    expect(fix.moves).toBeUndefined();
     expect(fix.detail).toBe('.gwd-p-a: 18px, .gwd-p-c: 18px');
     expect(fix.edits.map((e) => e.text)).toEqual(['[gwd-p-a]', '[gwd-p-c]']);
     expect(plan.manual).toEqual([{ check: 'lineHeight', detail: '.gwd-p-t: its line-height would change the spacing at 310x365, which no preview shows; set it in GWD.' }]);
@@ -62,39 +61,52 @@ describe('guardPlan', () => {
     expect(plan.manual.map((m) => m.detail)).toEqual(['.gwd-p-t: its line-height would change the spacing at 310x365, which no preview shows; set it in GWD.']);
   });
 
-  it('offers unticked each other fix that moves text, and keeps the rest ticked', async () => {
+  it('leaves to you each other fix that moves text, and keeps the rest', async () => {
     const plan: FixPlan = { fixes: [lineHeight('gwd-p-a'), other('marginBlock', 'm'), other('textFade', 'f')], manual: [] };
     const { check, calls } = checker([[['m'], diff({ target: 'p#SA_z_1', spacing: false })]]);
     await guardPlan(plan, HTML, check);
-    expect(plan.fixes.map((f) => f.moves)).toEqual([
-      undefined,
-      'Laid out without scripts, it moves p#SA_z_1 at 310x365, which no preview shows. Check that size in GWD.',
-      undefined,
-    ]);
-    expect(calls).toEqual(['ad:[gwd-p-a]', 'ad:[f][m]', 'ad:[m]', 'ad:[f]']);
+    expect(plan.fixes.map((f) => f.check)).toEqual(['lineHeight', 'textFade']);
+    expect(plan.manual).toEqual([{ check: 'marginBlock', detail: '"marginBlock" (m) would move p#SA_z_1 at 310x365, which no preview shows; do it in GWD.' }]);
+    // then what is left is laid out together again
+    expect(calls).toEqual(['ad:[gwd-p-a]', 'ad:[f][m]', 'ad:[m]', 'ad:[f]', 'ad:[f]']);
+  });
+
+  it('leaves out just the class of another fix with a part per class', async () => {
+    const parts = ['gwd-p-a', 'gwd-p-z'].map((c, at) => ({ name: `.${c}`, edits: [mark(c)], notes: [{ at, text: `.${c}` }] }));
+    const margin: PlannedFix = { check: 'marginBlock', title: 'Add margin-block: 0px auto', detail: '.gwd-p-a, .gwd-p-z', edits: parts.flatMap((p) => p.edits), parts };
+    const plan: FixPlan = { fixes: [margin], manual: [] };
+    await guardPlan(plan, HTML, checker([[['gwd-p-z'], diff({ target: 'p#SA_z_1', spacing: false, classes: ['gwd-p-z'] })]]).check);
+    expect(plan.fixes.map((f) => [f.detail, f.edits.map((e) => e.text)])).toEqual([['.gwd-p-a', ['[gwd-p-a]']]]);
+    expect(plan.manual.map((m) => m.detail)).toEqual(['.gwd-p-z: "Add margin-block: 0px auto" would move p#SA_z_1 at 310x365, which no preview shows; do it in GWD.']);
   });
 
   it('lays out each other fix alone only when something moved with all of them', async () => {
     const plan: FixPlan = { fixes: [lineHeight('gwd-p-a'), other('marginBlock', 'm'), other('textFade', 'f')], manual: [] };
     const { check, calls } = checker([]);
     await guardPlan(plan, HTML, check);
-    expect(plan.fixes.every((f) => !f.moves)).toBe(true);
+    expect(plan.fixes).toHaveLength(3);
     expect(plan.manual).toEqual([]);
     expect(calls).toEqual(['ad:[gwd-p-a]', 'ad:[f][m]']);
   });
 
-  it('offers nothing ticked that it could not lay out', async () => {
+  it('offers nothing it could not lay out', async () => {
     const plan: FixPlan = { fixes: [lineHeight('gwd-p-a'), other('marginBlock', 'm')], manual: [] };
     await guardPlan(plan, HTML, async () => {
       throw new Error('its frame did not load');
     });
-    expect(plan.fixes.map((f) => f.moves)).toEqual(Array(2).fill('It could not be laid out without scripts in the sizes no preview shows (its frame did not load). Check those sizes in GWD.'));
+    expect(plan.fixes).toEqual([]);
+    expect(plan.manual.map((m) => m.detail)).toEqual([
+      'Declare line-height (.gwd-p-a: 18px): it could not be laid out without scripts in the sizes no preview shows (its frame did not load), so it was not checked there; check the ad again, or do it in GWD.',
+      'marginBlock (m): it could not be laid out without scripts in the sizes no preview shows (its frame did not load), so it was not checked there; check the ad again, or do it in GWD.',
+    ]);
   });
 
   it('trusts no layout that differs without any fix', async () => {
     const plan: FixPlan = { fixes: [lineHeight('gwd-p-a')], manual: [] };
     await guardPlan(plan, HTML, async () => [diff()]);
-    expect(plan.fixes[0].moves).toContain('p#SA_t_1 lays out differently each time at 310x365');
-    expect(plan.manual).toEqual([]);
+    expect(plan.fixes).toEqual([]);
+    expect(plan.manual.map((m) => m.detail)).toEqual([
+      'Declare line-height (.gwd-p-a: 18px): it could not be laid out without scripts in the sizes no preview shows (p#SA_t_1 lays out differently each time at 310x365), so it was not checked there; check the ad again, or do it in GWD.',
+    ]);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyEdits, insertDecl, insertRule, mergeEdits, removeDecl, setValue } from '../src/css/edit';
-import { lastCompound, parseCss, singleClass, sizeOfMedia } from '../src/css/parse';
+import { elementClass, lastCompound, parseCss, singleClass, sizeOfMedia } from '../src/css/parse';
 import { fixture } from './fixture';
 
 const html = fixture('mini-ad.html');
@@ -113,5 +113,16 @@ describe('edits', () => {
 
   it('refuses overlapping edits', () => {
     expect(() => applyEdits('abcdef', [{ start: 1, end: 4, text: '' }, { start: 3, end: 5, text: '' }])).toThrow();
+  });
+});
+
+describe('elementClass', () => {
+  it("reads the element's own class from a plain rule and from a GWD group's", () => {
+    expect(elementClass('.gwd-p-a')).toBe('gwd-p-a');
+    expect(elementClass('[data-gwd-group="Perks"] .gwd-grp-k2.gwd-span-one')).toBe('gwd-span-one');
+    expect(elementClass(' [data-gwd-group="Perks"]  .gwd-span-one.gwd-grp-k2 ')).toBe('gwd-span-one');
+    expect(elementClass('.gwd-play-animation [data-gwd-group="Perks"] .gwd-gen-ingwdanimation')).toBeNull();
+    expect(elementClass('[data-gwd-group="Perks"]')).toBeNull();
+    expect(elementClass('#page1 .gwd-p-a')).toBeNull();
   });
 });

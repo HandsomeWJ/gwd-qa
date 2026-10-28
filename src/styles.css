@@ -121,7 +121,6 @@ dialog.report .actions { display: flex; justify-content: flex-end; gap: 8px; mar
 .pill { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
 .pill.pass { background: var(--pass-bg); color: var(--pass-fg); }
 .pill.fail { background: var(--fail-bg); color: var(--fail-fg); }
-.pill.note { background: var(--note-bg); color: var(--note-fg); }
 .pill.info { background: var(--info-bg); color: var(--info-fg); }
 
 .checks { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }

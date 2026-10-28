@@ -518,14 +518,14 @@ function renderFixes() {
   const html = session!.html;
   const list = fixes.map((f: PlannedFix, i: number) => `
     <li>
-      <input type="checkbox" id="fix-${i}" data-fix="${i}"${f.moves ? '' : ' checked'}>
+      <input type="checkbox" id="fix-${i}" data-fix="${i}" checked>
       <div><label for="fix-${i}"><strong>${esc(f.title)}</strong> <span class="pill info">${esc(CHECKS.find((c) => c.id === f.check)!.title)}</span>
-        <div class="detail">${esc(f.detail)}</div>${f.moves ? `<div class="detail"><span class="pill note">Moves text</span> ${esc(f.moves)}</div>` : ''}</label>
+        <div class="detail">${esc(f.detail)}</div></label>
         ${diffBox('Show the edits', html, applyEdits(html, mergeEdits(f.edits)))}</div>
     </li>`).join('');
   box.innerHTML = `
     <h2>Fixes</h2>
-    <p class="sub">These declare what the ad already renders, so nothing should move; any fix that would move text is marked and left unticked. Each fix is laid out without scripts at ${plural(r.layout.sizes, 'size')} first${r.layout.unseen ? `, ${r.layout.unseen} of them between the previews` : ''}${r.layout.state ? `, at rest and ${esc(r.layout.state)}` : ''}, to find that. Text positions in every size are compared before and after.</p>
+    <p class="sub">These keep the ad looking exactly as it does: no fix moves text or changes how it looks, and one that would is listed under Needs your decision instead. Each fix is laid out without scripts at ${plural(r.layout.sizes, 'size')} first${r.layout.unseen ? `, ${r.layout.unseen} of them between the previews` : ''}${r.layout.state ? `, at rest and ${esc(r.layout.state)}` : ''}, to prove that. Text positions in every size are compared before and after.</p>
     ${session!.lastApply ? applyBanner(session!.lastApply) : ''}
     ${fixes.length
       ? `<ul class="fixlist">${list}</ul><button class="primary" data-action="apply">Apply selected fixes</button>`

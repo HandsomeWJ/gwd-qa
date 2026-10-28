@@ -92,7 +92,7 @@ test('a failed check after applying puts the file back, so the fixes on the page
   await expect(page.locator('#summary')).toContainText('1 check failing'); // the small note, not marked as a disclaimer
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
-  expect(fixed).toContain("setInlineStyle('SA_cta_1', 'opacity: 0.3;')");
+  expect(fixed).toContain("setInlineStyle('SA_dot_1', 'opacity: 0.3;')");
 });
 
 test('undoing after the browser dropped the ad\'s files puts every file back', async ({ page }) => {

@@ -471,7 +471,7 @@ describe("the ad's other files", () => {
     @import 'css/extra.css';
     @import "missing.css";
     .gwd-p-a { opacity: 0,2; }
-  </style>`);
+  </style>`, '  <div class="gwd-p-a"></div>');
     const report = staticAudit(linked, parseCss(linked), valid, files);
     expect(report.findings.filter((f) => f.check === 'cssValues').map((f) => [f.level, f.target, f.message, f.hint ?? null, f.unknown ?? false])).toEqual([
       ['fail', '.gwd-p-a', '"opacity: 0,2" is not valid CSS, so browsers ignore it; write 0.2.', null, false],
@@ -522,35 +522,47 @@ describe('fixing CSS values', () => {
     .gwd-div-box {
       filter: blur(0,5px);
     }
-  </style>`, '  <div id="SA_bg_1" style="opacity: 0,6"></div>');
+  </style>`, '  <div id="SA_bg_1" style="opacity: 0,6"></div>\n  <img id="navigation3_3" src="dot.png">');
 
-  it('writes decimal points in place, offering values that size or place things unticked', () => {
+  it('writes decimal points in place where only paint changes, on what shows no text', () => {
     const p = plan(html);
-    const [safe, moving] = p.fixes.filter((f) => f.check === 'cssValues');
+    const [safe, ...more] = p.fixes.filter((f) => f.check === 'cssValues');
+    expect(more).toEqual([]);
     expect(safe.detail).toBe('navigation3_3 opacity: 0,3 -> 0.3 (in gwd.framechange_savings), div#SA_bg_1 opacity: 0,6 -> 0.6');
-    expect(safe.moves).toBeUndefined();
     expect(applyEdits(html, mergeEdits(safe.edits))).toBe(
       html.replace("'opacity: 0,3;'", "'opacity: 0.3;'").replace('style="opacity: 0,6"', 'style="opacity: 0.6"'),
     );
-    // A filter makes its element the containing block of positioned text inside it, so it can move text.
-    expect(moving.detail).toBe('.gwd-p-a left: 1,5px -> 1.5px, .gwd-div-box filter: blur(0,5px) -> blur(0.5px)');
-    expect(moving.moves).toContain('Check the result in the preview');
-    expect(applyEdits(html, mergeEdits(moving.edits))).toBe(html.replace('left: 1,5px;', 'left: 1.5px;').replace('blur(0,5px)', 'blur(0.5px)'));
   });
 
-  it('offers a transition ticked only when everything it animates only changes how things look', () => {
+  it('leaves to you a value that, once valid, would change how text looks', () => {
+    const text = page(HANDLERS, '  <div id="navigation3_3"><span>Next</span></div>\n  <p id="SA_bg_1" style="opacity: 0,6">Hello</p>\n  <div id="SA_x_1" style="opacity: 0,7"><gwd-image></gwd-image></div>');
+    const p = plan(text);
+    expect(p.fixes.map((f) => f.detail)).toEqual(['div#SA_x_1 opacity: 0,7 -> 0.7']);
+    expect(p.manual.map((m) => m.detail)).toEqual([
+      'navigation3_3 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; write 0.3 in GWD. Once valid it would change how its text looks, so it is not changed here.',
+      'p#SA_bg_1 opacity: 0,6 is not valid CSS, so browsers ignore it; write 0.6 in GWD. Once valid it would change how its text looks, so it is not changed here.',
+    ]);
+    // Where what it styles is not known, it may be text.
+    expect(plan(page(HANDLERS)).manual.map((m) => m.detail)).toEqual([
+      'navigation3_3 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; write 0.3 in GWD. Once valid it would change how what it styles looks, which may be text, so it is not changed here.',
+    ]);
+  });
+
+  it('offers a transition only when everything it animates only changes how things look', () => {
     const transitions = page(`  <script type="text/javascript" gwd-events="handlers">
     gwd.hover = function(event) {
       gwd.actions.events.setInlineStyle('SA_cta_1', 'transition: all 0,2s linear; color: white;');
       gwd.actions.events.setInlineStyle('SA_cta_2', 'transition: opacity 0,5s cubic-bezier(0.42,0,0.58,1)');
       gwd.actions.events.setInlineStyle('SA_cta_3', 'transition-duration: 0,5s');
     };
-  </script>`);
-    const [safe, moving] = plan(transitions).fixes;
-    expect(safe.detail).toBe('SA_cta_2 transition: opacity 0,5s cubic-bezier(0.42,0,0.58,1) -> opacity 0.5s cubic-bezier(0.42,0,0.58,1) (in gwd.hover)');
+  </script>`, ['SA_cta_1', 'SA_cta_2', 'SA_cta_3'].map((id) => `  <div id="${id}"></div>`).join('\n'));
+    const p = plan(transitions);
+    expect(p.fixes.map((f) => f.detail)).toEqual(['SA_cta_2 transition: opacity 0,5s cubic-bezier(0.42,0,0.58,1) -> opacity 0.5s cubic-bezier(0.42,0,0.58,1) (in gwd.hover)']);
     // all, or a duration for whatever the element transitions, would make text that jumps slide or grow.
-    expect(moving.detail).toBe('SA_cta_1 transition: all 0,2s linear -> all 0.2s linear (in gwd.hover), SA_cta_3 transition-duration: 0,5s -> 0.5s (in gwd.hover)');
-    expect(moving.moves).toContain('animate');
+    expect(p.manual.map((m) => m.detail)).toEqual([
+      'SA_cta_1 transition: all 0,2s linear (in gwd.hover) is not valid CSS, so browsers ignore it; write all 0.2s linear in GWD. Once valid it would size, place or animate what it styles, which can move text, so it is not changed here.',
+      'SA_cta_3 transition-duration: 0,5s (in gwd.hover) is not valid CSS, so browsers ignore it; write 0.5s in GWD. Once valid it would size, place or animate what it styles, which can move text, so it is not changed here.',
+    ]);
   });
 
   it('never edits a URL or string, and offers no fix for what setInlineStyle ignores whatever its value', () => {
@@ -564,9 +576,9 @@ describe('fixing CSS values', () => {
       gwd.actions.events.setInlineStyle('a', 'opacity: 0,3 !important;');
       gwd.actions.events.setInlineStyle('b', 'opacity : 0,4');
     };
-  </script>`);
+  </script>`, '  <div class="gwd-div-a"></div>');
     const p = plan(html);
-    expect(p.fixes.map((f) => [f.detail, !f.moves])).toEqual([['.gwd-div-a background: url("assets/hero_1,5x.png") 1,5px 1,5px no-repeat -> url("assets/hero_1,5x.png") 1.5px 1.5px no-repeat', true]]);
+    expect(p.fixes.map((f) => f.detail)).toEqual(['.gwd-div-a background: url("assets/hero_1,5x.png") 1,5px 1,5px no-repeat -> url("assets/hero_1,5x.png") 1.5px 1.5px no-repeat']);
     expect(applyEdits(html, mergeEdits(p.fixes[0].edits))).toBe(html.replace('1,5px 1,5px', '1.5px 1.5px'));
     expect(p.manual.map((m) => m.detail)).toEqual([
       'a opacity: 0,3 !important (in gwd.styles) is ignored: setInlineStyle takes !important as part of the value, which browsers then reject; correct it in GWD.',
@@ -574,9 +586,12 @@ describe('fixing CSS values', () => {
     ]);
   });
 
-  it('leaves other invalid values to you', () => {
-    expect(plan(html).manual).toEqual([
-      { check: 'cssValues', detail: '.gwd-p-a opacity: abc is not valid CSS, so browsers ignore it; correct it in GWD.' },
+  it('leaves other invalid values to you, and those that would size or place things', () => {
+    // A filter makes its element the containing block of positioned text inside it, so it can move text.
+    expect(plan(html).manual.map((m) => m.detail)).toEqual([
+      '.gwd-p-a left: 1,5px is not valid CSS, so browsers ignore it; write 1.5px in GWD. Once valid it would size, place or animate what it styles, which can move text, so it is not changed here.',
+      '.gwd-p-a opacity: abc is not valid CSS, so browsers ignore it; correct it in GWD.',
+      '.gwd-div-box filter: blur(0,5px) is not valid CSS, so browsers ignore it; write blur(0.5px) in GWD. Once valid it would size, place or animate what it styles, which can move text, so it is not changed here.',
     ]);
   });
 
@@ -586,7 +601,7 @@ describe('fixing CSS values', () => {
     gwd.shadow = function(event) {
       gwd.actions.events.setInlineStyle('SA_cta_1', 'box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5);');
     };
-  </script>`);
+  </script>`, '  <div id="SA_cta_1"></div>');
     const [safe] = plan(shadow).fixes;
     expect(safe.detail).toBe('SA_cta_1 box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5) -> 0px 2px 1.5px rgba(0,0,0,0.5) (in gwd.shadow)');
     expect(applyEdits(shadow, safe.edits)).toBe(shadow.replace('1,5px', '1.5px'));
@@ -645,14 +660,14 @@ describe('fixing CSS values', () => {
     .gwd-img-b {
       position: absolute;
     }
-    @media ${M600} { .gwd-img-b { left: 1,5px; top: 40px; } }
-  </style>`, '  <p class="gwd-p-a" id="SA_headline_1">Text</p>');
+    @media ${M600} { .gwd-img-b { opacity: 0,5; top: 40px; } }
+  </style>`, '  <p class="gwd-p-a" id="SA_headline_1">Text</p>\n  <div class="gwd-img-b"></div>');
     const p = plan(oneLine, [box({ classes: ['gwd-p-a'], frame: '300x600', normalLineHeight: 18.5 })], { '300x600': [M600] });
     expect(p.fixes.map((f) => [f.check, f.detail])).toEqual([
       ['lineHeight', '.gwd-p-a in 300x600: 18.5px'],
-      ['cssValues', '.gwd-img-b in 300x600 left: 1,5px -> 1.5px'],
+      ['cssValues', '.gwd-img-b in 300x600 opacity: 0,5 -> 0.5'],
     ]);
     const out = applyEdits(oneLine, mergeEdits(p.fixes.flatMap((f) => f.edits)));
-    expect(out).toContain(`@media ${M600} { .gwd-img-b { left: 1.5px; top: 40px; } \n      .gwd-p-a {\n        line-height: 18.5px;\n      }\n    }`);
+    expect(out).toContain(`@media ${M600} { .gwd-img-b { opacity: 0.5; top: 40px; } \n      .gwd-p-a {\n        line-height: 18.5px;\n      }\n    }`);
   });
 });

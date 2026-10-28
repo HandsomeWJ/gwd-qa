@@ -300,6 +300,18 @@ export function singleClass(selector: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * The class a GWD rule styles its element through: ".gwd-p-1lgf", or for an element of a GWD group,
+ * '[data-gwd-group="Perks"] .gwd-grp-k2.gwd-span-one', where it is the class beside the group's.
+ */
+export function elementClass(selector: string): string | null {
+  const single = singleClass(selector);
+  if (single) return single;
+  const m = /^\[data-gwd-group="[^"\\]*"\]\s+\.(-?[_a-zA-Z][\w-]*)\.(-?[_a-zA-Z][\w-]*)$/.exec(selector.trim());
+  const own = m ? [m[1], m[2]].filter((c) => !c.startsWith('gwd-grp-')) : [];
+  return own.length === 1 ? own[0] : null;
+}
+
 /** Class and id tokens of the last compound selector: ".a #b .c.d" -> ".c.d". */
 export function lastCompound(selector: string): string {
   const parts = selector.trim().split(/\s*[\s>+~]\s*/);

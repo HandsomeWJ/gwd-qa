@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="environment" content="gwd-genericad">
+  <style type="text/css">
+    .gwd-div-card {
+      position: absolute;
+      opacity: 0;
+    }
+    .gwd-div-cta {
+      position: absolute;
+      opacity: 0;
+    }
+    .gwd-image-dot {
+      position: absolute;
+      opacity: 0;
+    }
+    .gwd-button-go {
+      width: 80px;
+      height: 20px;
+    }
+    [data-gwd-group="Perks"] .gwd-grp-k2.gwd-span-one {
+      position: absolute;
+      line-height: 16px;
+      opacity: 0;
+    }
+    [data-gwd-group="Perks"] .gwd-grp-k2.gwd-image-tick {
+      position: absolute;
+      opacity: 0;
+    }
+    [data-gwd-group="Perks"] .gwd-span-two.gwd-grp-k2 {
+      position: absolute;
+      font-size: 12px;
+    }
+    @keyframes gwd-gen-in_gwd-keyframes {
+      0% {
+        opacity: 0;
+      }
+      100% {
+        opacity: 1;
+      }
+    }
+    .gwd-play-animation [data-gwd-group="Perks"] .gwd-gen-in {
+      animation: 1s linear 0s 1 normal forwards gwd-gen-in_gwd-keyframes;
+    }
+    @media (width: 300px) and (height: 250px) {
+      [data-gwd-group="Perks"] .gwd-span-two.gwd-grp-k2 {
+        font-size: 10px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <template id="gwd-group-definitions">
+    <div data-gwd-group-def="Perks" data-gwd-group-class="gwd-grp-k2" style="display: none;"><span class="gwd-span-one gwd-grp-k2" data-gwd-grp-id="SA_perk_1" data-gwd-media-override="{&quot;300x250&quot;:{&quot;data-gwd-text&quot;:&quot;{\&quot;content\&quot;:\&quot;Two-year<br>\&quot;,\&quot;isPlainText\&quot;:false}&quot;}}">Two-year guarantee</span>
+      <gwd-image class="gwd-image-tick gwd-grp-k2" data-gwd-grp-id="SA_tick_1"></gwd-image><span class="gwd-grp-k2 gwd-span-two gwd-gen-in" data-gwd-grp-id="SA_perk_2">Easy returns</span>
+    </div>
+  </template>
+  <script gwd-served-sizes="" type="application/json">["300x250"]</script>
+  <gwd-genericad id="gwd-ad">
+    <gwd-pagedeck class="gwd-page-container" id="pagedeck">
+      <gwd-page id="page1" class="gwd-page-wrapper">
+        <div class="gwd-page-content">
+          <p class="gwd-p-head" id="SA_headline_1">Big sale</p>
+          <div class="gwd-div-card" id="SA_group_1" data-gwd-group="Perks"></div>
+          <div class="gwd-div-cta" id="SA_group_2"><button class="gwd-button-go" id="SA_cta_1">BUY IT</button></div>
+          <gwd-image class="gwd-image-dot" id="SA_dot_1"></gwd-image>
+        </div>
+      </gwd-page>
+    </gwd-pagedeck>
+  </gwd-genericad>
+</body>
+
+</html>

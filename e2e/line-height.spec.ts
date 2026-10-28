@@ -122,7 +122,7 @@ test('runs none of the ad\'s own scripts in the frames that lay the fixes out', 
   await expect(page.locator('html')).not.toHaveAttribute('data-layout-ran', 'yes');
 });
 
-test('offers another fix unticked where, laid out without scripts, it moves text in a size no frame shows', async ({ page }) => {
+test('leaves to you a class whose margin-block, laid out without scripts, moves text in a size no frame shows', async ({ page }) => {
   // Only inside the range does a paragraph whose class sets no margin get one, from a rule for every <p>;
   // margin-block on its class would take it away there.
   const html = shadowedRange('font-size: 10px;')
@@ -132,10 +132,11 @@ test('offers another fix unticked where, laid out without scripts, it moves text
     .replace(/(@media \(width: (300px\) and \(height: 250|320px\) and \(height: 480)px\) \{)/g, '$1\n      p {\n        margin-top: 0px;\n      }')
     .replace('<button class="gwd-button-b"', '<p class="gwd-p-z" id="SA_z_1">Margin text</p>\n        <button class="gwd-button-b"');
   await load(page, 'margin.zip', mockZip(html));
-  const margin = page.locator('#fixes .fixlist li', { hasText: 'Add margin-block: 0px auto' });
-  await expect(margin).toContainText('.gwd-p-z');
-  await expect(margin).toContainText('Laid out without scripts, it moves p#SA_z_1 at 310x365, which no preview shows. Check that size in GWD.');
-  await expect(margin.locator('input[type="checkbox"]')).not.toBeChecked();
+  await expect(page.locator('#fixes .manual')).toContainText('.gwd-p-z: "Add margin-block: 0px auto" would move p#SA_z_1 at 310x365, which no preview shows; do it in GWD.');
+  // only that class: margin-block is still added to the others
+  const margin = page.locator('#fixes .fixlist li', { hasText: 'Add margin-block: 0px auto' }).locator('.detail');
+  await expect(margin).toContainText('.gwd-p-a');
+  await expect(margin).not.toContainText('.gwd-p-z');
   await expect(lineHeightFix(page).locator('input[type="checkbox"]')).toBeChecked();
 });
 

@@ -1,38 +1,47 @@
-// The layout safety net over the plan. Every fix offered ticked is laid out without scripts in every
-// size, including those no preview shows, at rest and in the ad's hover, focus and click states, and
-// must leave every text and line spacing as it is. A class whose line-height would change one is
-// left to you; any other fix that would is offered unticked.
+// The layout safety net over the plan. Every fix is laid out without scripts in every size, including
+// those no preview shows, at rest and in the ad's hover, focus and click states, and must leave every
+// text and line spacing as it is. Whatever would change one is taken out of the plan and left to you,
+// with a note: a class at a time where a fix has a part per class, else the whole fix.
 
 import { applyEdits, mergeEdits } from '../css/edit';
 import type { LayoutDiff } from '../audit/layout';
+import type { CheckId } from '../audit/types';
 import { withoutPart, type FixPlan, type PlannedFix } from './plan';
 
 /** Lays `html` out and lists where it differs from the ad as planned, in every size or only those named. */
 export type LayoutCheck = (html: string, sizes?: string[]) => Promise<LayoutDiff[]>;
 
+type WithFixes = (fixes: PlannedFix[]) => string;
+
 const where = (d: LayoutDiff) => `${d.size}${d.state ? ` ${d.state}` : d.previewed ? '' : ', which no preview shows'}`;
 const sameSpot = (a: LayoutDiff, b: LayoutDiff) => a.size === b.size && a.index === b.index && a.state === b.state;
+const changes = (d: LayoutDiff) => `${d.spacing ? 'change the line spacing of' : 'move'} ${d.target} at ${where(d)}`;
 
-/** Leaves out of the plan's ticked fixes whatever the layout check finds moving text. */
+function note(plan: FixPlan, check: CheckId, detail: string) {
+  if (!plan.manual.some((m) => m.detail === detail)) plan.manual.push({ check, detail });
+}
+
+/** Takes out of the plan whatever the layout check finds moving text, with a note for each. */
 export async function guardPlan(plan: FixPlan, html: string, check: LayoutCheck): Promise<void> {
-  const withFixes = (fixes: PlannedFix[]) => applyEdits(html, mergeEdits(fixes.flatMap((f) => f.edits)));
+  const withFixes: WithFixes = (fixes) => applyEdits(html, mergeEdits(fixes.flatMap((f) => f.edits)));
   try {
-    await guardLineHeight(plan, html, check, withFixes);
-    await guardOthers(plan, check, withFixes);
+    await guardParts(plan, plan.fixes.find((f) => f.check === 'lineHeight' && f.parts?.length), html, check, withFixes);
+    await guardOthers(plan, html, check, withFixes);
   } catch (err) {
-    // What could not be laid out was not checked: nothing is offered ticked on the planner's word alone.
+    // What could not be laid out was not checked: no fix is offered on the planner's word alone.
     const why = err instanceof Error ? err.message : String(err);
     for (const f of plan.fixes) {
-      if (!f.moves) f.moves = `It could not be laid out without scripts in the sizes no preview shows (${why}). Check those sizes in GWD.`;
+      note(plan, f.check, `${f.title} (${f.detail}): it could not be laid out without scripts in the sizes no preview shows (${why}), so it was not checked there; check the ad again, or do it in GWD.`);
     }
+    plan.fixes.length = 0;
   }
 }
 
-/** Takes out of the line-height fix, class by class, each class whose value changes a layout. */
-async function guardLineHeight(plan: FixPlan, html: string, check: LayoutCheck, withFixes: (f: PlannedFix[]) => string) {
-  const i = plan.fixes.findIndex((f) => f.check === 'lineHeight' && !f.moves && f.parts?.length);
-  if (i < 0) return;
-  let fix: PlannedFix | null = plan.fixes[i];
+/** Takes out of a fix, part by part, each part that changes a layout. */
+async function guardParts(plan: FixPlan, start: PlannedFix | undefined, html: string, check: LayoutCheck, withFixes: WithFixes) {
+  if (!start) return;
+  const i = plan.fixes.indexOf(start);
+  let fix: PlannedFix | null = start;
   let diffs = await check(withFixes([fix]));
   while (fix && diffs.length) {
     const d = diffs[0];
@@ -52,8 +61,9 @@ async function guardLineHeight(plan: FixPlan, html: string, check: LayoutCheck, 
       if ((await check(html, [d.size])).some((x) => sameSpot(x, d))) throw new Error(`${d.target} lays out differently each time at ${d.size}`);
       culprit = suspects[0]; // several classes move it together: leave the nearest out, then look again
     }
-    const note = `${culprit}: its line-height would change the spacing at ${where(d)}; set it in GWD.`;
-    if (!plan.manual.some((m) => m.detail === note)) plan.manual.push({ check: 'lineHeight', detail: note });
+    note(plan, fix.check, fix.check === 'lineHeight'
+      ? `${culprit}: its line-height would change the spacing at ${where(d)}; set it in GWD.`
+      : `${culprit}: "${fix.title}" would ${changes(d)}; do it in GWD.`);
     fix = withoutPart(fix, culprit);
     diffs = fix ? await check(withFixes([fix])) : [];
   }
@@ -61,21 +71,29 @@ async function guardLineHeight(plan: FixPlan, html: string, check: LayoutCheck, 
   else plan.fixes.splice(i, 1);
 }
 
-/** Offers unticked each other ticked fix that changes a layout: first all of them at once, then one by one. */
-async function guardOthers(plan: FixPlan, check: LayoutCheck, withFixes: (f: PlannedFix[]) => string) {
-  const ticked = plan.fixes.filter((f) => !f.moves && !(f.check === 'lineHeight' && f.parts?.length));
-  if (!ticked.length) return;
-  const together = await check(withFixes(ticked));
-  if (!together.length) return;
-  const found: [PlannedFix, LayoutDiff][] = [];
-  for (const f of ticked) {
-    const d = ticked.length === 1 ? together[0] : (await check(withFixes([f])))[0];
-    if (d) found.push([f, d]);
-  }
-  // None moves it alone, so they do together: each is left to you.
-  if (!found.length) ticked.forEach((f) => found.push([f, together[0]]));
-  for (const [f, d] of found) {
-    const look = d.state ? 'Check that state in the preview.' : d.previewed ? 'Check the result in the preview.' : 'Check that size in GWD.';
-    f.moves = `Laid out without scripts, it ${d.spacing ? 'changes the line spacing of' : 'moves'} ${d.target} at ${where(d)}. ${look}`;
+/** Takes out each other fix, or part of one, that changes a layout: first all of them at once, then one by one. */
+async function guardOthers(plan: FixPlan, html: string, check: LayoutCheck, withFixes: WithFixes) {
+  for (;;) {
+    const others = plan.fixes.filter((f) => !(f.check === 'lineHeight' && f.parts?.length));
+    if (!others.length) return;
+    const together = await check(withFixes(others));
+    if (!together.length) return;
+    const drop = (f: PlannedFix, d: LayoutDiff) => {
+      plan.fixes.splice(plan.fixes.indexOf(f), 1);
+      note(plan, f.check, `"${f.title}" (${f.detail}) would ${changes(d)}; do it in GWD.`);
+    };
+    let alone = false;
+    for (const f of others) {
+      const d = others.length === 1 ? together[0] : (await check(withFixes([f])))[0];
+      if (!d) continue;
+      alone = true;
+      if (f.parts?.length) await guardParts(plan, f, html, check, withFixes);
+      else drop(f, d);
+    }
+    // None moves it alone, so they do together: each is left to you.
+    if (!alone) {
+      for (const f of others) drop(f, together[0]);
+      return;
+    }
   }
 }

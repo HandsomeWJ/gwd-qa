@@ -289,7 +289,7 @@ test('leaves a class to you where a page it sits on never showed in a size', asy
   const { detail, manual, banner } = await applyAndCompare(page, browser, html, [[300, 250], [300, 600]], stubborn);
   expect(manual).toContain('.gwd-p-t may sit on a page that never showed in 300x250, so it was not checked there; set its line-height in GWD.');
   expect(detail).toBe('');
-  // margin-block is still offered, unticked, as a fix that may move text
-  await expect(page.locator('#fixes .fixlist li', { hasText: 'Add margin-block: 0px auto where it moves text' })).toContainText('.gwd-p-t may sit on a page that never showed in 300x250');
+  // margin-block is left to you there too
+  expect(manual).toContain('.gwd-p-t may sit on a page that never showed in 300x250, so it was not checked there; add margin-block: 0px auto in GWD.');
   expect(banner).toBe('');
 });

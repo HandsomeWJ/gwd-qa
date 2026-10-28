@@ -176,18 +176,19 @@ export class Session {
     const seen = await observe(this.frames, css, this.states()); // shows each page in turn, pausing animations
     const findings = [...report.findings, ...renderFindings(seen.boxes)];
     const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, incomplete: seen.incomplete });
-    // Laid out while the frames restart: no fix is offered ticked that moves text in a size no frame shows.
+    // Laid out while the frames restart: no fix is offered that moves text in a size no frame shows.
     const net = this.layoutNet();
     const html = this.html;
     const started = performance.now();
     const guarded = guardPlan(plan, html, (after, sizes) => net.compare(html, after, sizes)).then(() => performance.now() - started);
     const [, ms] = await Promise.all([this.reloadAll(), guarded]);
-    // A state a script puts an element in that cannot be laid out here: no line-height is offered ticked.
+    // A state a script puts an element in that cannot be laid out here: no line-height is offered.
     const unknown = [...this.states().unknown, ...net.unreached];
-    const lineHeight = plan.fixes.find((f) => f.check === 'lineHeight' && !f.moves);
+    const lineHeight = plan.fixes.find((f) => f.check === 'lineHeight');
     if (unknown.length && lineHeight) {
       const which = `${unknown.slice(0, 2).join('; ')}${unknown.length > 2 ? `; and ${unknown.length - 2} more` : ''}`;
-      lineHeight.moves = `A script changes a font or line-height on an element this check cannot find (${which}), so how text is spaced then was not laid out. Check it in the preview.`;
+      plan.fixes.splice(plan.fixes.indexOf(lineHeight), 1);
+      plan.manual.push({ check: 'lineHeight', detail: `A script changes a font or line-height on an element this check cannot find (${which}), so how text is spaced then was not laid out, and no line-height is added here (${lineHeight.detail}); set them in GWD.` });
     }
     const layout = { sizes: net.sizes.length, unseen: net.sizes.filter((s) => !s.previewed).length, state: net.state, ms };
     return { report, findings, plan, safetyChecked: seen.safetyChecked, pages: seen.pages, skipped: seen.skipped, layout };

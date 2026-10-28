@@ -43,7 +43,7 @@ test('checks every page and both ends of a range, then fixes without moving text
   await expect(cssValues.locator('summary .pill')).toHaveText('Fail');
   await expect(cssValues.locator('summary .count')).toHaveText('2 items · auto-fix ready');
   const cssFix = page.locator('#fixes .fixlist li', { hasText: 'Write decimal points in CSS values' });
-  await expect(cssFix).toContainText('SA_cta_1 opacity: 0,3 -> 0.3 (in gwd.framechange_savings), div#SA_rule_1 opacity: 0,5 -> 0.5');
+  await expect(cssFix).toContainText('SA_dot_1 opacity: 0,3 -> 0.3 (in gwd.framechange_savings), div#SA_rule_1 opacity: 0,5 -> 0.5');
   await expect(cssFix.locator('input[type="checkbox"]')).toBeChecked();
 
   // Each fix shows its edits before it is applied.
@@ -71,8 +71,17 @@ test('checks every page and both ends of a range, then fixes without moving text
   expect(Object.keys(upload.files)).toEqual(['Mock Ad/', 'Mock Ad/Responsive.html', 'Mock Ad/mock-gwd.js']);
   const fixed = strFromU8(upload.files['Mock Ad/Responsive.html']);
   expect(fixed).toContain('margin-block: 0px auto;');
-  expect(fixed).toContain("setInlineStyle('SA_cta_1', 'opacity: 0.3;')");
+  expect(fixed).toContain("setInlineStyle('SA_dot_1', 'opacity: 0.3;')");
   expect(fixed).toContain('<div id="SA_rule_1" style="opacity: 0.5;"></div>');
+});
+
+test('leaves to you a CSS value that, once valid, would change how text looks', async ({ page }) => {
+  // The same event, on the button that says "Go".
+  await load(page, mockZip(mockAdHtml().replace("setInlineStyle('SA_dot_1', 'opacity: 0,3;')", "setInlineStyle('SA_cta_1', 'opacity: 0,3;')")));
+  await expect(page.locator('#fixes .manual')).toContainText('SA_cta_1 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; write 0.3 in GWD. Once valid it would change how its text looks, so it is not changed here.');
+  const details = page.locator('#fixes .fixlist .detail');
+  await expect(details.filter({ hasText: 'div#SA_rule_1 opacity: 0,5 -> 0.5' })).toHaveCount(1);
+  expect((await details.allInnerTexts()).join('\n')).not.toContain('SA_cta_1');
 });
 
 test('checks CSS values as Chromium reads them, skipping GWD\'s runtime and styles that never apply', async ({ page }) => {
@@ -84,7 +93,7 @@ test('checks CSS values as Chromium reads them, skipping GWD\'s runtime and styl
   </script>
   <!-- <style>.gwd-p-a { opacity: 0,1; }</style> -->
   <style type="text/css">`)
-    .replace("'opacity: 0,3;');", "'opacity: 0,3;');\n      gwd.actions.events.setInlineStyle('SA_cta_1', 'box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5);');")
+    .replace("'opacity: 0,3;');", "'opacity: 0,3;');\n      gwd.actions.events.setInlineStyle('SA_dot_1', 'box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5);');")
     .replace('<gwd-genericad id="gwd-ad">', '<noscript><div style="opacity: 0,2"></div></noscript>\n  <gwd-genericad id="gwd-ad">');
   files['Mock Ad/Responsive.html'] = strToU8(html);
   await load(page, Buffer.from(zipSync(files)));
@@ -95,7 +104,7 @@ test('checks CSS values as Chromium reads them, skipping GWD\'s runtime and styl
   await expect(findings).toContainText('"box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5)" is not valid CSS');
   for (const never of ['background-size', '0,1', '0,2']) await expect(findings).not.toContainText(never);
   const cssFix = page.locator('#fixes .fixlist li', { hasText: 'Write decimal points in CSS values' });
-  await expect(cssFix).toContainText('SA_cta_1 box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5) -> 0px 2px 1.5px rgba(0,0,0,0.5) (in gwd.framechange_savings)');
+  await expect(cssFix).toContainText('SA_dot_1 box-shadow: 0px 2px 1,5px rgba(0,0,0,0.5) -> 0px 2px 1.5px rgba(0,0,0,0.5) (in gwd.framechange_savings)');
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   await expect(cssValues.locator('summary .pill')).toHaveText('Pass', { timeout: 90_000 });
@@ -109,6 +118,7 @@ test("checks the ad's own stylesheets and scripts, and what GWD's setInlineStyle
   <style type="text/css">
     .gwd-p-a { -webkit-text-stroke: 0,5px; }
     .gwd-div-z { background: url("hero_1,5x.png") 1,5px 1,5px no-repeat; }`)
+    .replace('<div id="SA_rule_1"', '<div class="gwd-div-z"></div>\n        <div id="SA_rule_1"')
     .replace("'opacity: 0,3;');", "'opacity: 0,3;');\n      gwd.actions.events.setInlineStyle('SA_cta_1', 'opacity: 0.4 !important;');\n      gwd.actions.events.setInlineStyle('SA_cta_1', 'opacity : 0,6');");
   files['Mock Ad/Responsive.html'] = strToU8(html);
   files['Mock Ad/extra.css'] = strToU8('.gwd-p-a { opacity: 0,7; }');

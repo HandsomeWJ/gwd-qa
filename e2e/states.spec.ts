@@ -63,10 +63,10 @@ test('leaves to you a class whose font changes in an animation a click starts', 
   await expect(detail(page)).toContainText('.gwd-p-f');
 });
 
-test('offers no line-height ticked where a script changes a font on an element it does not name', async ({ page }) => {
+test('offers no line-height where a script changes a font on an element it does not name', async ({ page }) => {
   await load(page, 'unnamed.zip', withHandler("event.target.style.fontSize = '30px';"));
-  await expect(lineHeightFix(page)).toContainText('A script changes a font or line-height on an element this check cannot find (style.fontSize on event.target in gwd.auto_click sets font-size)');
-  await expect(lineHeightFix(page).locator('input[type="checkbox"]')).not.toBeChecked();
+  await expect(page.locator('#fixes .manual')).toContainText('A script changes a font or line-height on an element this check cannot find (style.fontSize on event.target in gwd.auto_click sets font-size), so how text is spaced then was not laid out, and no line-height is added here');
+  await expect(lineHeightFix(page)).toHaveCount(0);
 });
 
 test('measures text at rest while the pointer moves over a preview', async ({ page }) => {

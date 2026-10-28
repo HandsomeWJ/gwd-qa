@@ -1,9 +1,10 @@
 // Plans the layout-neutral fixes as text edits on the ad's HTML, from what the checks observed in
-// every size and on every page (plain data, never the frames). Design-changing problems (type
-// below 8px) are reported, never fixed automatically.
+// every size and on every page (plain data, never the frames). A fix never moves text or changes how
+// it looks: whatever would is left to the designer with a note, as are design-changing problems
+// (type below 8px).
 
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
-import { singleClass, sizeOfMedia, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
+import { elementClass, sizeOfMedia, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
 import type { StaticReport } from '../audit/static';
 import type { Box, CheckId, Inheritor } from '../audit/types';
 import { describeSize, parseSize } from '../sizes';
@@ -13,8 +14,6 @@ export interface PlannedFix {
   title: string;
   detail: string;
   edits: Edit[];
-  /** Set when the fix will visibly move something; the page offers it unticked. */
-  moves?: string;
   /** For a fix made of independent parts, such as one per class: each can be left out alone (withoutPart). */
   parts?: FixPart[];
 }
@@ -117,15 +116,21 @@ class Planner {
     return frames.length ? `.${cls} may sit on a page that never showed in ${frames.join(', ')}, so it was not checked there` : '';
   }
 
+  /** The selector new rules for a class take: a GWD group's element keeps its group's form. */
+  selectorOf(cls: string): string {
+    const own = this.css.rules.find((r) => elementClass(r.selector) === cls);
+    return own ? own.selector.trim() : `.${cls}`;
+  }
+
   baseRule(cls: string): StyleRule | undefined {
-    return this.css.rules.find((r) => r.media === null && singleClass(r.selector) === cls);
+    return this.css.rules.find((r) => r.media === null && elementClass(r.selector) === cls);
   }
 
   /** The last rule for a class that applies in a frame through @media and declares `prop`. */
   sizeRule(cls: string, frame: string, prop: string): StyleRule | undefined {
     const applies = this.input.media.get(frame);
     return this.css.rules
-      .filter((r) => r.media !== null && applies?.has(r.media) && singleClass(r.selector) === cls && r.decls.some((d) => d.prop === prop))
+      .filter((r) => r.media !== null && applies?.has(r.media) && elementClass(r.selector) === cls && r.decls.some((d) => d.prop === prop))
       .pop();
   }
 
@@ -176,21 +181,27 @@ class Planner {
     }
     if (missing.length) {
       const block = [...this.css.styleBlocks].sort((a, b) => b.close - b.open - (a.close - a.open))[0];
-      for (const [cls, decls] of missing) push(cls, insertRule(this.html, block, `.${cls}`, decls, true));
+      for (const [cls, decls] of missing) push(cls, insertRule(this.html, block, this.selectorOf(cls), decls, true));
     }
     return edits;
   }
 
-  add(check: CheckId, title: string, detail: string, edits: Edit[], moves?: string, parts?: FixPart[]) {
-    if (edits.length) this.fixes.push({ check, title, detail, edits, ...(moves ? { moves } : {}), ...(parts ? { parts } : {}) });
+  /** addToBase as one part per class, so a class that turns out to move text can be left out alone. */
+  classParts(adds: Map<string, string[]>): { edits: Edit[]; parts: FixPart[] } {
+    const owner = new Map<Edit, string>();
+    const edits = this.addToBase(adds, owner);
+    const parts = [...adds.keys()].map((cls, at) => ({ name: `.${cls}`, edits: edits.filter((e) => owner.get(e) === cls), notes: [{ at, text: `.${cls}` }] }));
+    return { edits, parts };
+  }
+
+  add(check: CheckId, title: string, detail: string, edits: Edit[], parts?: FixPart[]) {
+    if (edits.length) this.fixes.push({ check, title, detail, edits, ...(parts ? { parts } : {}) });
   }
 
   buttonPadding() {
     const edits: Edit[] = [];
     const done: string[] = [];
-    const moving: string[] = [];
     const adds = new Map<string, string[]>();
-    const movingAdds = new Map<string, string[]>();
     for (const [cls, seen] of this.byClass(['button'])) {
       const padded = seen.filter((b) => b.computed.padding.some((v) => v !== 0));
       if (!padded.length) continue;
@@ -206,7 +217,7 @@ class Planner {
       const [top, right, bottom, left] = cs.padding;
       const rule = this.baseRule(cls);
       const padDecls = rule?.decls.filter((d) => PADDING.test(d.prop)) ?? [];
-      const perSize = this.css.rules.some((r) => r.media && singleClass(r.selector) === cls && r.decls.some((d) => PADDING.test(d.prop)));
+      const perSize = this.css.rules.some((r) => r.media && elementClass(r.selector) === cls && r.decls.some((d) => PADDING.test(d.prop)));
       // A left inset on centred single-line text moves the text exactly like text-indent does.
       const insetOnly = top === 0 && right === 0 && bottom === 0 && left > 0 && cs.textAlign === 'center' && !cs.whiteSpace.startsWith('pre');
       const fromUserAgent = !padDecls.length;
@@ -224,26 +235,21 @@ class Planner {
         }
         this.deleted.add(first);
       } else {
-        // The browser's default padding: zeroing it keeps centred text in place only in a fixed-size button.
+        // The browser's default padding: zeroing it keeps text in place only in a fixed-size button
+        // that centres it, as the padding is the same on both sides.
         const fixedSize = padded.every((b) => b.declared.width && b.declared.height);
-        if (fixedSize) adds.set(cls, ['padding: 0px;']);
-        else movingAdds.set(cls, ['padding: 0px;']);
-        if (!fixedSize) {
-          moving.push(`.${cls}`);
+        const centred = /center$/.test(cs.textAlign) && top === bottom && left === right;
+        if (!fixedSize || !centred) {
+          const why = fixedSize ? 'does not centre its text, so zeroing' : 'sizes to its content, so zeroing';
+          this.manualNote('buttonPadding', `.${cls} ${why} the browser's default padding (${cs.paddingText}) would move its text; set its padding in GWD.`);
           continue;
         }
+        adds.set(cls, ['padding: 0px;']);
       }
       done.push(insetOnly ? `.${cls} (its ${left}px left inset becomes text-indent)` : `.${cls}`);
     }
     edits.push(...this.addToBase(adds));
     this.add('buttonPadding', 'Set button padding to 0px', done.join(', '), edits);
-    this.add(
-      'buttonPadding',
-      'Set button padding to 0px where it resizes the button',
-      moving.join(', '),
-      this.addToBase(movingAdds),
-      'These buttons size to their content, so removing the browser default padding (1px 6px) makes them smaller. Check the result in the preview.',
-    );
   }
 
   buttonColor() {
@@ -270,9 +276,6 @@ class Planner {
 
   marginBlock() {
     const safe = new Map<string, string[]>();
-    const moving = new Map<string, string[]>();
-    const why: string[] = [];
-    const unchecked: string[] = [];
     for (const [cls, seen] of this.byClass(['p', 'span'])) {
       const missing = seen.some((b) => b.declared.marginBlockStart !== '0px' || b.declared.marginBlockEnd !== 'auto');
       if (!missing) continue;
@@ -288,24 +291,15 @@ class Planner {
       });
       if (margined) {
         const cs = margined.computed;
-        moving.set(cls, ['margin-block: 0px auto;']);
-        why.push(`.${cls} has margin ${px(cs.marginTop)} / ${px(cs.marginBottom)} today`);
+        this.manualNote('marginBlock', `.${cls} has margin ${px(cs.marginTop)} / ${px(cs.marginBottom)} today, so margin-block: 0px auto would move its text; add it in GWD and put the text back in place.`);
       } else if (this.unseenNote(cls)) {
-        moving.set(cls, ['margin-block: 0px auto;']);
-        unchecked.push(this.unseenNote(cls));
+        this.manualNote('marginBlock', `${this.unseenNote(cls)}; add margin-block: 0px auto in GWD.`);
       } else {
         safe.set(cls, ['margin-block: 0px auto;']);
       }
     }
-    this.add('marginBlock', 'Add margin-block: 0px auto', [...safe.keys()].map((c) => `.${c}`).join(', '), this.addToBase(safe));
-    const moves = [why.length ? `This moves text: ${why.join('; ')}.` : '', unchecked.length ? `It may move text: ${unchecked.join('; ')}.` : ''];
-    this.add(
-      'marginBlock',
-      'Add margin-block: 0px auto where it moves text',
-      [...moving.keys()].map((c) => `.${c}`).join(', '),
-      this.addToBase(moving),
-      `${moves.filter(Boolean).join(' ')} The checklist still asks for it; check the result in the preview.`,
-    );
+    const { edits, parts } = this.classParts(safe);
+    this.add('marginBlock', 'Add margin-block: 0px auto', [...safe.keys()].map((c) => `.${c}`).join(', '), edits, parts);
   }
 
   /**
@@ -324,7 +318,7 @@ class Planner {
   rulesIn(block: MediaBlock, cls: string): readonly StyleRule[] {
     const key = `${block.start}|${cls}`;
     if (!this.blockRules.has(key)) {
-      this.blockRules.set(key, this.css.rules.filter((r) => r.start > block.open && r.start < block.close && singleClass(r.selector) === cls));
+      this.blockRules.set(key, this.css.rules.filter((r) => r.start > block.open && r.start < block.close && elementClass(r.selector) === cls));
     }
     return this.blockRules.get(key)!;
   }
@@ -565,7 +559,7 @@ class Planner {
     const baseAdds = new Map<string, string[]>();
     for (const w of kept) {
       if (w.rule) edits.push(own(w.cls, insertDecl(this.html, w.rule, `line-height: ${w.px}px;`, this.deleted)));
-      else if (w.block) edits.push(own(w.cls, insertRule(this.html, w.block, `.${w.cls}`, [`line-height: ${w.px}px;`])));
+      else if (w.block) edits.push(own(w.cls, insertRule(this.html, w.block, this.selectorOf(w.cls), [`line-height: ${w.px}px;`])));
       else baseAdds.set(w.cls, [`line-height: ${w.px}px;`]);
     }
     const inherits = [...inherit].filter((cls) => !refused.has(cls));
@@ -583,7 +577,7 @@ class Planner {
       edits: edits.filter((e) => owner.get(e) === cls),
       notes: notes.flatMap((n, at) => (n.cls === cls ? [{ at, text: n.text }] : [])),
     }));
-    this.add('lineHeight', 'Declare line-height (the value it renders now)', notes.map((n) => n.text).join(', '), edits, undefined, parts);
+    this.add('lineHeight', 'Declare line-height (the value it renders now)', notes.map((n) => n.text).join(', '), edits, parts);
   }
 
   textFade() {
@@ -616,7 +610,6 @@ class Planner {
     // Declarations another fix rewrites; that fix replaces the bad value anyway.
     const rewritten = this.fixes.flatMap((f) => f.edits).filter((e) => e.text && e.end > e.start);
     const safe: { edits: Edit[]; notes: string[] } = { edits: [], notes: [] };
-    const moving: { edits: Edit[]; notes: string[] } = { edits: [], notes: [] };
     for (const v of this.input.report.cssValues) {
       const handler = v.handler ? ` (in ${v.handler})` : '';
       const file = v.file ? ` in ${v.file}` : '';
@@ -638,19 +631,19 @@ class Planner {
         this.manualNote('cssValues', `${invalid}; write ${v.fixed} in GWD.`);
         continue;
       }
+      // Browsers ignore the value today, so once valid it changes what it styles: only paint on what
+      // shows no text is left as it looks.
       const transition = v.prop === 'transition' || v.prop === 'transition-property';
-      const into = (transition ? paintOnlyTransition(v.fixed) : PAINT_ONLY.has(v.prop)) ? safe : moving;
-      into.edits.push({ start: v.start, end: v.end, text: v.fixed });
-      into.notes.push(`${v.target} ${v.prop}: ${v.value} -> ${v.fixed}${handler}`);
+      const paintOnly = transition ? paintOnlyTransition(v.fixed) : PAINT_ONLY.has(v.prop);
+      if (!paintOnly || v.showsText !== false) {
+        const what = !paintOnly ? 'size, place or animate what it styles, which can move text' : v.showsText ? 'change how its text looks' : 'change how what it styles looks, which may be text';
+        this.manualNote('cssValues', `${invalid}; write ${v.fixed} in GWD. Once valid it would ${what}, so it is not changed here.`);
+        continue;
+      }
+      safe.edits.push({ start: v.start, end: v.end, text: v.fixed });
+      safe.notes.push(`${v.target} ${v.prop}: ${v.value} -> ${v.fixed}${handler}`);
     }
     this.add('cssValues', 'Write decimal points in CSS values', safe.notes.join(', '), safe.edits);
-    this.add(
-      'cssValues',
-      'Write decimal points in CSS values where it moves text',
-      moving.notes.join(', '),
-      moving.edits,
-      'Browsers ignore these values today, so once valid they size, place or animate what they style. Check the result in the preview.',
-    );
   }
 }
 

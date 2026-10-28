@@ -59,3 +59,48 @@ describe('text that starts hidden', () => {
     expect(targets).not.toContain('button#SA_clicktag_1');
   });
 });
+
+describe('GWD groups', () => {
+  // GWD keeps a group's elements in a <template> and copies them into each group that names it.
+  const html = fixture('group-ad.html');
+  const report = staticAudit(html);
+
+  it('finds text in a group, and the groups and elements text sits in, that start at opacity 0', () => {
+    const fades = report.findings.filter((f) => f.check === 'textFade').map((f) => f.target);
+    expect(fades).toEqual([
+      'gwd-gen-in_gwd-keyframes',
+      'div#SA_group_1', // filled with the group's text when the ad runs
+      'div#SA_group_2',
+      'span.gwd-span-one.gwd-grp-k2',
+    ]);
+    // not the image beside them, on the page or in the group
+    expect(report.fadeDecls.map((d) => html.slice(d.start - 60, d.start).trim().split('\n')[0])).not.toContain('.gwd-image-dot {');
+    expect(report.fadeDecls).toHaveLength(4);
+  });
+
+  it("lists a group's copy where the group is used", () => {
+    expect(report.copy.map((c) => [c.target, c.size, c.text])).toEqual([
+      ['p#SA_headline_1', 'base', 'Big sale'],
+      ['span.gwd-span-one.gwd-grp-k2', 'base', 'Two-year guarantee'],
+      ['span.gwd-span-one.gwd-grp-k2', '300x250', 'Two-year'],
+      ['span.gwd-grp-k2.gwd-span-two.gwd-gen-in', 'base', 'Easy returns'],
+      ['button#SA_cta_1', 'base', 'BUY IT'],
+    ]);
+  });
+
+  it('knows which ignored values style text, in a group too', () => {
+    const invalid = html
+      .replace('      line-height: 16px;\n      opacity: 0;', '      line-height: 16px;\n      opacity: 0,5;')
+      .replace('    .gwd-image-dot {\n      position: absolute;\n      opacity: 0;', '    .gwd-image-dot {\n      position: absolute;\n      opacity: 0,5;')
+      .replace('<div class="gwd-div-cta" id="SA_group_2">', '<div class="gwd-div-cta" id="SA_group_2" style="opacity: 0,2">')
+      .replace('<gwd-image class="gwd-image-dot" id="SA_dot_1">', '<gwd-image class="gwd-image-dot" id="SA_dot_1" style="opacity: 0,2">');
+    // Decimal commas are what browsers reject here; happy-dom has no CSS.supports to ask.
+    const values = staticAudit(invalid, parseCss(invalid), (_prop, value) => !/\d,\d/.test(value)).cssValues;
+    expect(values.map((v) => [v.target, v.showsText])).toEqual([
+      ['.gwd-image-dot', false],
+      ['[data-gwd-group="Perks"] .gwd-grp-k2.gwd-span-one', true],
+      ['div#SA_group_2', true],
+      ['gwd-image#SA_dot_1', false],
+    ]);
+  });
+});

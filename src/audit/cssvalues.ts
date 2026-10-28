@@ -31,6 +31,8 @@ export interface CssValueIssue {
   fixed: string | null;
   /** Why the browser ignores it, when the value is not what is wrong. */
   note?: string;
+  /** Set by staticAudit for a <style> declaration: whether what it styles shows text. Absent where that is not known. */
+  showsText?: boolean;
 }
 
 /** Something the check could not read or decide, so the user must look. */
