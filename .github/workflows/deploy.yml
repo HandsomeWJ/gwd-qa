@@ -31,7 +31,7 @@ jobs:
           VITE_RECORD_URL: https://script.google.com/macros/s/AKfycbxyCjYtGuQAAr8Ca2yiPwXjU_1E2gyk198nuYMKmb0NOs8CNxizUHMuAHjW96GkONTI/exec
           VITE_COMMIT: ${{ github.sha }}
       # Browser tests run against the built site, so what deploys is what was tested.
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium webkit firefox
       - run: npx playwright test
       - uses: actions/upload-artifact@v4
         if: failure()

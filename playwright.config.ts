@@ -15,10 +15,17 @@ export default defineConfig({
     baseURL: 'http://localhost:4174/gwd-qa/',
     acceptDownloads: true,
     trace: 'retain-on-failure',
-    // A copy or report a test does not answer itself fails here instead of reaching Google.
-    launchOptions: { args: ['--host-resolver-rules=MAP script.google.com ~NOTFOUND, MAP script.googleusercontent.com ~NOTFOUND'] },
   },
-  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
+  projects: [
+    {
+      name: 'chromium',
+      // A copy or report a test does not answer itself fails here instead of reaching Google.
+      use: { browserName: 'chromium', launchOptions: { args: ['--host-resolver-rules=MAP script.google.com ~NOTFOUND, MAP script.googleusercontent.com ~NOTFOUND'] } },
+    },
+    // The preview in Safari's and Firefox's engines. These tests block Google themselves.
+    { name: 'webkit', use: { browserName: 'webkit' }, testMatch: /engines\.spec\.ts/ },
+    { name: 'firefox', use: { browserName: 'firefox' }, testMatch: /engines\.spec\.ts/ },
+  ],
   webServer: {
     // CI builds in its own step and deploys that same dist.
     command: `${process.env.CI ? '' : 'npm run build && '}npx vite preview --port 4174 --strictPort`,

@@ -3,6 +3,7 @@ import { CHECKS, type CheckId, type Finding } from './audit/types';
 import { staticAudit } from './audit/static';
 import { applyEdits, mergeEdits } from './css/edit';
 import { diffLines, diffStats, type Hunk } from './diff';
+import { engineOf } from './engine';
 import type { PlannedFix } from './fix/plan';
 import { adPackage, droppedFiles, pickedFiles, type PickedFile } from './input';
 import { allowedZipUrl, outsideHosts } from './net';
@@ -14,6 +15,7 @@ import { describeSize, frameSizes, type FrameSize } from './sizes';
 import { keyFor, legacyKey, type AdPackage } from './zip';
 
 const app = document.getElementById('app')!;
+const ENGINE = engineOf(navigator.userAgent);
 let session: Session | null = null;
 let result: AuditResult | null = null;
 let busy = false;
@@ -38,6 +40,7 @@ app.innerHTML = `
     <div class="drop" id="drop">
       <strong>Drop a GWD ad here: its zip, its folder, or just its HTML</strong>
       <p>The folder GWD saves to is the one with Responsive.html or index.html in it. With just the HTML, the preview runs on a stand-in for GWD's runtime, without the ad's images.</p>
+      <p>Works in Chrome, Safari and Firefox, and the preview shows the ad as the browser you open this page in draws it. Fixes are made in Chrome.</p>
       <div class="picks">
         <button type="button" class="primary">Choose a zip</button>
         <button type="button" data-pick="folder">Choose a folder</button>
@@ -51,7 +54,7 @@ app.innerHTML = `
     <section id="copy" class="card" hidden></section>
     <section id="preview" class="card" hidden>
       <div class="bar">
-        <div><h2>Preview</h2><p class="sub" style="margin:0">Every served size at its exact dimensions, running as it would live.</p></div>
+        <div><h2>Preview</h2><p class="sub" style="margin:0">Every served size at its exact dimensions, running as it would live in ${ENGINE.name}. To see another browser's, open this page in Chrome, Safari or Firefox and drop the same file.</p></div>
         <button data-action="replay-all">Replay all</button>
       </div>
       <div class="net" id="net"></div>
@@ -148,6 +151,8 @@ async function load(pick: () => Promise<PickedFile[]>, record = true) {
 async function check() {
   status('Checking every size…', 'busy');
   result = await session!.audit();
+  // A fix keeps the ad as the browser that measured it draws it, so only Chrome's are offered.
+  if (!ENGINE.chrome) result.plan = { fixes: [], manual: [] };
   status('');
   $('#drop').hidden = true;
   render();
@@ -367,7 +372,7 @@ function renderSummary() {
   box.innerHTML = `
     <div class="bar">
       <div class="meta">
-        <strong>${esc(s.pkg.zipName)}</strong>${lone ? '' : ` · ${esc(s.pkg.htmlPath)}`} · ${plural(s.sizes.length, 'size')}<br>
+        <strong>${esc(s.pkg.zipName)}</strong>${lone ? '' : ` · ${esc(s.pkg.htmlPath)}`} · ${plural(s.sizes.length, 'size')} · checked in ${ENGINE.name}<br>
         ${failed ? `<span class="pill fail">${plural(failed, 'check')} failing</span>` : ''}
         ${review ? `<span class="pill info">${plural(review, 'check')} to review</span>` : ''}
         ${unseen ? `<span class="pill info">${unseen} not checked</span>` : ''}
@@ -506,6 +511,12 @@ function renderFixes() {
   const r = result!;
   const box = $('#fixes');
   box.hidden = false;
+  if (!ENGINE.chrome) {
+    box.innerHTML = `
+      <h2>Fixes</h2>
+      <p class="sub">Fixes are made in Chrome only. Each one keeps the ad exactly as the browser that measured it draws it, and GWD previews ads in Chrome's engine, so a fix measured in ${ENGINE.name} could move text in Chrome. To fix this ad, open this page in Chrome, Edge or Brave.</p>`;
+    return;
+  }
   const fixes = r.plan.fixes;
   const typeFails = failing('type');
   const envFails = failing('environment');
