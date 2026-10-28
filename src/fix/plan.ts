@@ -4,7 +4,7 @@
 // (type below 8px).
 
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
-import { elementClass, sizeOfMedia, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
+import { elementClass, sizeOfMedia, type CssModel, type Decl, type KeyframesRule, type MediaBlock, type StyleRule } from '../css/parse';
 import type { StaticReport } from '../audit/static';
 import type { Box, CheckId, Inheritor } from '../audit/types';
 import { describeSize, parseSize } from '../sizes';
@@ -222,7 +222,10 @@ class Planner {
       const insetOnly = top === 0 && right === 0 && bottom === 0 && left > 0 && cs.textAlign === 'center' && !cs.whiteSpace.startsWith('pre');
       const fromUserAgent = !padDecls.length;
       if (perSize || (!insetOnly && !fromUserAgent)) {
-        this.manualNote('buttonPadding', `.${cls} padding ${cs.paddingText} cannot be zeroed without moving its text; change it in GWD.`);
+        const bySize = new Map<string, Set<string>>();
+        for (const b of padded) bySize.set(b.computed.paddingText, (bySize.get(b.computed.paddingText) ?? new Set()).add(b.frame));
+        const where = [...bySize].map(([text, frames]) => `${text} in ${[...frames].join(', ')}`).join(' and ');
+        this.manualNote('buttonPadding', `.${cls} has padding ${where}, which cannot be zeroed without moving its text; change it in GWD.`);
         continue;
       }
       if (rule && padDecls.length) {
@@ -585,6 +588,18 @@ class Planner {
     this.add('textFade', 'Start text fades at opacity 0.001', `${decls.length} declaration${decls.length === 1 ? '' : 's'}`, decls.map((d) => setValue(d, '0.001')));
   }
 
+  /**
+   * Where a keyframes block runs, for a note: its size, or for one outside @media the frames no size
+   * block redefines it in ('' where that is every frame).
+   */
+  runsIn(block: KeyframesRule): string {
+    if (block.media) return ` in ${describeSize(sizeOfMedia(block.media) ?? block.media)}`;
+    const frames = [...this.input.media]
+      .filter(([, applies]) => !this.css.keyframes.some((k) => k.name === block.name && k.media !== null && applies.has(k.media)))
+      .map(([f]) => f);
+    return frames.length && frames.length < this.input.media.size ? ` in ${frames.join(', ')}` : '';
+  }
+
   keyframes() {
     const unsafe = new Set(this.input.safety.map((m) => m.animation));
     const edits: Edit[] = [];
@@ -592,7 +607,7 @@ class Planner {
     let blocks = 0;
     for (const { block, props } of this.input.report.unchanged) {
       if (unsafe.has(block.name)) {
-        this.manualNote('keyframes', `${block.name}: deleting ${props.join(', ')} would change how it looks, because those values differ from the element's own style.`);
+        this.manualNote('keyframes', `${block.name}${this.runsIn(block)}: deleting ${props.join(', ')} would change how it looks, because those values differ from the element's own style.`);
         continue;
       }
       blocks++;

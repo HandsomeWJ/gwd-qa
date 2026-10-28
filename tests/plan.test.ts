@@ -451,6 +451,17 @@ describe('buttons', () => {
     expect(left.p.manual.map((m) => m.detail)).toEqual([".gwd-button-cta does not centre its text, so zeroing the browser's default padding (1px 6px) would move its text; set its padding in GWD."]);
   });
 
+  it('says in which sizes a button has padding that cannot be zeroed', () => {
+    const cta = { tag: 'button', classes: ['gwd-button-cta'], declared: { lineHeight: '20px', color: 'rgb(255, 255, 255)', width: '100px', height: '30px' } };
+    const nudged = html.replace('      .gwd-p-head {\n        font-size: 12px;', '      .gwd-button-cta {\n        padding-top: 1px;\n      }\n      .gwd-p-head {\n        font-size: 12px;');
+    const { fix, p } = plan(nudged, [
+      box({ ...cta, computed: { padding: [1, 0, 0, 0], paddingText: '1px 0px 0px', textAlign: 'center' } }),
+      box({ ...cta, frame: '300x600', computed: { textAlign: 'center' } }),
+    ], { '300x250': [M250], '300x600': [M600] });
+    expect(fix('buttonPadding')).toBeUndefined();
+    expect(p.manual.map((m) => m.detail)).toEqual(['.gwd-button-cta has padding 1px 0px 0px in 300x250, which cannot be zeroed without moving its text; change it in GWD.']);
+  });
+
   it('declares the color a button renders, unless sizes render different ones', () => {
     const plain = { tag: 'button', classes: ['gwd-empty'], declared: { lineHeight: '20px' } };
     const same = plan(html, [box({ ...plain, computed: { color: 'rgb(1, 2, 3)' } })], { '300x250': [M250] });
@@ -484,6 +495,15 @@ describe('keyframes and fades', () => {
     const unsafe = plan(html, [], {}, [{ animation: 'gwd-gen-hand_gwd-keyframes' }]);
     expect(unsafe.fix('keyframes')).toBeUndefined();
     expect(unsafe.p.manual[0].detail).toContain('gwd-gen-hand_gwd-keyframes: deleting transform');
+  });
+
+  it('names the sizes each keyframes block it leaves to you runs in', () => {
+    // The base block runs in 300x600 only: 300x250 has its own block of that name.
+    const sized = plan(html, [], { '300x250': [M250], '300x600': [M600] }, [{ animation: 'gwd-gen-hand_gwd-keyframes' }]);
+    expect(sized.p.manual.map((m) => m.detail)).toEqual([
+      "gwd-gen-hand_gwd-keyframes in 300x600: deleting transform would change how it looks, because those values differ from the element's own style.",
+      "gwd-gen-hand_gwd-keyframes in 300x250: deleting transform would change how it looks, because those values differ from the element's own style.",
+    ]);
   });
 
   it('starts text fades at 0.001', () => {

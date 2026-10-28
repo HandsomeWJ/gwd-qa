@@ -97,7 +97,8 @@ async function applyAndCompare(page: Page, browser: Browser, html: string, sizes
   await expect(page.locator('#summary')).toBeVisible({ timeout: 240_000 });
   const fix = page.locator('#fixes .fixlist li', { hasText: 'Declare line-height' });
   const detail = (await fix.count()) && (await fix.locator('input').isChecked()) ? await fix.locator('.detail').first().innerText() : '';
-  const manual = (await page.locator('#fixes .manual').count()) ? await page.locator('#fixes .manual').innerText() : '';
+  // The notes as written: the list hides some punctuation that innerText would drop.
+  const manual = (await page.locator('#fixes .manual').count()) ? ((await page.locator('#fixes .manual').textContent()) ?? '') : '';
   if (!(await page.locator('#fixes input[data-fix]:checked').count())) return { detail, manual, banner: '' }; // nothing offered ticked
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   await expect(page.locator('#fixes .banner')).toBeVisible({ timeout: 240_000 });

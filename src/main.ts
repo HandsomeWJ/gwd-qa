@@ -520,12 +520,18 @@ function renderFixes() {
   const fixes = r.plan.fixes;
   const typeFails = failing('type');
   const envFails = failing('environment');
-  const manual = [
-    ...envFails.map((f) => `<li>${esc(f.message)}</li>`),
-    ...(typeFails.length ? [`<li>Text below 8px changes the design, so it is never fixed automatically. See the Type size row for each item and how to fix it.</li>`] : []),
-    ...r.plan.manual.map((m) => `<li>${esc(m.detail)}</li>`),
-    ...(failing('position').length ? ['<li>Re-animate top/left movement with transform: translate3d in GWD.</li>'] : []),
+  const decisions: { check: CheckId; note: string }[] = [
+    ...envFails.map((f) => ({ check: f.check, note: f.message })),
+    ...(typeFails.length ? [{ check: 'type' as const, note: 'Text below 8px changes the design, so it is never fixed automatically; see the Type size row for each text and how to fix it.' }] : []),
+    ...r.plan.manual.map((m) => ({ check: m.check, note: m.detail })),
+    ...(failing('position').length ? [{ check: 'position' as const, note: 'Keyframes move elements with top or left; re-animate that movement with transform: translate3d in GWD.' }] : []),
   ];
+  // Grouped under their checklist items, in the checklist's order.
+  const groups = CHECKS.filter((c) => decisions.some((d) => d.check === c.id)).map((c) => {
+    const notes = decisions.filter((d) => d.check === c.id);
+    return `<li><h4><button type="button" class="link" data-action="open-check" data-check="${c.id}">${esc(c.title)}</button><span class="count">${plural(notes.length, 'item')}</span></h4>
+      <ul>${notes.map((d) => `<li>${decisionHtml(d.note, d.check)}</li>`).join('')}</ul></li>`;
+  });
   const html = session!.html;
   const list = fixes.map((f: PlannedFix, i: number) => `
     <li>
@@ -541,7 +547,21 @@ function renderFixes() {
     ${fixes.length
       ? `<ul class="fixlist">${list}</ul><button class="primary" data-action="apply">Apply selected fixes</button>`
       : `<p>${session!.changed ? 'Nothing left to fix automatically.' : 'Nothing to fix automatically.'}</p>`}
-    ${manual.length ? `<h3 style="margin:18px 0 0;font-size:15px">Needs your decision</h3><ul class="manual">${manual.join('')}</ul>` : ''}`;
+    ${groups.length ? `<h3 class="decide">Needs your decision</h3><p class="decide-sub">Fixing these here would move text or change the design, so they are left to you. Open an item for its checklist row.</p><ul class="manual">${groups.join('')}</ul>` : ''}`;
+}
+
+/**
+ * A note as the planner writes it, "target: why; what to do.", with the element or keyframes it is
+ * about set as code and what to do on a line of its own. Its text stays as written.
+ */
+function decisionHtml(note: string, check: CheckId): string {
+  const cut = note.lastIndexOf('; ');
+  const [why, todo] = cut > 0 ? [note.slice(0, cut), note.slice(cut + 2)] : [note, ''];
+  const target = (check === 'keyframes' ? /^[^\s:]+/ : /^[a-z0-9-]*(?:[.#][\w-]+)+/i).exec(why)?.[0] ?? '';
+  // A colon straight after the code reads as a gap, so it is hidden there, but kept in the text.
+  const colon = target && why.startsWith(':', target.length) ? ':' : '';
+  const rest = `<span class="why${todo ? ' cut' : ''}">${esc(why.slice(target.length + colon.length))}</span>`;
+  return `${target ? `<span class="target">${esc(target)}</span>${colon ? '<span class="sep">:</span>' : ''}` : ''}${rest}${todo ? `<span class="sep">; </span><span class="todo">${esc(todo)}</span>` : ''}`;
 }
 
 function renderCopy() {
@@ -609,8 +629,10 @@ function reset() {
 
 app.addEventListener('click', async (e) => {
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
-  if (!btn || busy) return;
+  if (!btn) return;
   const action = btn.dataset.action;
+  if (action === 'open-check') return openCheck(btn.dataset.check ?? '');
+  if (busy) return;
   if (action === 'apply') return applySelected();
   if (action === 'download') return download();
   if (action === 'download-upload') return download(true);
@@ -622,6 +644,14 @@ app.addEventListener('click', async (e) => {
     if (f) return run(`Replaying ${esc(f.label)}…`, () => session!.reload(f));
   }
 });
+
+/** Opens a checklist row and brings it into view. */
+function openCheck(id: string) {
+  const row = $('#checklist').querySelector<HTMLDetailsElement>(`details[data-check="${CSS.escape(id)}"]`);
+  if (!row) return;
+  row.open = true;
+  row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 
 /** Runs a page action with the buttons disabled, showing its progress and any error. */
 async function run(what: string, action: () => Promise<unknown>) {
