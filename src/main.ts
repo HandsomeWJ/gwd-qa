@@ -6,7 +6,7 @@ import { diffLines, diffStats, type Hunk } from './diff';
 import type { PlannedFix } from './fix/plan';
 import { adPackage, droppedFiles, pickedFiles, type PickedFile } from './input';
 import { allowedZipUrl, outsideHosts } from './net';
-import { KEEP_DAYS, RECORD_URL, recordUpload } from './record';
+import { RECORD_URL, recordUpload } from './record';
 import { initReports, noteError } from './report';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
@@ -30,7 +30,7 @@ app.innerHTML = `
     <header class="top">
       <div>
         <h1>GWD Ad QA</h1>
-        <p>Checks a Google Web Designer ad against the QA checklist in every served size, fixes the safe items, and gives you back the fixed files. ${RECORD_URL ? `The checks run in this browser; a copy of each ad you check is kept for ${KEEP_DAYS} days in case something goes wrong.` : 'Your files never leave this browser.'}</p>
+        <p>Checks a Google Web Designer ad against the QA checklist in every served size, fixes the safe items, and gives you back the fixed files.${RECORD_URL ? '' : ' Your files never leave this browser.'}</p>
       </div>
       ${RECORD_URL ? '<button type="button" class="link" data-report data-free>Report a bug</button>' : ''}
     </header>
@@ -59,7 +59,7 @@ app.innerHTML = `
     </section>
     <footer class="foot">
       ${RECORD_URL
-        ? `The checks run in your browser: the ad's files are read here and served to the preview by a service worker. A copy of each ad you check goes to the site owner's Google Drive and is deleted after ${KEEP_DAYS} days. A bug report, with the ad unless you leave it out, is kept until it is dealt with. The ad's own requests to other sites are blocked unless you allow them.`
+        ? "The checks run in your browser, which serves the ad's files to the preview through a service worker. The ad's own requests to other sites are blocked unless you allow them."
         : "Runs entirely in your browser: the ad's files are read here and served to the preview by a service worker. Nothing is uploaded, and the ad's own requests to other sites are blocked unless you allow them."}
       <a href="https://github.com/HandsomeWJ/gwd-qa">Source</a>
     </footer>

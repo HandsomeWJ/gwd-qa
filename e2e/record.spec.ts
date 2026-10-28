@@ -34,7 +34,9 @@ async function load(page: Page, name: string, data: Buffer) {
 test('keeps a copy of each ad picked, a folder as its zip', async ({ page }, testInfo) => {
   const posts = await webApp(page);
   await page.goto('./');
-  await expect(page.locator('header.top')).toContainText('a copy of each ad you check is kept for 7 days');
+  // The page no longer mentions the copies (its users were told), and must not say files stay here.
+  await expect(page.locator('#app')).not.toContainText('never leave this browser');
+  await expect(page.locator('#app')).not.toContainText('Nothing is uploaded');
 
   const zip = mockAdZip();
   await load(page, 'mock-ad.zip', zip);

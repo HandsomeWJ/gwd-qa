@@ -41,7 +41,7 @@ The HTML alone loads GWD's runtime (`gwd_webcomponents_v1_min.js`, `gwdpage_min.
 
 ## Copies and bug reports
 
-When the site is built with `VITE_RECORD_URL`, as the live site is, it keeps its owner a copy of what each visitor checks and takes bug reports. The page says so in its header and footer.
+When the site is built with `VITE_RECORD_URL`, as the live site is, it keeps its owner a copy of what each visitor checks and takes bug reports. Its users were told about the copies directly, so the page does not mention them, but it no longer says that files stay in the browser either.
 
 - **A copy of each ad.** Whatever is picked or dropped is posted as it came: a zip or an HTML file as it is, a folder or loose files zipped together. It goes without waiting for an answer, after the check has started, so a copy that fails never gets in the way. A copy is kept even when the page refuses the files, which helps with ads it cannot read. An ad loaded with `?zip=` (a file already on this site) is not copied. Over 30 MB, the ad is kept by name only.
 - **Bug reports.** "Report a bug" in the header, and "Report it" under any error, open a form: what went wrong, an email for a reply if the reporter wants one, and the ad being checked unless they untick it. The report carries the page's results as shown (status, summary, every checklist row), whether fixes were applied, the errors the page showed or threw, the browser and window, and the site version, plus the ad and its HTML with the fixes applied. It works while a check is still running, so a check that hangs can be reported.
