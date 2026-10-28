@@ -26,6 +26,10 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+        env:
+          # The Apps Script web app that keeps copies of checked ads and bug reports (apps-script/).
+          VITE_RECORD_URL: https://script.google.com/macros/s/AKfycbxyCjYtGuQAAr8Ca2yiPwXjU_1E2gyk198nuYMKmb0NOs8CNxizUHMuAHjW96GkONTI/exec
+          VITE_COMMIT: ${{ github.sha }}
       # Browser tests run against the built site, so what deploys is what was tested.
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test

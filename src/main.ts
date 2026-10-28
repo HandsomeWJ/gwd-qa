@@ -6,6 +6,8 @@ import { diffLines, diffStats, type Hunk } from './diff';
 import type { PlannedFix } from './fix/plan';
 import { adPackage, droppedFiles, pickedFiles, type PickedFile } from './input';
 import { allowedZipUrl, outsideHosts } from './net';
+import { KEEP_DAYS, RECORD_URL, recordUpload } from './record';
+import { initReports, noteError } from './report';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
 import { describeSize, frameSizes, type FrameSize } from './sizes';
@@ -15,6 +17,8 @@ const app = document.getElementById('app')!;
 let session: Session | null = null;
 let result: AuditResult | null = null;
 let busy = false;
+// The files last picked or dropped, for a bug report, whether or not they loaded.
+let picked: PickedFile[] | null = null;
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -26,8 +30,9 @@ app.innerHTML = `
     <header class="top">
       <div>
         <h1>GWD Ad QA</h1>
-        <p>Checks a Google Web Designer ad against the QA checklist in every served size, fixes the safe items, and gives you back the fixed files. Your files never leave this browser.</p>
+        <p>Checks a Google Web Designer ad against the QA checklist in every served size, fixes the safe items, and gives you back the fixed files. ${RECORD_URL ? `The checks run in this browser; a copy of each ad you check is kept for ${KEEP_DAYS} days in case something goes wrong.` : 'Your files never leave this browser.'}</p>
       </div>
+      ${RECORD_URL ? '<button type="button" class="link" data-report data-free>Report a bug</button>' : ''}
     </header>
     <div id="status"></div>
     <div class="drop" id="drop">
@@ -53,7 +58,9 @@ app.innerHTML = `
       <div class="frames" id="frames" style="margin-top:14px"></div>
     </section>
     <footer class="foot">
-      Runs entirely in your browser: the ad's files are read here and served to the preview by a service worker. Nothing is uploaded, and the ad's own requests to other sites are blocked unless you allow them.
+      ${RECORD_URL
+        ? `The checks run in your browser: the ad's files are read here and served to the preview by a service worker. A copy of each ad you check goes to the site owner's Google Drive and is deleted after ${KEEP_DAYS} days. A bug report, with the ad unless you leave it out, is kept until it is dealt with. The ad's own requests to other sites are blocked unless you allow them.`
+        : "Runs entirely in your browser: the ad's files are read here and served to the preview by a service worker. Nothing is uploaded, and the ad's own requests to other sites are blocked unless you allow them."}
       <a href="https://github.com/HandsomeWJ/gwd-qa">Source</a>
     </footer>
   </div>`;
@@ -68,6 +75,11 @@ function status(html: string, kind: 'busy' | 'err' | '' = '') {
   box.innerHTML = kind === 'busy'
     ? `<div class="card"><span class="spinner"></span> ${html}${paused}</div>`
     : `<div class="banner ${kind === 'err' ? 'err' : 'ok'}">${html}</div>`;
+  if (kind === 'err') {
+    // An error goes into the next bug report, and offers one.
+    noteError(box.textContent ?? '');
+    if (RECORD_URL) box.insertAdjacentHTML('beforeend', '<p class="report-it">Looks like a fault in this site? <button type="button" class="link" data-report data-free>Report it</button></p>');
+  }
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -76,7 +88,8 @@ document.addEventListener('visibilitychange', () => {
 
 function setBusy(on: boolean) {
   busy = on;
-  app.querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.disabled = on || b.dataset.disabled === 'true'));
+  // A bug report stays open to the reporter, even while a check hangs.
+  app.querySelectorAll<HTMLButtonElement>('button:not([data-free])').forEach((b) => (b.disabled = on || b.dataset.disabled === 'true'));
   // While checks run, a pointer resting on a preview must not put its text in a hover state to be measured.
   $('#frames').classList.toggle('busy', on);
 }
@@ -84,15 +97,21 @@ function setBusy(on: boolean) {
 // Started at once; loading waits for it so frames never miss the worker on a first visit.
 const workerReady = startWorker();
 
-/** Loads the ad from what was picked or dropped: a zip, the ad's folder, or just its HTML. */
-async function load(pick: () => Promise<PickedFile[]>) {
+/**
+ * Loads the ad from what was picked or dropped: a zip, the ad's folder, or just its HTML. What a
+ * person picked is also kept for the owner, unless `record` is false (an ad stored on this site).
+ */
+async function load(pick: () => Promise<PickedFile[]>, record = true) {
   if (busy) return;
   setBusy(true);
   let swapped = false;
   try {
     status('Reading the ad…', 'busy');
+    const files = await pick();
+    picked = files;
+    if (record) setTimeout(() => recordUpload(RECORD_URL, files)); // after this check has started
     // Whatever can refuse the new ad runs first, so a refusal leaves the loaded ad as it was.
-    const pkg = adPackage(await pick());
+    const pkg = adPackage(files);
     const sizes = staticAudit(new TextDecoder().decode(pkg.files.get(pkg.htmlPath))).sizes;
     if (!sizes.length) throw new Error('No served sizes found: this does not look like a GWD ad.');
     if (!sizes.some((s) => frameSizes(s).length)) throw new Error(`None of the served sizes can be previewed: ${sizes.join(', ')}.`);
@@ -671,13 +690,39 @@ async function boot() {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Could not fetch ${url.pathname}: ${res.status}`);
       return [{ path: decodeURIComponent(url.pathname.split('/').pop() || 'ad.zip'), data: new Uint8Array(await res.arrayBuffer()) }];
-    });
+    }, false);
   }
 }
 
 (window as unknown as { gwdqa: unknown }).gwdqa = {
   get session() { return session; },
   get result() { return result; },
-  load: (name: string, bytes: Uint8Array) => load(async () => [{ path: name, data: bytes }]),
+  load: (name: string, bytes: Uint8Array) => load(async () => [{ path: name, data: bytes }], false),
 };
+
+initReports({
+  picked: () => picked,
+  fixed: () => (session?.changed ? { name: session.pkg.htmlPath.split('/').pop()!, html: session.html } : null),
+  state: pageState,
+});
+
+/** The page's results as text, as the reporter sees them, for a bug report. */
+function pageState(): string {
+  const text = (sel: string) => {
+    const el = app.querySelector<HTMLElement>(sel);
+    return el && !el.hidden ? el.innerText.replace(/\s*\n\s*/g, ' · ').trim() : '';
+  };
+  const rows = [...app.querySelectorAll<HTMLElement>('#checklist details[data-check]')].map((d) => {
+    const part = (s: string) => d.querySelector(s)?.textContent?.trim() ?? '';
+    return `  ${part('.pill').padEnd(6)} ${part('.title')}${part('.count') ? ` (${part('.count')})` : ''}`;
+  });
+  return [
+    `Status: ${text('#status > .banner') || text('#status > .card') || 'nothing shown'}`,
+    `Summary: ${text('#summary') || 'no results'}`,
+    rows.length ? `Checklist:\n${rows.join('\n')}` : 'Checklist: not shown',
+    `Fixes applied: ${session?.changed ? 'yes' : 'no'}`,
+    `Requests to other sites: ${session?.allowThirdParty ? 'allowed' : 'blocked'}`,
+  ].join('\n');
+}
+
 boot();
