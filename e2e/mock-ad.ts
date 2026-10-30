@@ -61,6 +61,7 @@ export function mockAdHtml(headline = 'Headline', runtime = ['mock-gwd.js']): st
     document.addEventListener('securitypolicyviolation', () => { document.documentElement.dataset.blocked = 'yes'; });
   </script>
   ${runtime.map(runtimeTag).join('\n  ')}
+  <script type="text/javascript" src="https://creative.stackadapt.com/js/iframe-ct.js"></script>
   <script type="text/javascript" gwd-events="handlers">
     window.gwd = window.gwd || {};
     gwd.framechange_savings = function(event) {
@@ -170,6 +171,7 @@ export function mockAdHtml(headline = 'Headline', runtime = ['mock-gwd.js']): st
     // As GWD writes it: start the ad once the runtime has defined its elements. The mock starts it on load instead.
     window.addEventListener('WebComponentsReady', () => requestAnimationFrame(() => setTimeout(() => document.getElementById('gwd-ad').initAd(), 1)));
   </script>
+  <script type="text/javascript" src="https://creative.stackadapt.com/js/param.js"></script>
 </body>
 </html>
 `;

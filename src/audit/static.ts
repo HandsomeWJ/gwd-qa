@@ -2,6 +2,7 @@
 
 import { frameOffset, lastCompound, parseCss, type CssModel, type Decl, type KeyframesRule } from '../css/parse';
 import { checkCssValues, cssSupports, describeIssue, type AdFiles, type CssValidator, type CssValueIssue } from './cssvalues';
+import { stackAdaptAudit, stackAdaptFindings, type StackAdaptReport } from './stackadapt';
 import type { CopyItem, Finding } from './types';
 
 const POSITION = ['top', 'left', 'right', 'bottom'];
@@ -17,6 +18,8 @@ export interface StaticReport {
   unchanged: { block: KeyframesRule; props: string[] }[];
   /** CSS values the browser ignores; the ones that only need decimal points are fixable. */
   cssValues: CssValueIssue[];
+  /** StackAdapt's click scripts: which load, and where a missing one goes. */
+  stackAdapt: StackAdaptReport;
 }
 
 export function label(el: Element): string {
@@ -192,7 +195,10 @@ export function staticAudit(html: string, css: CssModel = parseCss(html), valid:
   }
   for (const u of unknown) findings.push({ check: 'cssValues', level: 'note', target: u.target, message: u.message, unknown: true });
 
-  return { sizes: servedSizes(doc, css), environment, findings, copy: copyList(doc, defs), fadeDecls, unchanged, cssValues };
+  const stackAdapt = stackAdaptAudit(html, doc, css, ad);
+  findings.push(...stackAdaptFindings(stackAdapt));
+
+  return { sizes: servedSizes(doc, css), environment, findings, copy: copyList(doc, defs), fadeDecls, unchanged, cssValues, stackAdapt };
 }
 
 function copyList(doc: Document, defs: Map<string, Element>): CopyItem[] {

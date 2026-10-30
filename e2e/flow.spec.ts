@@ -288,7 +288,7 @@ test('a page that never showed leaves the checks of what renders to review, neve
   const pills = await page.locator('#checklist details[data-check] summary .pill').allInnerTexts();
   expect(pills.slice(0, 5).filter((p) => p === 'Pass')).toEqual([]);
   expect(pills.slice(0, 5)).toContain('Review');
-  expect(pills.slice(5)).toEqual(['Pass', 'Pass', 'Pass', 'Pass', 'Pass']);
+  expect(pills.slice(5)).toEqual(['Pass', 'Pass', 'Pass', 'Pass', 'Pass', 'Pass']);
 });
 
 test('a served size with no preview leaves the checks of what renders to review', async ({ page }) => {

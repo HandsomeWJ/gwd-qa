@@ -198,6 +198,8 @@ export interface Attr {
 export interface Tag {
   name: string; // lower case
   attrs: Map<string, Attr>;
+  start: number; // its '<'
+  end: number; // just after its '>'
   /** For raw text elements such as <script>: where their content is. */
   content?: { start: number; end: number };
 }
@@ -230,7 +232,7 @@ export function startTags(html: string): Tag[] {
       i = html.indexOf('<', i + 1);
       continue;
     }
-    const tag: Tag = { name: name.toLowerCase(), attrs: new Map() };
+    const tag: Tag = { name: name.toLowerCase(), attrs: new Map(), start: i, end: n };
     let k = i + 1 + name.length;
     while (k < n) {
       while (k < n && /[\s/]/.test(html[k])) k++;
@@ -261,6 +263,7 @@ export function startTags(html: string): Tag[] {
       k = e;
     }
     i = k + 1;
+    tag.end = Math.min(i, n);
     if (RAW_TEXT.has(tag.name)) {
       const close = new RegExp(`</${tag.name}[\\s/>]`, 'gi');
       close.lastIndex = i;

@@ -9,7 +9,8 @@ export type CheckId =
   | 'position'
   | 'textFade'
   | 'keyframes'
-  | 'cssValues';
+  | 'cssValues'
+  | 'stackAdapt';
 
 export interface CheckInfo {
   id: CheckId;
@@ -30,6 +31,7 @@ export const CHECKS: CheckInfo[] = [
   { id: 'textFade', title: 'Text fade-in', passWhen: 'Text that fades in starts at opacity 0.001, not 0.' },
   { id: 'keyframes', title: 'Keyframes', passWhen: 'Keyframes hold only properties that change between them.' },
   { id: 'cssValues', title: 'CSS values', passWhen: 'Every CSS value is valid, including styles that events and scripts set (opacity: 0.3, not 0,3).' },
+  { id: 'stackAdapt', title: 'StackAdapt scripts', passWhen: "The ad loads StackAdapt's iframe-ct.js and param.js once each, param.js after every tap area (class dynamicClick)." },
 ];
 
 export interface Finding {

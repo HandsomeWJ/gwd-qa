@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { applyEdits, mergeEdits } from '../src/css/edit';
 import { parseCss } from '../src/css/parse';
 import { checkCssValues, cssValueIssues, describeIssue, type CssValidator } from '../src/audit/cssvalues';
@@ -28,16 +28,28 @@ const VALUES: Record<string, RegExp> = {
 const valid: CssValidator = (prop, value) => (value === 'inherit' ? Object.hasOwn(VALUES, prop) : VALUES[prop]?.test(value) ?? false);
 const issues = (html: string) => cssValueIssues(html, parseCss(html), valid);
 
+// Like every StackAdapt ad, it loads StackAdapt's two scripts.
 const page = (head: string, body = '') => `<!DOCTYPE html>
 <html>
 <head>
 ${head}
+  <script type="text/javascript" src="https://creative.stackadapt.com/js/iframe-ct.js"></script>
 </head>
 <body>
 ${body}
+  <script type="text/javascript" src="https://creative.stackadapt.com/js/param.js"></script>
 </body>
 </html>
 `;
+
+// happy-dom fetches the scripts and styles of a parsed document, which a browser never does.
+beforeAll(() => {
+  Object.assign((window as unknown as { happyDOM: { settings: object } }).happyDOM.settings, {
+    disableJavaScriptFileLoading: true,
+    disableCSSFileLoading: true,
+    handleDisabledFileLoadingAsSuccess: true,
+  });
+});
 
 const STYLE = `  <style type="text/css">
     .gwd-p-a {

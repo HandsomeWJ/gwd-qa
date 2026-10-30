@@ -20,7 +20,7 @@ const rule = (sel: string, list: string) => `    ${sel} {\n${decls(list, '      
 const block = (media: string, rules: Record<string, string>) =>
   `    @media ${media} {\n${Object.entries(rules).map(([sel, list]) => `      ${sel} {\n${decls(list, '        ')}      }\n`).join('')}    }\n`;
 
-/** A GWD-shaped ad on the mock runtime: `pages` holds each page's inner HTML. */
+/** A GWD-shaped ad on the mock runtime, with StackAdapt's two scripts: `pages` holds each page's inner HTML. */
 function ad(served: string[], css: string, pages: string[]): string {
   return `<!DOCTYPE html>
 <html>
@@ -29,6 +29,7 @@ function ad(served: string[], css: string, pages: string[]): string {
   <meta name="generator" content="Google Web Designer 16.4.1.0219">
   <meta name="environment" content="gwd-genericad">
   <script src="mock-gwd.js"></script>
+  <script type="text/javascript" src="https://creative.stackadapt.com/js/iframe-ct.js"></script>
   <style type="text/css">
     html, body {
       width: 100%;
@@ -44,6 +45,7 @@ ${css}  </style>
 ${pages.map((p, i) => `      <gwd-page id="page${i + 1}">\n        ${p}\n      </gwd-page>`).join('\n')}
     </gwd-pagedeck>
   </gwd-genericad>
+  <script type="text/javascript" src="https://creative.stackadapt.com/js/param.js"></script>
 </body>
 </html>
 `;

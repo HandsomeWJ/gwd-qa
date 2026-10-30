@@ -6,6 +6,7 @@
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
 import { elementClass, lastCompound, sizeOfMedia, type CssModel, type Decl, type KeyframesRule, type MediaBlock, type StyleRule } from '../css/parse';
 import type { HiddenSubtree } from '../audit/observe';
+import { STACKADAPT_SCRIPTS, stackAdaptTag, type Spot, type StackAdaptScript } from '../audit/stackadapt';
 import { refStart, type Showers } from '../audit/states';
 import type { StaticReport } from '../audit/static';
 import type { Box, CheckId, Inheritor } from '../audit/types';
@@ -39,7 +40,7 @@ export interface PlanInput {
   boxes: Box[];
   /** Per frame label, the media conditions that apply in that frame. */
   media: Map<string, Set<string>>;
-  report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues'>;
+  report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues'> & Partial<Pick<StaticReport, 'stackAdapt'>>;
   /** Keyframes whose unchanged values differ from the element's own style, and whether that element never shows. */
   safety: { animation: string; hidden?: HiddenSubtree }[];
   /** What in the ad's CSS and scripts could show a hidden element; without it, none counts as hidden. */
@@ -705,6 +706,38 @@ class Planner {
     }
     this.add('cssValues', 'Write decimal points in CSS values', safe.notes.join(', '), safe.edits);
   }
+
+  /**
+   * Puts back a StackAdapt script no tag loads, where StackAdapt's templates load it. iframe-ct.js
+   * only reports clicks; param.js opens the landing page, so it is added only where it would open it
+   * from the ad's tap areas alone, and nothing in the ad opens pages itself.
+   */
+  stackAdapt() {
+    const sa = this.input.report.stackAdapt;
+    if (!sa) return;
+    const missing = (name: StackAdaptScript) => !sa.loaded[name] && !sa.elsewhere[name].length;
+    const insert = (spot: Spot, name: StackAdaptScript): Edit[] => [{ start: spot.at, end: spot.at, text: `\n${spot.indent}${stackAdaptTag(name)}` }];
+    if (missing('iframe-ct.js')) {
+      if (sa.head) this.add('stackAdapt', "Load StackAdapt's iframe-ct.js", "In the head, where StackAdapt's templates load it. It reports each click to StackAdapt.", insert(sa.head, 'iframe-ct.js'));
+      else this.manualNote('stackAdapt', `iframe-ct.js: the HTML has no head to load it in; add ${stackAdaptTag('iframe-ct.js')} to the head in GWD's code view.`);
+    }
+    if (missing('param.js')) {
+      const taps = `${sa.tapAreas} tap area${sa.tapAreas === 1 ? '' : 's'}`;
+      if (!sa.body) {
+        this.manualNote('stackAdapt', `param.js: the HTML has no body to load it in; add ${stackAdaptTag('param.js')} at the end of the ad in GWD's code view.`);
+      } else if (!sa.tapAreas) {
+        this.manualNote('stackAdapt', `param.js: no element has the class dynamicClick, so it would make every part of the ad open the landing page, its controls too; if that is right, add ${stackAdaptTag('param.js')} as the body's last tag in GWD's code view, else give the tap areas that class first.`);
+      } else if (sa.ownExits.length) {
+        this.manualNote('stackAdapt', `param.js: the ad opens pages itself (${sa.ownExits.join(', ')}), so one click could open two; keep one way, and for param.js add ${stackAdaptTag('param.js')} as the body's last tag in GWD's code view.`);
+      } else {
+        this.add('stackAdapt', "Load StackAdapt's param.js", `As the body's last tag, after its ${taps} (class dynamicClick), where StackAdapt's templates load it. It opens the landing page when one is clicked.`, insert(sa.body, 'param.js'));
+      }
+    }
+    for (const name of STACKADAPT_SCRIPTS) {
+      if (sa.loaded[name] > 1) this.manualNote('stackAdapt', `${name}: ${sa.loaded[name]} script tags load it; delete all but one in GWD's code view.`);
+    }
+    if (sa.tapAreasAfter) this.manualNote('stackAdapt', `param.js: its tag comes before tap areas it should find; move it to be the body's last tag in GWD's code view.`);
+  }
 }
 
 /** The fix without one of its parts and that part's edits, or null when nothing is left of it. */
@@ -725,6 +758,7 @@ export function planFixes(input: PlanInput): FixPlan {
   p.lineHeight();
   p.textFade();
   p.keyframes();
+  p.stackAdapt();
   p.cssValues(); // last: it skips declarations the other fixes rewrite
   return { fixes: p.fixes, manual: p.manual };
 }

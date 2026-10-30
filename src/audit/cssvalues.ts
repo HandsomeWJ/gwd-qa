@@ -49,7 +49,7 @@ export type Where = Pick<CssValueIssue, 'target' | 'via' | 'handler' | 'file'>;
 // Starts at the '!', so a long run of spaces in a value costs no backtracking.
 const IMPORTANT = /!\s*important$/i;
 const PROP = /^-{0,2}[a-z][a-z0-9-]*$/;
-const JS_TYPE = /^((text|application)\/(x-)?(java|ecma)script|text\/jscript|module)$/i;
+export const JS_TYPE = /^((text|application)\/(x-)?(java|ecma)script|text\/jscript|module)$/i;
 // GWD's components define its elements; an ad's own scripts never do.
 const GWD_ELEMENT = /\b(customElements\.define|document\.registerElement)\(\s*["']gwd-/;
 // Longer a.b.c… chains are not spelled out, so that naming what a script styles stays cheap.

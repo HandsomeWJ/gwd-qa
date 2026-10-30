@@ -19,8 +19,9 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      // A copy or report a test does not answer itself fails here instead of reaching Google.
-      use: { browserName: 'chromium', launchOptions: { args: ['--host-resolver-rules=MAP script.google.com ~NOTFOUND, MAP script.googleusercontent.com ~NOTFOUND'] } },
+      // A copy or report a test does not answer itself fails here instead of reaching Google, and the
+      // mock ad's StackAdapt scripts never reach StackAdapt when a test lets the ad contact other sites.
+      use: { browserName: 'chromium', launchOptions: { args: ['--host-resolver-rules=MAP script.google.com ~NOTFOUND, MAP script.googleusercontent.com ~NOTFOUND, MAP creative.stackadapt.com ~NOTFOUND'] } },
     },
     // The preview in Safari's and Firefox's engines. These tests block Google themselves.
     { name: 'webkit', use: { browserName: 'webkit' }, testMatch: /engines\.spec\.ts/ },
