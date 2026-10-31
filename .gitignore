@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-e2e/
 # Real ads for local testing only: client files must never reach the public repo.
 local-fixtures/
 .DS_Store

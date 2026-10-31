@@ -25,12 +25,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm run build
-        env:
-          # The Apps Script web app that keeps copies of checked ads and bug reports (apps-script/).
-          VITE_RECORD_URL: https://script.google.com/macros/s/AKfycbxyCjYtGuQAAr8Ca2yiPwXjU_1E2gyk198nuYMKmb0NOs8CNxizUHMuAHjW96GkONTI/exec
-          VITE_COMMIT: ${{ github.sha }}
-      # Browser tests run against the built site, so what deploys is what was tested.
+      # Browser tests build the site themselves into dist-e2e, posting copies of the ads they check to
+      # a stand-in web app (playwright.config.ts): no test can reach the owner's.
       - run: npx playwright install --with-deps chromium webkit firefox
       - run: npx playwright test
       - uses: actions/upload-artifact@v4
@@ -39,6 +35,12 @@ jobs:
           name: playwright-results
           path: test-results/
           retention-days: 7
+      # What deploys: the tested code, built again with the owner's web app.
+      - run: npm run build
+        env:
+          # The Apps Script web app that keeps copies of checked ads and bug reports (apps-script/).
+          VITE_RECORD_URL: https://script.google.com/macros/s/AKfycbxyCjYtGuQAAr8Ca2yiPwXjU_1E2gyk198nuYMKmb0NOs8CNxizUHMuAHjW96GkONTI/exec
+          VITE_COMMIT: ${{ github.sha }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
