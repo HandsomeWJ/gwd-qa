@@ -3,7 +3,8 @@
 // (Box) that the rendered checks and the fix planner read.
 
 import { lastCompound, singleClass, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
-import { gwdRefNames, type States } from './states';
+import { MOVES_NOTHING, propKey } from './props';
+import { gwdElements, gwdRefNames, type States } from './states';
 import { hasDirectText, label } from './static';
 import type { Box, Inheritor } from './types';
 
@@ -29,6 +30,29 @@ export interface SafetyMismatch {
   normal: string;
   /** Set where the element draws nothing in this frame, nor anything in it, and cannot push what does. */
   hidden?: HiddenSubtree;
+  /** Set where it and everything in it sit wholly outside the ad in this frame, with the held value and without. */
+  offCanvas?: OffCanvas;
+}
+
+/**
+ * An element measured wholly outside the ad, with the values its animation holds and with its own
+ * style alike: what names it, what is in it and what it sits in, which decide whether anything could
+ * bring it in.
+ */
+export interface OffCanvas {
+  /** It and everything in it. */
+  ids: string[];
+  classes: string[];
+  tags: string[];
+  /** What it sits in, up to the document. */
+  around: { ids: string[]; classes: string[]; tags: string[] };
+  /** Ids in it a script displays, shown for the measurement; and ids it hides, out of the flow so nothing else moves. */
+  shown: string[];
+  hides: string[];
+  /** Whether a GWD text effect runs on it, in it or around it. */
+  effects: boolean;
+  /** Its place in the document (domPath). */
+  path: string;
 }
 
 /**
@@ -684,11 +708,109 @@ function hiddenSubtree(win: Window, el: Element): HiddenSubtree | undefined {
   return { ids, classes, animations, path: domPath(el) };
 }
 
+interface Box2 {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** What it and everything in it paint over, text included: the union of their boxes. Null when nothing paints. */
+function paintedBox(el: Element): Box2 | null {
+  let box: Box2 | null = null;
+  const add = (r: DOMRect) => {
+    if (r.width <= 0 || r.height <= 0) return;
+    box = box ? { left: Math.min(box.left, r.left), top: Math.min(box.top, r.top), right: Math.max(box.right, r.right), bottom: Math.max(box.bottom, r.bottom) } : { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  };
+  for (const x of subtree(el)) {
+    add(x.getBoundingClientRect());
+    for (const n of x.childNodes) {
+      if (n.nodeType !== 3 || !/\S/.test(n.textContent ?? '')) continue;
+      const range = x.ownerDocument.createRange();
+      range.selectNodeContents(n);
+      for (const r of range.getClientRects()) add(r);
+    }
+  }
+  return box;
+}
+
+const parentOf = (el: Element): Element | null => el.parentElement ?? ((el.getRootNode() as ShadowRoot).host ?? null);
+
+/** Whether any animation running on it changes anything but how things look (MOVES_NOTHING). */
+function animatesPlace(el: Element): boolean {
+  return el.getAnimations().some((a) => {
+    const kfs = (a.effect as KeyframeEffect | null)?.getKeyframes() ?? [];
+    return propsOf(kfs).some((p) => !MOVES_NOTHING.test(propKey(p)) && !(kfs.every((k) => k[p] !== undefined) && new Set(kfs.map((k) => k[p])).size === 1));
+  });
+}
+
+/** Whether it paints beyond its box: a shadow, an outline, a filter, a reflection, or a ::before or ::after it may draw. */
+function paintsBeyond(win: Window, el: Element): boolean {
+  const cs = win.getComputedStyle(el) as CSSStyleDeclaration & Record<string, string>;
+  if (cs.boxShadow !== 'none' || cs.textShadow !== 'none' || cs.filter !== 'none' || (cs.backdropFilter ?? 'none') !== 'none' || (cs.webkitBoxReflect ?? 'none') !== 'none') return true;
+  if (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) return true;
+  return ['::before', '::after'].some((pseudo) => !/^(none|normal)$/.test(win.getComputedStyle(el, pseudo).content));
+}
+
+/**
+ * Starts the measurement that an element sits wholly outside the ad: in an exact size, on a page with no
+ * transitions to run, where nothing in it, on it or around it animates where anything is, nothing paints
+ * beyond its box, and something it sits in clips it to the ad with no scrolling box between. Shows what
+ * scripts can display in it. Undefined where any of that fails; else what names it, the clip, and how to
+ * put the shown elements back.
+ */
+function offCanvasStart(f: AdFrame, win: Window, el: Element, multi: boolean, states?: States): { data: OffCanvas; clip: Box2; restore: () => void } | undefined {
+  if (f.size.includes(':') || multi) return undefined;
+  const inside = subtree(el);
+  const around: Element[] = [];
+  for (let a = parentOf(el); a; a = parentOf(a)) around.push(a);
+  if ([...inside, ...around].some(animatesPlace) || inside.some((x) => paintsBeyond(win, x))) return undefined;
+  let clip: Box2 = { left: 0, top: 0, right: win.innerWidth, bottom: win.innerHeight };
+  let clipped = false;
+  for (const a of around) {
+    const cs = win.getComputedStyle(a);
+    if (/^(auto|scroll)$/.test(cs.overflowX) || /^(auto|scroll)$/.test(cs.overflowY)) return undefined;
+    if (!/^(hidden|clip)$/.test(cs.overflowX) || !/^(hidden|clip)$/.test(cs.overflowY)) continue;
+    const r = a.getBoundingClientRect();
+    clip = { left: Math.max(clip.left, r.left), top: Math.max(clip.top, r.top), right: Math.min(clip.right, r.right), bottom: Math.min(clip.bottom, r.bottom) };
+    clipped = true;
+  }
+  if (!clipped) return undefined;
+  // What a script can display in it is shown, as a script would show it. What it hides moves nothing
+  // else where it is out of the flow.
+  const undo: (() => void)[] = [];
+  const shown = new Set<string>();
+  const hides = new Set<string>();
+  for (const w of states?.setters?.scripts ?? []) {
+    if (propKey(w.prop) !== 'display' || w.ref === null || !w.value) continue;
+    const value = w.value.replace(/!\s*important$/i, '').trim();
+    for (const target of gwdElements(el.ownerDocument, w.ref)) {
+      if (!inside.includes(target) || !target.id) continue;
+      if (/^none$/i.test(value)) {
+        if (/^(absolute|fixed)$/.test(win.getComputedStyle(target).position)) hides.add(target.id);
+        continue;
+      }
+      const style = (target as HTMLElement).style;
+      const was = [style.getPropertyValue('display'), style.getPropertyPriority('display')] as const;
+      style.setProperty('display', value, /!\s*important$/i.test(w.value) ? 'important' : '');
+      undo.push(() => style.setProperty('display', was[0], was[1]));
+      shown.add(target.id);
+    }
+  }
+  const names = (els: Element[]) => ({ ids: [...new Set(els.map((x) => x.id).filter(Boolean))], classes: [...new Set(els.flatMap((x) => [...x.classList]))], tags: [...new Set(els.map((x) => x.tagName.toLowerCase()))] });
+  const data: OffCanvas = { ...names(inside), around: names(around), shown: [...shown], hides: [...hides], effects: [...inside, ...around].some((x) => x.hasAttribute('gwd-text-effect')), path: domPath(el) };
+  return { data, clip, restore: () => undo.reverse().forEach((u) => u()) };
+}
+
+/** Whether a box lies wholly outside the clip, a pixel clear of it. */
+const outside = (b: Box2, clip: Box2) => b.right <= clip.left - 1 || b.left >= clip.right + 1 || b.bottom <= clip.top - 1 || b.top >= clip.bottom + 1;
+
 /**
  * An unchanged keyframes value is only safe to delete when it equals the element's normal style, or
- * when the element never shows (see HiddenSubtree; the planner checks what could show it).
+ * when the element never shows: hidden (see HiddenSubtree) or outside the ad (see OffCanvas); the
+ * planner checks what could show it or bring it in.
  */
-function keyframeSafety(f: AdFrame, scope: Element): { checked: number; mismatches: SafetyMismatch[] } {
+function keyframeSafety(f: AdFrame, scope: Element, multi: boolean, states?: States): { checked: number; mismatches: SafetyMismatch[] } {
   const { win } = frameParts(f);
   const mismatches: SafetyMismatch[] = [];
   let checked = 0;
@@ -704,13 +826,18 @@ function keyframeSafety(f: AdFrame, scope: Element): { checked: number; mismatch
       const style = win.getComputedStyle(el) as unknown as Record<string, string>;
       const animated = unchanged.map((p) => style[p]);
       const hidden = hiddenSubtree(win, el);
+      const off = hidden ? undefined : offCanvasStart(f, win, el, multi, states);
+      const held = off && paintedBox(el);
       const saved = (el as HTMLElement).style.animation;
       (el as HTMLElement).style.animation = 'none';
+      const own = off && paintedBox(el);
+      off?.restore();
+      const offCanvas = off && held && own && outside(held, off.clip) && outside(own, off.clip) ? off.data : undefined;
       unchanged.forEach((p, i) => {
         checked++;
         const normal = (win.getComputedStyle(el) as unknown as Record<string, string>)[p];
         if (normal !== animated[i]) {
-          mismatches.push({ size: f.label, target: label(el), animation: (anim as CSSAnimation).animationName, prop: p, keyframes: animated[i], normal, ...(hidden ? { hidden } : {}) });
+          mismatches.push({ size: f.label, target: label(el), animation: (anim as CSSAnimation).animationName, prop: p, keyframes: animated[i], normal, ...(hidden ? { hidden } : {}), ...(offCanvas ? { offCanvas } : {}) });
         }
       });
       (el as HTMLElement).style.animation = saved;
@@ -749,7 +876,7 @@ export async function observe(frames: AdFrame[], css: CssModel, states?: States)
     const ctx: Context = { css: live, blocks, fit: fittingOf(doc, win), claimed, specs: [], animators, stateAnimated };
     const visit = await visitPages(f, (scope, multi) => {
       boxes.push(...boxesIn(f, scope, multi, ctx));
-      const s = keyframeSafety(f, scope); // pauses animations, so it goes after the boxes
+      const s = keyframeSafety(f, scope, multi, states); // pauses animations, so it goes after the boxes
       checked += s.checked;
       safety.push(...s.mismatches);
     });

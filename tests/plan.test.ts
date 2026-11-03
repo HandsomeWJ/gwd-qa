@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { applyEdits, mergeEdits } from '../src/css/edit';
 import { parseCss } from '../src/css/parse';
 import type { CssValidator } from '../src/audit/cssvalues';
-import type { HiddenSubtree } from '../src/audit/observe';
-import type { Showers } from '../src/audit/states';
+import type { HiddenSubtree, OffCanvas, SafetyMismatch } from '../src/audit/observe';
+import type { Setters, Showers } from '../src/audit/states';
 import { staticAudit } from '../src/audit/static';
 import type { Box, Inheritor } from '../src/audit/types';
 import { planFixes, withoutPart } from '../src/fix/plan';
@@ -14,11 +14,16 @@ const M250 = '(width: 300px) and (height: 250px)';
 const M600 = '(width: 300px) and (height: 600px)';
 const RANGE = '(min-width: 300px) and (max-width: 320px) and (min-height: 250px) and (max-height: 480px)';
 
-function plan(html: string, boxes: Box[], media: Record<string, string[]>, safety: { animation: string; hidden?: HiddenSubtree }[] = [], more: { incomplete?: string[]; valid?: CssValidator; showers?: Showers } = {}) {
+type Safety = Pick<SafetyMismatch, 'animation' | 'size' | 'prop' | 'hidden' | 'offCanvas'>;
+const NO_SETTERS: Setters = { rules: [], scripts: [], classes: [], animations: [], keyframes: {}, unknown: [] };
+
+// `setters: null` plans without knowing what else sets styles.
+function plan(html: string, boxes: Box[], media: Record<string, string[]>, safety: Safety[] = [], more: { incomplete?: string[]; valid?: CssValidator; showers?: Showers; setters?: Setters | null } = {}) {
   const css = parseCss(html);
   const report = staticAudit(html, css, more.valid);
   const incomplete = more.incomplete && new Set(more.incomplete);
-  const p = planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report, safety, ...(incomplete ? { incomplete } : {}), ...(more.showers ? { showers: more.showers } : {}) });
+  const setters = more.setters === null ? undefined : (more.setters ?? NO_SETTERS);
+  const p = planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report, safety, ...(setters ? { setters } : {}), ...(incomplete ? { incomplete } : {}), ...(more.showers ? { showers: more.showers } : {}) });
   const fix = (check: string) => p.fixes.find((f) => f.check === check);
   const applied = (check: string) => applyEdits(html, mergeEdits(fix(check)?.edits ?? []));
   return { p, fix, applied };
@@ -73,7 +78,7 @@ describe('line-height', () => {
       box({ ...head, frame: lo, size: range, normalLineHeight: 15 }),
       box({ ...head, frame: hi, size: range, normalLineHeight: 12.5 }),
     ], { '300x250': [RANGE, M250], [lo]: [RANGE, M250], [hi]: [RANGE] });
-    expect(p.manual).toEqual([]);
+    expect(p.manual.filter((m) => m.check !== 'keyframes')).toEqual([]);
     expect(fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 15px, .gwd-p-head in 300x250 to 320x480: 12.5px');
     expect(applied('lineHeight')).toContain('        font-size: 10px;\n        line-height: 12.5px;\n      }');
     expect(applied('lineHeight')).toContain('        font-size: 12px;\n        line-height: 15px;\n      }');
@@ -134,7 +139,7 @@ describe('line-height', () => {
     const css = parseCss(html);
     const skipped = planFixes({ html, css, boxes, media: new Map(Object.entries(media).map(([k, v]) => [k, new Set(v)])), report: staticAudit(html, css), safety: [], incomplete: new Set(['300x250']) });
     expect(skipped.fixes.find((f) => f.check === 'lineHeight')).toBeUndefined();
-    expect(skipped.manual.map((m) => m.detail)).toEqual([
+    expect(skipped.manual.filter((m) => m.check !== 'keyframes').map((m) => m.detail)).toEqual([
       '.gwd-p-head in 300x250 was not measured, and a value in its base rule would reach it there, so its base size gets none; set its line-height in GWD.',
     ]);
   });
@@ -185,7 +190,7 @@ describe('line-height', () => {
     ];
     const unmeasured = plan(shadowed, boxes(), media);
     expect(unmeasured.fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 15px, .gwd-p-head in 320x480: 16.5px');
-    expect(unmeasured.p.manual.map((m) => m.detail)).toEqual([
+    expect(unmeasured.p.manual.filter((m) => m.check !== 'keyframes').map((m) => m.detail)).toEqual([
       '.gwd-p-head in 300x250 to 320x480 was not measured, and a value in its base rule would reach it there, so its base size gets none; set its line-height in GWD.',
     ]);
     const range = parseCss(shadowed).media[0];
@@ -353,7 +358,7 @@ describe('line-height', () => {
     expect(fix('lineHeight')).toBeUndefined();
     expect(fix('buttonColor')).toBeUndefined();
     expect(fix('buttonPadding')).toBeUndefined();
-    expect(p.manual.map((m) => m.detail)).toEqual([
+    expect(p.manual.filter((m) => m.check !== 'keyframes').map((m) => m.detail)).toEqual([
       '.gwd-empty may sit on a page that never showed in 300x250, so it was not checked there; set its padding in GWD.',
       '.gwd-empty may sit on a page that never showed in 300x250, so it was not checked there; set its color in GWD.',
       '.gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there; add margin-block: 0px auto in GWD.',
@@ -368,7 +373,7 @@ describe('line-height', () => {
     expect(plan(html, only, { '300x250': [M250] }).fix('lineHeight')?.detail).toBe('.gwd-p-head in 300x250: 15px');
     const { fix, p } = plan(html, only, { '300x250': [M250] }, [], { incomplete: ['300x250'] });
     expect(fix('lineHeight')).toBeUndefined();
-    expect(p.manual.map((m) => m.detail)).toEqual(['.gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there; set its line-height in GWD.']);
+    expect(p.manual.filter((m) => m.check !== 'keyframes').map((m) => m.detail)).toEqual(['.gwd-p-head may sit on a page that never showed in 300x250, so it was not checked there; set its line-height in GWD.']);
   });
 
   it('leaves text to you whose lines are not all one height, or whose font an animation changes', () => {
@@ -491,29 +496,146 @@ describe('margin-block', () => {
 
 describe('keyframes and fades', () => {
   const html = fixture('mini-ad.html');
+  const hand = 'gwd-gen-hand_gwd-keyframes';
+  // The base block runs in 300x600; 300x250 has its own block of that name.
+  const frames = { '300x250': [M250], '300x600': [M600] };
+  const differs = (size: string, hidden?: HiddenSubtree): Safety => ({ animation: hand, size, prop: 'transform', ...(hidden ? { hidden } : {}) });
 
   it('deletes unchanged keyframe values only where they match the element', () => {
-    expect(plan(html, [], {}).fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks');
-    const unsafe = plan(html, [], {}, [{ animation: 'gwd-gen-hand_gwd-keyframes' }]);
-    expect(unsafe.fix('keyframes')).toBeUndefined();
-    expect(unsafe.p.manual[0].detail).toContain('gwd-gen-hand_gwd-keyframes: deleting transform');
-  });
-
-  it('names the sizes each keyframes block it leaves to you runs in', () => {
-    // The base block runs in 300x600 only: 300x250 has its own block of that name.
-    const sized = plan(html, [], { '300x250': [M250], '300x600': [M600] }, [{ animation: 'gwd-gen-hand_gwd-keyframes' }]);
-    expect(sized.p.manual.map((m) => m.detail)).toEqual([
-      "gwd-gen-hand_gwd-keyframes in 300x600: deleting transform would change how it looks, because those values differ from the element's own style.",
-      "gwd-gen-hand_gwd-keyframes in 300x250: deleting transform would change how it looks, because those values differ from the element's own style.",
+    expect(plan(html, [], frames).fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks');
+    const both = plan(html, [], frames, [differs('300x600'), differs('300x250')]);
+    expect(both.fix('keyframes')).toBeUndefined();
+    expect(both.p.manual.map((m) => m.detail)).toEqual([
+      `${hand} in 300x600: deleting transform would change how it looks, because those values differ from the element's own style.`,
+      `${hand} in 300x250: deleting transform would change how it looks, because those values differ from the element's own style.`,
     ]);
   });
 
+  it('judges each block only in the sizes it runs in', () => {
+    // A value that differs in 300x600, where the base block runs, keeps that block alone.
+    const one = plan(html, [], frames, [differs('300x600')]);
+    expect(one.fix('keyframes')?.detail).toBe('2 declarations in 1 keyframes blocks');
+    expect(one.applied('keyframes')).toContain('@media (width: 300px) and (height: 250px)');
+    expect(one.p.manual.map((m) => m.detail)).toEqual([`${hand} in 300x600: deleting transform would change how it looks, because those values differ from the element's own style.`]);
+    // a value read under another name the block does not use counts for each of its values
+    const other = plan(html, [], frames, [{ animation: hand, size: '300x250', prop: 'translate' }]);
+    expect(other.p.manual.map((m) => m.detail)).toEqual([`${hand} in 300x250: deleting transform would change how it looks, because those values differ from the element's own style.`]);
+  });
+
+  it('leaves a block to you where a page never showed or it runs inside a size range, and deletes one that never runs', () => {
+    // No served size runs either block here, so neither ever runs.
+    const never = plan(html, [], {}, [], { setters: null });
+    expect(never.fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks');
+    expect(never.p.manual).toEqual([]);
+    const unseen = plan(html, [], frames, [], { incomplete: ['300x600'] });
+    expect(unseen.fix('keyframes')?.detail).toBe('2 declarations in 1 keyframes blocks');
+    expect(unseen.p.manual.map((m) => m.detail)).toEqual([`${hand} in 300x600: a page it may run on never showed in 300x600, so deleting transform was not checked; do it in GWD.`]);
+    // Inside the range no preview shows the base block, which no range block redefines.
+    const ranged = html.replace('["300x250", "300x600"]', '["300x250", "300x600", "300x250:320x480"]')
+      .replace('  </style>', `    @media ${RANGE} {\n      .gwd-span-hl {\n        color: red;\n      }\n    }\n  </style>`);
+    const range = plan(ranged, [], { ...frames, '300x250 (range 300x250 to 320x480)': [M250, RANGE] });
+    expect(range.p.manual.map((m) => m.detail)).toEqual([`${hand} in 300x600: it also runs inside a size range, between the sizes the previews show, so deleting transform was not checked; do it in GWD.`]);
+  });
+
+  it('keeps a value that something could set once the ad runs, which the held value now overrides', () => {
+    const kept = (r: ReturnType<typeof plan>) => {
+      expect(r.fix('keyframes')).toBeUndefined();
+      return r.p.manual.map((m) => m.detail);
+    };
+    const run = (setters: Partial<Setters> | null, page = html) => plan(page, [], frames, [], { setters: setters && { ...NO_SETTERS, ...setters } });
+    expect(kept(run(null))[0]).toBe(`${hand} in 300x600: what else sets its styles was not checked, which the value it holds now overrides, so deleting transform could change how it looks; delete it in GWD only if that is wanted.`);
+    // a state rule on it, or one whose subject names nothing
+    expect(kept(run({ rules: [{ selector: '.gwd-gen-hand:hover', props: ['transform'] }] }))[0]).toContain('.gwd-gen-hand:hover sets transform in a state the ad can be put in');
+    expect(kept(run({ rules: [{ selector: '.clicked div', props: ['-webkit-transform'] }] }))).toHaveLength(2);
+    // a script that sets it on it, on an element the code does not name, or in a group's instances
+    expect(kept(run({ scripts: [{ ref: 'SA_group_20', prop: 'transform', label: 'setInlineStyle on SA_group_20' }] }))[0]).toContain('setInlineStyle on SA_group_20 sets transform');
+    expect(kept(run({ scripts: [{ ref: null, prop: 'transform', label: 'style.transform on el' }] }))).toHaveLength(2);
+    expect(kept(run({ scripts: [{ ref: ' Perks grp-one', prop: 'transform', label: 'setInlineStyle on  Perks grp-one' }] }))).toHaveLength(2);
+    // what cannot be read: a computed style, a library call, another site's script
+    expect(kept(run({ unknown: ['jQuery .css in script.js'] }))[0]).toContain('jQuery .css in script.js may set styles in ways not checked here');
+    // GWD's runtime styles text effects and components itself; and an animation on what is not in the HTML
+    expect(kept(run({}, html.replace('<div class="gwd-gen-hand" id="SA_group_20">', '<div class="gwd-gen-hand" id="SA_group_20" gwd-text-effect="[]">')))[0]).toContain('a GWD text effect');
+    expect(kept(run({}, html.replace('<div class="gwd-gen-hand" id="SA_group_20">', '<gwd-reveal class="gwd-gen-hand" id="SA_group_20">').replace('</span></div>', '</span></gwd-reveal>')))[0]).toContain("GWD's gwd-reveal sets styles on itself");
+    expect(kept(run({}, html.replace('class="gwd-gen-hand" id="SA_group_20"', 'class="gwd-div-hand" id="SA_group_20"')))[0]).toContain('what it runs on is not in the HTML');
+  });
+
+  it('deletes a value nothing could set on what it runs on', () => {
+    const deleted = (setters: Partial<Setters>) => plan(html, [], frames, [], { setters: { ...NO_SETTERS, ...setters } }).fix('keyframes')?.detail;
+    // other properties, other elements, and rules that hold from the start
+    expect(deleted({ rules: [{ selector: '.gwd-gen-hand:hover', props: ['opacity'] }, { selector: '.gwd-other:hover', props: ['transform'] }] })).toBe('4 declarations in 2 keyframes blocks');
+    expect(deleted({ scripts: [{ ref: 'SA_other_1', prop: 'transform', label: 'setInlineStyle on SA_other_1' }, { ref: 'SA_group_20', prop: 'opacity', label: 'setInlineStyle on SA_group_20' }] })).toBe('4 declarations in 2 keyframes blocks');
+    // An inherited property reaches it from any element around it.
+    const colored = html.replace(/transform: translate3d\([^)]*\);/g, 'color: red;');
+    const run = (setters: Partial<Setters>) => plan(colored, [], frames, [], { setters: { ...NO_SETTERS, ...setters } });
+    expect(run({}).fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks');
+    // (The 300x250 block holds a transform, which nothing sets, so it goes either way.)
+    const byRule = run({ rules: [{ selector: '#page1:hover', props: ['color'] }] });
+    expect(byRule.fix('keyframes')?.detail).toBe('2 declarations in 1 keyframes blocks');
+    expect(byRule.p.manual[0].detail).toContain('#page1:hover sets color');
+    expect(run({ scripts: [{ ref: 'page1', prop: 'color', label: 'setInlineStyle on page1' }] }).p.manual[0].detail).toContain('setInlineStyle on page1 sets color');
+  });
+
+  it('deletes the values of keyframes nothing runs, unless a style it cannot read could start them', () => {
+    const orphan = html.replace('  </style>', '    @keyframes kf-orphan {\n      0% {\n        left: 5px;\n      }\n      100% {\n        left: 5px;\n      }\n    }\n  </style>');
+    expect(plan(orphan, [], frames).fix('keyframes')?.detail).toBe('6 declarations in 3 keyframes blocks');
+    const unread = plan(orphan, [], frames, [], { setters: { ...NO_SETTERS, unknown: ['style.animation on el, with a value only known while the ad runs'] } });
+    expect(unread.fix('keyframes')).toBeUndefined();
+    expect(unread.p.manual.map((m) => m.detail)).toContain("kf-orphan: what it runs on is not in the HTML, so what else sets its styles was not checked, which the value it holds now overrides, so deleting left could change how it looks; delete it in GWD only if that is wanted.");
+  });
+
+  describe('on an element measured outside the ad', () => {
+    // The hand sits below the 300x600 ad with its held transform, and above it with its own.
+    const off: OffCanvas = { ids: ['SA_group_20'], classes: ['gwd-gen-hand'], tags: ['div', 'span'], around: { ids: ['page1', 'pagedeck', 'gwd-ad'], classes: ['gwd-page'], tags: ['gwd-page', 'gwd-pagedeck', 'gwd-genericad', 'body', 'html'] }, shown: [], hides: [], effects: false, path: '1/2/0/0/1' };
+    const run = (setters: Partial<Setters> | null, o: Partial<OffCanvas> = {}, incomplete?: string[]) =>
+      plan(html, [], frames, [{ animation: hand, size: '300x600', prop: 'transform', offCanvas: { ...off, ...o } }], { setters: setters && { ...NO_SETTERS, ...setters }, ...(incomplete ? { incomplete } : {}) });
+    const stays = (r: ReturnType<typeof run>) => {
+      expect(r.p.manual.map((m) => m.detail)).toContain(`${hand} in 300x600: deleting transform would change how it looks, because those values differ from the element's own style.`);
+      return r.fix('keyframes')?.detail;
+    };
+
+    it('deletes the values, as nothing can bring it in', () => {
+      const { fix, p } = run({});
+      expect(p.manual).toEqual([]);
+      expect(fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks, 1 of them on elements that never show');
+      expect(fix('keyframes')?.hidden).toEqual(['1/2/0/0/1']);
+      // what only changes how things look, a display shown when it was measured, and other elements
+      expect(run({
+        rules: [{ selector: '.gwd-gen-hand:hover', props: ['opacity', 'color'] }],
+        scripts: [{ ref: 'SA_group_20', prop: 'opacity', label: 'a' }, { ref: 'SA_tip_1', prop: 'display', value: 'block', label: 'b' }, { ref: 'SA_tip_2', prop: 'display', value: 'none', label: 'b' }, { ref: 'SA_other_1', prop: 'left', label: 'c' }],
+        classes: [{ ref: 'SA_other_1', label: 'd' }],
+        animations: [{ selector: '.gwd-play-animation .gwd-gen-hand', names: ['0.2s', hand] }, { selector: '.gwd-other', names: ['kf-move'] }],
+        keyframes: { [hand]: ['transform'], 'kf-move': ['transform'] },
+      }, { ids: ['SA_group_20', 'SA_tip_1', 'SA_tip_2'], shown: ['SA_tip_1'], hides: ['SA_tip_2'] }).fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks, 1 of them on elements that never show');
+    });
+
+    it('leaves it to you where anything could bring it in', () => {
+      // (without setters, or with a size unseen, the 300x250 block stays too)
+      expect(stays(run(null))).toBeUndefined();
+      expect(stays(run({ unknown: ['style.top on el, with a value only known while the ad runs'] }))).toBeUndefined();
+      expect(stays(run({}, { effects: true }))).toBe('2 declarations in 1 keyframes blocks');
+      expect(stays(run({}, { around: { ...off.around, tags: [...off.around.tags, 'gwd-swipegallery'] } }))).toBe('2 declarations in 1 keyframes blocks');
+      expect(stays(run({}, undefined, ['300x250']))).toBeUndefined();
+      // a state rule that moves it or what it sits in
+      expect(stays(run({ rules: [{ selector: '.gwd-gen-hand:hover', props: ['transform'] }] }))).toBeUndefined();
+      expect(stays(run({ rules: [{ selector: '#page1:hover', props: ['margin-top'] }] }))).toBe('2 declarations in 1 keyframes blocks');
+      // a script that moves it, displays what was not shown, changes classes on it or around it, or on what the code does not name
+      expect(stays(run({ scripts: [{ ref: 'SA_group_20', prop: 'left', label: 'a' }] }))).toBe('2 declarations in 1 keyframes blocks');
+      expect(stays(run({ scripts: [{ ref: 'SA_group_20', prop: 'display', value: 'block', label: 'a' }] }))).toBe('2 declarations in 1 keyframes blocks');
+      // hiding what sits in the flow moves what follows it
+      expect(stays(run({ scripts: [{ ref: 'SA_group_20', prop: 'display', value: 'none', label: 'a' }] }))).toBe('2 declarations in 1 keyframes blocks');
+      expect(stays(run({ scripts: [{ ref: null, prop: 'transform', label: 'a' }] }))).toBeUndefined();
+      expect(stays(run({ classes: [{ ref: 'page1', label: 'a' }] }))).toBe('2 declarations in 1 keyframes blocks');
+      expect(stays(run({ classes: [{ ref: null, label: 'a' }] }))).toBe('2 declarations in 1 keyframes blocks');
+      // another animation a rule could run on it or what it sits in
+      expect(stays(run({ animations: [{ selector: '.clicked .gwd-gen-hand', names: ['kf-move'] }], keyframes: { 'kf-move': ['top'] } }))).toBe('2 declarations in 1 keyframes blocks');
+    });
+  });
+
   describe('on an element that never shows', () => {
-    const hand = 'gwd-gen-hand_gwd-keyframes';
     const hidden: HiddenSubtree = { ids: ['SA_hand_1', 'SA_tip_1'], classes: ['gwd-div-hand', 'gwd-p-tip'], animations: [hand], path: '1/3/0' };
     const none: Showers = { rules: [], keyframes: [], animators: [], scripts: [] };
-    const run = (showers: Showers | undefined, safety: { animation: string; hidden?: HiddenSubtree }[] = [{ animation: hand, hidden }], incomplete?: string[]) =>
-      plan(html, [], { '300x250': [M250] }, safety, { ...(showers ? { showers } : {}), ...(incomplete ? { incomplete } : {}) });
+    const run = (showers: Showers | undefined, safety: Safety[] = [differs('300x250', hidden), differs('300x600', hidden)], incomplete?: string[]) =>
+      plan(html, [], frames, safety, { ...(showers ? { showers } : {}), ...(incomplete ? { incomplete } : {}) });
 
     it('deletes the unchanged values, as nothing can show it', () => {
       const { fix, p } = run(none);
@@ -532,9 +654,9 @@ describe('keyframes and fades', () => {
         expect(r.fix('keyframes')).toBeUndefined();
         return r.p.manual[0]?.detail ?? '';
       };
-      expect(left(run(undefined))).toContain(`${hand}: deleting transform`);
+      expect(left(run(undefined))).toContain(`${hand} in 300x600: deleting transform`);
       // another element runs it and shows
-      expect(left(run(none, [{ animation: hand, hidden }, { animation: hand }]))).toContain(hand);
+      expect(left(run(none, [differs('300x250', hidden), differs('300x600', hidden), differs('300x600'), differs('300x250')]))).toContain(hand);
       // a rule, in any state, that makes it or something in it visible; one with no class or id may match anything
       expect(left(run({ ...none, rules: ['.gwd-div-hand:hover'] }))).toContain(hand);
       expect(left(run({ ...none, rules: ['#SA_tip_1'] }))).toContain(hand);

@@ -13,7 +13,8 @@ test('groups what is left to you by checklist item, and opens that item', async 
   await expect(page.locator('#summary')).toBeVisible({ timeout: 120_000 });
 
   const groups = page.locator('#fixes .manual > li');
-  await expect(groups.locator('h4 button')).toHaveText(['Type size', 'Button padding', 'Position animation']);
+  // kf-in also runs inside the range, where no preview measures it.
+  await expect(groups.locator('h4 button')).toHaveText(['Type size', 'Button padding', 'Position animation', 'Keyframes']);
   const padding = groups.filter({ has: page.locator('h4', { hasText: 'Button padding' }) });
   await expect(padding.locator('h4 .count')).toHaveText('1 item');
   await expect(padding.locator('ul li .target')).toHaveText('.gwd-button-b');

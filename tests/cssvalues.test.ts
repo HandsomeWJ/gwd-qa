@@ -635,7 +635,7 @@ describe('fixing CSS values', () => {
     const issue = { target: 'div#x', via: 'style attribute', handler: null, prop: 'opacity', value: '0,5', fixed: '0.5' };
     // No offsets, offsets that slice() would still read as '0,5', and offsets at other text.
     const places = [[NaN, NaN], [undefined, 3], [-Infinity, 3], [4, 7]] as number[][];
-    const report = { fadeDecls: [], unchanged: [], cssValues: places.map(([start, end]) => ({ ...issue, start, end })) };
+    const report = { sizes: [], fadeDecls: [], unchanged: [], cssValues: places.map(([start, end]) => ({ ...issue, start, end })) };
     const p = planFixes({ html, css: parseCss(html), boxes: [], media: new Map(), report, safety: [] });
     expect(p.fixes).toEqual([]);
     expect(p.manual).toEqual([{ check: 'cssValues', detail: 'div#x opacity: 0,5 is not valid CSS, so browsers ignore it; write 0.5 in GWD.' }]);

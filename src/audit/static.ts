@@ -14,12 +14,26 @@ export interface StaticReport {
   copy: CopyItem[];
   /** Opacity declarations that make text start at 0; fixable by writing 0.001. */
   fadeDecls: Decl[];
-  /** Keyframes properties that never change, per block; removable once checked safe. */
-  unchanged: { block: KeyframesRule; props: string[] }[];
+  /**
+   * Keyframes properties that never change, per block, and what runs them; removable once checked safe.
+   * `unused` where nothing mentions the name but its own @keyframes rules, so nothing runs it.
+   */
+  unchanged: { block: KeyframesRule; props: string[]; subjects: Subjects | null; unused: boolean }[];
   /** CSS values the browser ignores; the ones that only need decimal points are fixable. */
   cssValues: CssValueIssue[];
   /** StackAdapt's click scripts: which load, and where a missing one goes. */
   stackAdapt: StackAdaptReport;
+}
+
+/**
+ * The elements a keyframes name runs on, as the planner names them. `effects` is set where one has a
+ * GWD text effect, whose runtime sets its styles while the ad runs.
+ */
+export interface Subjects {
+  ids: string[];
+  classes: string[];
+  tags: string[];
+  effects: boolean;
 }
 
 export function label(el: Element): string {
@@ -122,6 +136,30 @@ export function staticAudit(html: string, css: CssModel = parseCss(html), valid:
     }
   }
 
+  // Where else each name appears: in the HTML beyond its @keyframes rules, or in the ad's own files (not GWD's backups).
+  const ownText = ad ? [...ad.files].filter(([p]) => p !== ad.htmlPath && /\.(js|css|html?)$/i.test(p) && !/(^|\/)(_revisions?|gwd_preview_[^/]*)\//.test(p)).map(([, data]) => new TextDecoder().decode(data)) : [];
+  const mentioned = (name: string) => {
+    const re = new RegExp(`(?<![\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'g');
+    return (html.match(re) ?? []).length > css.keyframes.filter((k) => k.name === name).length || ownText.some((t) => t.search(re) >= 0);
+  };
+
+  // What runs each name; null where no rule runs it, or one runs it on something not in the HTML.
+  const subjects = new Map<string, Subjects | null>();
+  const subjectsOf = (name: string): Subjects | null => {
+    if (!subjects.has(name)) {
+      const parts = (runners.get(name) ?? []).flatMap((s) => s.split(','));
+      const found = parts.map((s) => query(doc, lastCompound(s).replace(/::?[a-z-]+(\([^)]*\))?/gi, '')));
+      const els = found.flat();
+      subjects.set(name, !parts.length || found.some((f) => !f.length) ? null : {
+        ids: [...new Set(els.map((e) => e.id).filter(Boolean))],
+        classes: [...new Set(els.flatMap((e) => [...e.classList]))],
+        tags: [...new Set(els.map((e) => e.tagName.toLowerCase()))],
+        effects: els.some((e) => e.hasAttribute('gwd-text-effect')),
+      });
+    }
+    return subjects.get(name)!;
+  };
+
   for (const block of css.keyframes) {
     const where = block.media ? ` (${block.media})` : '';
     const frames = block.frames.map((f) => new Map(f.decls.map((d) => [d.prop, d])));
@@ -132,7 +170,7 @@ export function staticAudit(html: string, css: CssModel = parseCss(html), valid:
     if (frames.length > 1) {
       const same = props.filter((p) => frames.every((f) => f.has(p)) && new Set(frames.map((f) => f.get(p)!.value)).size === 1);
       if (same.length) {
-        unchanged.push({ block, props: same });
+        unchanged.push({ block, props: same, subjects: subjectsOf(block.name), unused: !mentioned(block.name) });
         for (const p of same) {
           findings.push({ check: 'keyframes', level: 'fail', target: block.name + where, message: `${p} never changes (${frames[0].get(p)!.value}).` });
         }

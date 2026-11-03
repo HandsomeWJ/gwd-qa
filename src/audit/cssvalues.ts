@@ -673,6 +673,8 @@ export interface ScriptHits {
   unknown: (target: string, message: string) => void;
   /** Classes it puts on or takes off an element: classList, className, setAttribute('class'). */
   classes?: (op: 'add' | 'remove' | 'toggle', names: string[], where: Where, id: string | null) => void;
+  /** A style or class it writes that cannot be read here: a name or value only known while the ad runs. */
+  dynamic?: (where: Where) => void;
 }
 
 /** style.fontSize -> font-size; vendor names (webkitTransform) get their leading dash. */
@@ -742,6 +744,8 @@ export function scanScript(html: string, from: number, to: number, hits: ScriptH
     const v = isP(toks[k], '=') && !isP(toks[k + 1], '=') ? k + 1 : adds ? k + 2 : -1;
     return v >= 0 && whole(v) ? v : -1;
   };
+  /** Whether toks[k] assigns: an '=' that does not compare. */
+  const assigns = (k: number) => isP(toks[k], '=') && !isP(toks[k + 1], '=');
 
   // Per open brace, the innermost named function around it: the handler.
   const handlers: (string | null)[] = [];
@@ -755,7 +759,11 @@ export function scanScript(html: string, from: number, to: number, hits: ScriptH
     if (tok.text === 'setInlineStyle' && isP(toks[t + 1], '(')) {
       const [el, styles] = callArgs(toks, partner, t + 1);
       const k = single(styles);
-      if (!el || el[1] <= el[0] || k < 0) continue;
+      if (!el || el[1] <= el[0] || k < 0) {
+        // GWD's runtime sets nothing without both an element and a styles string.
+        if (el && styles) hits.dynamic?.({ target: 'an element', via: 'setInlineStyle', handler });
+        continue;
+      }
       // A long expression is not spelled out: calls nested in each other would spell out the same text again and again.
       const words = el[1] - el[0] > 32 ? null : toks.slice(el[0], el[1]).map((w) => (w.kind === 'str' ? `'${w.text}'` : w.text));
       const id = single(el) >= 0 ? text(el[0]).text : null;
@@ -766,6 +774,8 @@ export function scanScript(html: string, from: number, to: number, hits: ScriptH
       const n = single(name);
       const k = single(styles);
       const attr = n < 0 ? '' : text(n).text.trim().toLowerCase();
+      // A computed attribute name may be 'style' or 'class'.
+      if ((n < 0 && name) || (k < 0 && (attr === 'style' || attr === 'class'))) hits.dynamic?.({ target: objectBefore(t - 1), via: 'setAttribute', handler });
       if (k < 0 || (attr !== 'style' && attr !== 'class')) continue;
       if (attr === 'class') hits.classes?.('add', classNames(k), { target: objectBefore(t - 1), via: "setAttribute('class')", handler }, idBefore(t - 1));
       else hits.list(text(k), { target: objectBefore(t - 1), via: "setAttribute('style')", handler }, idBefore(t - 1));
@@ -775,7 +785,10 @@ export function scanScript(html: string, from: number, to: number, hits: ScriptH
       // toggle(name, force) and replace(old, new) read their class names from the first one or two.
       const all = callArgs(toks, partner, t + 3).map(single);
       const args = method === 'toggle' ? all.slice(0, 1) : method === 'replace' ? all.slice(0, 2) : all;
-      if (!args.length || args.some((k) => k < 0)) continue;
+      if (!args.length || args.some((k) => k < 0)) {
+        hits.dynamic?.({ target: objectBefore(t - 1), via: `classList.${method}`, handler });
+        continue;
+      }
       const where = { target: objectBefore(t - 1), via: `classList.${method}`, handler };
       const id = idBefore(t - 1);
       const names = args.map((k) => text(k).text.trim()).filter(Boolean);
@@ -788,6 +801,11 @@ export function scanScript(html: string, from: number, to: number, hits: ScriptH
       const adds = isP(toks[t + 1], '+') && isP(toks[t + 2], '=');
       const k = assigned(t + 1, adds);
       if (k >= 0) hits.classes?.('add', classNames(k), { target: objectBefore(t - 1), via: 'className', handler }, idBefore(t - 1));
+      else if (adds || assigns(t + 1)) hits.dynamic?.({ target: objectBefore(t - 1), via: 'className', handler });
+    } else if (tok.text === 'style' && isP(toks[t - 1], '.') && isP(toks[t + 1], '[')) {
+      // style[name] = value: a property only known while the ad runs.
+      const close = partner[t + 1];
+      if (close > t + 1 && (assigns(close + 1) || (isP(toks[close + 1], '+') && isP(toks[close + 2], '=')))) hits.dynamic?.({ target: objectBefore(t - 1), via: 'style[…]', handler });
     } else if (tok.text === 'style' && isP(toks[t - 1], '.') && isP(toks[t + 1], '.') && toks[t + 2]?.kind === 'name') {
       const member = toks[t + 2].text;
       if (member === 'setProperty' && isP(toks[t + 3], '(')) {
@@ -795,12 +813,16 @@ export function scanScript(html: string, from: number, to: number, hits: ScriptH
         const n = single(name);
         const k = single(value);
         if (n >= 0 && k >= 0) hits.property(text(n).text, text(k), { target: objectBefore(t - 1), via: 'style.setProperty', handler }, idBefore(t - 1));
+        else hits.dynamic?.({ target: objectBefore(t - 1), via: 'style.setProperty', handler });
         continue;
       }
       // '+=' adds to the value the element has then: whole declarations to cssText, but only the end of one to a property.
       const adds = isP(toks[t + 3], '+') && isP(toks[t + 4], '=');
       const k = assigned(t + 3, adds);
-      if (k < 0) continue;
+      if (k < 0) {
+        if (adds || assigns(t + 3)) hits.dynamic?.({ target: objectBefore(t - 1), via: `style.${member}`, handler });
+        continue;
+      }
       // Named only for a hit, so that a long a.style.b.style… chain is walked once, not at every 'style'.
       const target = objectBefore(t - 1);
       const id = idBefore(t - 1);

@@ -36,9 +36,13 @@ const GHOST_CSS = `    .gwd-div-ghost {
     }
 `;
 
-/** The mock ad with a hidden group that runs kf-ghost; `css`, `handler` and `inner` add what may show it. */
+/**
+ * The mock ad with a hidden group that runs kf-ghost; `css`, `handler` and `inner` add what may show it.
+ * It serves 300x250 alone: keyframes that also run inside a range, where no preview measures them, stay.
+ */
 function ghostAd(more: { css?: string; handler?: string; inner?: string } = {}): string {
   let html = mockAdHtml()
+    .replace('["300x250", "300x250:320x480"]', '["300x250"]')
     .replace('  </style>', `${GHOST_CSS}${more.css ?? ''}  </style>`)
     .replace('<button class="gwd-button-b"', `<div class="gwd-div-ghost" id="SA_ghost_1"><p class="gwd-p-ghost" id="SA_ghost_2"${more.inner ?? ''}>Ghost</p></div>\n        <button class="gwd-button-b"`);
   if (more.handler) html = html.replace('    gwd.framechange_savings = function(event) {', `    gwd.auto_click = function(event) {\n      ${more.handler}\n    };\n    gwd.framechange_savings = function(event) {`);
@@ -61,7 +65,7 @@ test('deletes keyframe values on an element that never shows, without changing a
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   // The hidden group's own text moves with it, where nobody sees it; every other text stays put.
   await expect(page.locator('#fixes .banner.ok')).toContainText('exactly where they were', { timeout: 90_000 });
-  await expect(page.locator('#fixes .banner.ok')).toContainText('3 texts inside elements that never show moved with them, where nobody sees them.');
+  await expect(page.locator('#fixes .banner.ok')).toContainText('One text inside elements that never show moved with its element, where nobody sees it.');
   await expect(page.locator('#checklist details[data-check="keyframes"] summary .pill')).toHaveText('Pass');
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);

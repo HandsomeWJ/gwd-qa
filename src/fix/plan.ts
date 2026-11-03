@@ -5,10 +5,11 @@
 
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
 import { elementClass, lastCompound, sizeOfMedia, type CssModel, type Decl, type KeyframesRule, type MediaBlock, type StyleRule } from '../css/parse';
-import type { HiddenSubtree } from '../audit/observe';
+import type { HiddenSubtree, OffCanvas, SafetyMismatch } from '../audit/observe';
+import { MOVES_NOTHING, propKey } from '../audit/props';
 import { STACKADAPT_SCRIPTS, stackAdaptTag, type Spot, type StackAdaptScript } from '../audit/stackadapt';
-import { refStart, type Showers } from '../audit/states';
-import type { StaticReport } from '../audit/static';
+import { refStart, type Setters, type Showers } from '../audit/states';
+import type { StaticReport, Subjects } from '../audit/static';
 import type { Box, CheckId, Inheritor } from '../audit/types';
 import { describeSize, parseSize } from '../sizes';
 
@@ -40,9 +41,11 @@ export interface PlanInput {
   boxes: Box[];
   /** Per frame label, the media conditions that apply in that frame. */
   media: Map<string, Set<string>>;
-  report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues'> & Partial<Pick<StaticReport, 'stackAdapt'>>;
-  /** Keyframes whose unchanged values differ from the element's own style, and whether that element never shows. */
-  safety: { animation: string; hidden?: HiddenSubtree }[];
+  report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues' | 'sizes'> & Partial<Pick<StaticReport, 'stackAdapt'>>;
+  /** Keyframes values that differ from the element's own style, with the frame they were read in, and whether that element never shows. */
+  safety: Pick<SafetyMismatch, 'animation' | 'size' | 'prop' | 'hidden' | 'offCanvas'>[];
+  /** What could set a style on an element once the ad has started; without it, no keyframes value is deleted. */
+  setters?: Setters;
   /** What in the ad's CSS and scripts could show a hidden element; without it, none counts as hidden. */
   showers?: Showers;
   /** Labels of the frames where a page never showed. */
@@ -61,6 +64,12 @@ const PAINT_ONLY = new Set([
   'opacity', 'visibility', 'color', 'background', 'background-color', 'background-image', 'border-color', 'outline', 'outline-color',
   'box-shadow', 'text-shadow', 'cursor', 'z-index',
 ]);
+// Properties children take from what they sit in: a state or script that sets one on anything around them reaches them.
+const INHERITED = /^(color|visibility|cursor|direction|quotes|hyphens|tabsize|whitespace|wordbreak|wordspacing|letterspacing|lineheight|overflowwrap|wordwrap|font.*|text.*|liststyle.*|captionside|bordercollapse|emptycells|webkittext.*)$/;
+// GWD components whose runtime sets no style on the element itself.
+const PASSIVE = new Set(['gwd-image', 'gwd-taparea']);
+// GWD's page structure, which stays put on an ad with one page, where no page transition runs.
+const STRUCTURE = new Set(['gwd-genericad', 'gwd-pagedeck', 'gwd-page']);
 // The words of a transition that are not the property it animates.
 const TRANSITION_WORDS = new Set(['ease', 'ease-in', 'ease-out', 'ease-in-out', 'linear', 'step-start', 'step-end', 'normal', 'allow-discrete']);
 
@@ -633,26 +642,91 @@ class Planner {
     });
   }
 
+  /** The last keyframes of this name, in source order, whose media applies: the one that runs. */
+  effective(name: string, applies: (media: string) => boolean): KeyframesRule | undefined {
+    let last: KeyframesRule | undefined;
+    for (const k of this.css.keyframes) if (k.name === name && (k.media === null || applies(k.media)) && (!last || k.start > last.start)) last = k;
+    return last;
+  }
+
+  /** The frames where this block is the keyframes that run. */
+  framesOf(block: KeyframesRule): string[] {
+    return [...this.input.media].filter(([, applies]) => this.effective(block.name, (m) => applies.has(m)) === block).map(([f]) => f);
+  }
+
+  /** Whether it runs inside a served size range, at sizes between the two ends the previews show. */
+  inRange(block: KeyframesRule): boolean {
+    const served = this.input.report.sizes.filter((s) => s.includes(':'));
+    if (!served.length) return false;
+    // Inside a range only its own media apply, and those of other served ranges where they overlap.
+    const ranges = [...new Set(this.css.media.map((m) => m.media))].filter((m) => served.includes(sizeOfMedia(m) ?? ''));
+    return served.some((r) => this.effective(block.name, (m) => sizeOfMedia(m) === r) === block) || this.effective(block.name, (m) => ranges.includes(m)) === block;
+  }
+
+  /**
+   * What could set this property on what the animation runs on, once the ad has started: a state, a
+   * script, GWD's runtime, or a script this cannot read. The value the animation holds overrides it
+   * today, so deleting that value would let it show. '' where nothing can.
+   */
+  overridden(prop: string, subjects: Subjects | null): string {
+    const s = this.input.setters;
+    if (!s) return 'what else sets its styles was not checked';
+    if (!subjects) return 'what it runs on is not in the HTML, so what else sets its styles was not checked';
+    if (s.unknown.length) return `${s.unknown[0]}${s.unknown.length > 1 ? ` and ${s.unknown.length - 1} more` : ''} may set styles in ways not checked here`;
+    if (subjects.effects) return 'a GWD text effect sets styles on what it runs on while the ad runs';
+    const component = subjects.tags.find((t) => t.startsWith('gwd-') && !PASSIVE.has(t));
+    if (component) return `GWD's ${component} sets styles on itself while the ad runs`;
+    const key = propKey(prop);
+    const inherited = INHERITED.test(key);
+    const ids = new Set(subjects.ids);
+    const classes = new Set(subjects.classes);
+    const rule = s.rules.find((r) => r.props.some((x) => propKey(x) === key) && (inherited || mayMatch(r.selector, ids, classes)));
+    if (rule) return `${rule.selector} sets ${prop} in a state the ad can be put in`;
+    const script = s.scripts.find((x) => {
+      if (propKey(x.prop) !== key) return false;
+      const start = x.ref === null ? null : refStart(x.ref);
+      return inherited || !start || start.deep || ids.has(start.id);
+    });
+    return script ? `${script.label} sets ${prop}` : '';
+  }
+
+  /**
+   * Whether an element the previews measured wholly outside the ad, with its held value and without,
+   * stays there once the ad has started: nothing could move it, anything in it or anything it sits in,
+   * start an animation on them, or run their own runtime. The checks before it (see offCanvasStart in
+   * observe.ts) proved nothing moves them as the ad plays and nothing paints beyond their boxes.
+   */
+  staysOff(o: OffCanvas | undefined, name: string): boolean {
+    const s = this.input.setters;
+    if (!o || !s || s.unknown.length || o.effects || this.input.incomplete?.size) return false;
+    if ([...o.tags, ...o.around.tags].some((t) => t.startsWith('gwd-') && !STRUCTURE.has(t) && !PASSIVE.has(t))) return false;
+    const ids = new Set([...o.ids, ...o.around.ids]);
+    const classes = new Set([...o.classes, ...o.around.classes]);
+    const moves = (props: string[]) => props.some((p) => !MOVES_NOTHING.test(propKey(p)));
+    if (s.rules.some((r) => moves(r.props) && mayMatch(r.selector, ids, classes))) return false;
+    const reaches = (ref: string | null) => {
+      const start = ref === null ? null : refStart(ref);
+      return !start || start.deep || ids.has(start.id);
+    };
+    // A display a script sets in it was shown when it was measured, or hides what is out of the flow.
+    const measured = (x: Setters['scripts'][number]) => {
+      const start = x.ref === null ? null : refStart(x.ref);
+      if (propKey(x.prop) !== 'display' || !start || start.deep) return false;
+      return (/^none(\s*!\s*important)?$/i.test(x.value ?? '') ? o.hides : o.shown).includes(start.id);
+    };
+    if (s.scripts.some((x) => reaches(x.ref) && moves([x.prop]) && !measured(x))) return false;
+    if (s.classes.some((c) => reaches(c.ref))) return false;
+    // Keyframes a rule could run on any of them (GWD's event and label animations among them); this block's own ran as measured.
+    return !s.animations.some((a) => a.names.some((n) => n !== name && moves(s.keyframes[n] ?? [])) && mayMatch(a.selector, ids, classes));
+  }
+
   keyframes() {
-    // Where an unchanged value differs from the element's own style, deleting it moves or restyles that
-    // element: safe only where every such element never shows.
-    const mismatched = new Map<string, PlanInput['safety']>();
-    for (const m of this.input.safety) mismatched.set(m.animation, [...(mismatched.get(m.animation) ?? []), m]);
     const edits: Edit[] = [];
     let count = 0;
     let blocks = 0;
     let hidden = 0;
     const roots = new Set<string>();
-    for (const { block, props } of this.input.report.unchanged) {
-      const ms = mismatched.get(block.name);
-      if (ms && !ms.every((m) => this.neverShows(m.hidden))) {
-        this.manualNote('keyframes', `${block.name}${this.runsIn(block)}: deleting ${props.join(', ')} would change how it looks, because those values differ from the element's own style.`);
-        continue;
-      }
-      if (ms) {
-        hidden++;
-        ms.forEach((m) => roots.add(m.hidden!.path));
-      }
+    const drop = (block: KeyframesRule, props: string[]) => {
       blocks++;
       for (const frame of block.frames) {
         for (const d of frame.decls.filter((x) => props.includes(x.prop))) {
@@ -660,6 +734,61 @@ class Planner {
           count++;
         }
       }
+    };
+    for (const { block, props, subjects, unused } of this.input.report.unchanged) {
+      const name = `${block.name}${this.runsIn(block)}`;
+      // Nothing mentions it but its own @keyframes rules, so nothing runs it, unless a style this cannot read names it.
+      if (unused && this.input.setters && !this.input.setters.unknown.length) {
+        drop(block, props);
+        continue;
+      }
+      // Values are only read where a preview runs this block. One that runs in no served size (every size
+      // has its own of that name) never runs, so its values can go.
+      const frames = this.framesOf(block);
+      const unseen = frames.filter((f) => this.input.incomplete?.has(f));
+      const ranged = this.inRange(block);
+      if (unseen.length || ranged) {
+        const why = unseen.length ? `a page it may run on never showed in ${unseen.join(', ')}` : 'it also runs inside a size range, between the sizes the previews show';
+        this.manualNote('keyframes', `${name}: ${why}, so deleting ${props.join(', ')} was not checked; do it in GWD.`);
+        continue;
+      }
+      if (!frames.length) {
+        drop(block, props);
+        continue;
+      }
+      const found = this.input.safety.filter((m) => m.animation === block.name && frames.includes(m.size));
+      const keys = new Set(props.map(propKey));
+      // A value read under a name the block does not use (a longhand of a shorthand it sets) cannot be told apart: it counts for each.
+      const strays = found.filter((m) => !keys.has(propKey(m.prop)));
+      const differ: string[] = [];
+      const kept = new Map<string, string[]>();
+      const gone: string[] = [];
+      let onHidden = false;
+      for (const p of props) {
+        const ms = [...strays, ...found.filter((m) => propKey(m.prop) === propKey(p))];
+        // Where a value differs from the element's own style, deleting it moves or restyles that element: safe only where
+        // it never shows, hidden or outside the ad.
+        const unseen = ms.map((m) => (this.neverShows(m.hidden) ? m.hidden!.path : this.staysOff(m.offCanvas, block.name) ? m.offCanvas!.path : null));
+        if (unseen.includes(null)) {
+          differ.push(p);
+          continue;
+        }
+        const why = this.overridden(p, subjects);
+        if (why) {
+          kept.set(why, [...(kept.get(why) ?? []), p]);
+          continue;
+        }
+        if (ms.length) {
+          onHidden = true;
+          unseen.forEach((path) => roots.add(path!));
+        }
+        gone.push(p);
+      }
+      if (differ.length) this.manualNote('keyframes', `${name}: deleting ${differ.join(', ')} would change how it looks, because those values differ from the element's own style.`);
+      for (const [why, ps] of kept) this.manualNote('keyframes', `${name}: ${why}, which the value it holds now overrides, so deleting ${ps.join(', ')} could change how it looks; delete it in GWD only if that is wanted.`);
+      if (!gone.length) continue;
+      if (onHidden) hidden++;
+      drop(block, gone);
     }
     const where = hidden ? `, ${hidden} of them on elements that never show` : '';
     this.add('keyframes', 'Delete keyframe properties that never change', `${count} declarations in ${blocks} keyframes blocks${where}`, edits);

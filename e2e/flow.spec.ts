@@ -89,7 +89,8 @@ test('a failed check after applying puts the file back, so the fixes on the page
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   await expect(page.locator('#fixes .banner')).toContainText('exactly where they were', { timeout: 90_000 });
-  await expect(page.locator('#summary')).toContainText('1 check failing'); // the small note, not marked as a disclaimer
+  // the small note, not marked as a disclaimer, and kf-in, which also runs inside the range where no preview measures it
+  await expect(page.locator('#summary')).toContainText('2 checks failing');
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
   expect(fixed).toContain("setInlineStyle('SA_dot_1', 'opacity: 0.3;')");
@@ -126,7 +127,7 @@ test('the apply banner counts changed line spacings and moved texts apart', asyn
   });
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   const banner = page.locator('#fixes .banner.warn');
-  await expect(banner).toContainText('Applied 7 fixes, but 6 line spacings changed and 6 texts moved.', { timeout: 90_000 });
+  await expect(banner).toContainText('Applied 6 fixes, but 6 line spacings changed and 6 texts moved.', { timeout: 90_000 });
   await expect(banner.locator('li').first()).toHaveText('300x250 page1 p#SA_headline_1 line-height');
 });
 
@@ -284,11 +285,12 @@ test('a page that never showed leaves the checks of what renders to review, neve
   const meta = page.locator('#summary .meta');
   await expect(meta).toContainText('1 page not checked');
   await expect(meta).not.toContainText('Every check passes');
-  // What renders never passes; what is read from the source alone still does.
+  // What renders never passes; what is read from the source alone still does, but for the keyframes values, which
+  // are checked as they render: the page that never showed was not checked, so they stay.
   const pills = await page.locator('#checklist details[data-check] summary .pill').allInnerTexts();
   expect(pills.slice(0, 5).filter((p) => p === 'Pass')).toEqual([]);
   expect(pills.slice(0, 5)).toContain('Review');
-  expect(pills.slice(5)).toEqual(['Pass', 'Pass', 'Pass', 'Pass', 'Pass', 'Pass']);
+  expect(pills.slice(5)).toEqual(['Pass', 'Pass', 'Pass', 'Fail', 'Pass', 'Pass']);
 });
 
 test('a served size with no preview leaves the checks of what renders to review', async ({ page }) => {

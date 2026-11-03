@@ -4,7 +4,7 @@
 // layout safety net also lays every fix out with all of these applied at once.
 
 import type { CssModel, StyleRule } from '../css/parse';
-import { declList, gwdInlineStyles, readAd, scanScript, type AdFiles, type ScriptHits, type Where } from './cssvalues';
+import { declList, gwdInlineStyles, JS_TYPE, readAd, scanScript, type AdFiles, type ScriptHits, type Where } from './cssvalues';
 
 /** Pseudo-classes for a state a person puts an element in. */
 const STATE = /:(hover|active|focus-visible|focus-within|focus|target)(?![\w-])/gi;
@@ -38,6 +38,25 @@ export interface States {
   /** What scripts change on elements the code does not name, which cannot be laid out here. */
   unknown: string[];
   showers?: Showers;
+  setters?: Setters;
+}
+
+/**
+ * What could set a style on an element once the ad has started. A value a forwards animation holds
+ * overrides all of it, so deleting that value would let it show.
+ */
+export interface Setters {
+  /** Rules, in any size, that wait for a state or for a class a script changes, with the properties they set. */
+  rules: { selector: string; props: string[] }[];
+  /** Styles scripts set: `ref` as on ScriptStyle, null for an element the code does not name. */
+  scripts: { ref: string | null; prop: string; value?: string; label: string }[];
+  /** Classes scripts put on or take off elements: `ref` as above. */
+  classes: { ref: string | null; label: string }[];
+  /** Rules, in any sheet and size, that run keyframes, with the names they run; and each name's properties, in any of its blocks. */
+  animations: { selector: string; names: string[] }[];
+  keyframes: Record<string, string[]>;
+  /** Style and class changes that cannot be read here: computed ones, library calls, another site's scripts. */
+  unknown: string[];
 }
 
 /** What in the ad's CSS and scripts could make an element visible that its own style hides. */
@@ -52,6 +71,21 @@ export interface Showers {
 }
 
 const HIDES = /^(hidden|collapse)(\s*!important)?$/i;
+/** Pseudo-classes that hold from the start, unlike :hover and the like; their arguments are read on their own. */
+const STATIC_PSEUDO = /^(first-child|last-child|only-child|first-of-type|last-of-type|only-of-type|nth-child|nth-last-child|nth-of-type|nth-last-of-type|root|empty|not|is|where|has|lang|dir|scope|defined)$/i;
+/** A selector part that styles a pseudo-element, not the element. */
+const PSEUDO_ELEMENT = /::|:(before|after|first-line|first-letter)(?![\w-])/i;
+/** Script libraries whose code only runs when the ad's own code calls it; their calls are found instead. */
+const LIBRARY = /^(jquery|zepto|gsap|tweenmax|tweenlite|timelinemax|timelinelite|anime|velocity|hammer|lottie|bodymovin)[\w.-]*\.js$/i;
+/** Library calls that set styles or classes. */
+const LIBRARY_CALL = /\.(css|addClass|removeClass|toggleClass|animate|fadeIn|fadeOut|fadeTo|fadeToggle|slideUp|slideDown|slideToggle|show|hide|toggle)\s*\(|\.attr\s*\(\s*['"](style|class)['"]|\b(gsap|TweenMax|TweenLite|TimelineMax|TimelineLite|anime|Velocity|lottie|bodymovin)\s*[.(]/;
+
+/** Whether a selector waits for something that is not there at rest: a state such as :hover, or a class a script changes. */
+function waits(part: string, changed: Set<string>): boolean {
+  for (const [, name] of part.matchAll(/(?<!:):([a-z-]+)/gi)) if (!STATIC_PSEUDO.test(name)) return true;
+  for (const [, name] of part.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) if (changed.has(name)) return true;
+  return false;
+}
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const hasClass = (selector: string, name: string) => new RegExp(`\\.${escapeRegExp(name)}(?![\\w-])`).test(selector);
@@ -65,12 +99,17 @@ export function findStates(html: string, css: CssModel, ad?: AdFiles): States {
   const styles: ScriptStyle[] = [];
   const changes: ScriptClass[] = [];
   const showers: Showers = { rules: [], keyframes: [], animators: [], scripts: [] };
+  const setters: Setters = { rules: [], scripts: [], classes: [], animations: [], keyframes: {}, unknown: [] };
+  const allRules: { selector: string; props: string[] }[] = [];
+  let library = false;
   const animations: { selector: string; names: string[] }[] = [];
   const label = (where: Where) => `${where.via} on ${where.target}${where.handler ? ` in ${where.handler}` : ''}`;
   const set = (prop: string, value: string, where: Where, ref: string | null) => {
     const name = prop.trim().toLowerCase();
     if (SPACING.test(name) && value.trim()) styles.push({ ref, prop: name, value: value.trim(), label: label(where) });
     if (name === 'visibility' && !HIDES.test(value.trim())) showers.scripts.push({ ref, label: label(where) });
+    // A library's own code styles its own elements; the ad's calls into it are found instead.
+    if (name && !library) setters.scripts.push({ ref, prop: name, value: value.trim(), label: label(where) });
   };
   const hits: ScriptHits = {
     list: (src, where, ref) => {
@@ -85,14 +124,19 @@ export function findStates(html: string, css: CssModel, ad?: AdFiles): States {
     },
     single: (prop, src, where, ref) => set(prop, src.text, where, ref),
     unknown: () => {},
+    dynamic: (where) => {
+      if (!library) setters.unknown.push(`${label(where)}, with a value only known while the ad runs`);
+    },
     classes: (op, names, where, ref) => {
       for (const name of names) changes.push({ ref, op, name, label: label(where) });
       showers.scripts.push({ ref, label: label(where) });
+      if (!library) setters.classes.push({ ref, label: label(where) });
     },
   };
   readAd(html, css, ad, [], {
     sheet: (model) => {
       for (const r of model.rules) {
+        allRules.push({ selector: r.selector, props: r.decls.map((d) => d.prop) });
         if (spacing(r)) {
           spacingRules.push(r.selector);
           if (new RegExp(STATE.source, 'i').test(r.selector)) rules.push(r.selector);
@@ -105,9 +149,39 @@ export function findStates(html: string, css: CssModel, ad?: AdFiles): States {
       }
       for (const k of model.keyframes) {
         if (k.frames.some((fr) => fr.decls.some((d) => d.prop === 'visibility' && !HIDES.test(d.value.trim())))) showers.keyframes.push(k.name);
+        setters.keyframes[k.name] = [...new Set([...(setters.keyframes[k.name] ?? []), ...k.frames.flatMap((fr) => fr.decls.map((d) => d.prop))])];
       }
     },
-    script: (text, from, to) => scanScript(text, from, to, hits),
+    script: (text, from, to, file) => {
+      library = !!file && LIBRARY.test(file.split('/').pop() ?? '');
+      scanScript(text, from, to, hits);
+      const call = library ? null : LIBRARY_CALL.exec(text.slice(from, to));
+      if (call) setters.unknown.push(`${call[0].replace(/[\s.(]+$/, '')} in ${file ?? 'this HTML'}`);
+      library = false;
+    },
+    tag: (tag) => {
+      const src = tag.attrs.get('src')?.value.trim();
+      if (tag.name !== 'script' || !src || !JS_TYPE.test(tag.attrs.get('type')?.value.trim() || 'text/javascript')) return;
+      let url: URL;
+      try {
+        url = new URL(src, 'https://ad.invalid/ad/');
+      } catch {
+        return;
+      }
+      if (url.origin === 'https://ad.invalid') return; // the ad's own file, read with the rest
+      if (url.hostname === 'creative.stackadapt.com' && url.pathname === '/js/iframe-ct.js') return; // reports clicks, sets no style
+      if (url.hostname === 'creative.stackadapt.com' && url.pathname === '/js/param.js') {
+        // Its color_<id> parameters set background-color on the element with that id.
+        setters.scripts.push({ ref: null, prop: 'background-color', label: "StackAdapt's param.js (color_ parameters)" });
+        return;
+      }
+      if (url.hostname === 'stackadapttemp.s3.amazonaws.com' && url.pathname === '/cs-scripts/resizer.js') {
+        // StackAdapt Creative Studio's text fitting (v1.0, 2024-04-30): resizeText() sets font-size on the elements the ad's code passes it.
+        setters.scripts.push({ ref: null, prop: 'font-size', label: "StackAdapt's resizer.js (resizeText)" });
+        return;
+      }
+      setters.unknown.push(`${url.protocol === 'data:' ? 'a data: script' : `${url.hostname}${url.pathname}`} (another site's script)`);
+    },
   });
   const classes = changes.filter((c) => [...spacingRules, ...animated].some((sel) => hasClass(sel, c.name)));
   const unknown = [
@@ -117,12 +191,19 @@ export function findStates(html: string, css: CssModel, ad?: AdFiles): States {
     ...classes.filter((c) => c.ref === null && c.op === 'remove').map((c) => `${c.label} takes off ${c.name}`),
   ];
   showers.animators = animations.filter((a) => a.names.some((n) => showers.keyframes.includes(n))).map((a) => a.selector);
+  setters.animations = animations;
+  const changed = new Set(changes.map((c) => c.name));
+  for (const r of allRules) {
+    const parts = r.selector.split(',').filter((part) => !PSEUDO_ELEMENT.test(part) && waits(part, changed));
+    if (parts.length) setters.rules.push({ selector: parts.join(',').trim(), props: r.props });
+  }
   return {
     rules: [...new Set(rules)],
     styles: styles.filter((s) => s.ref !== null),
     classes: classes.filter((c) => c.ref !== null || c.op !== 'remove'),
     unknown,
     showers,
+    setters,
   };
 }
 

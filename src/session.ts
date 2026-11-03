@@ -175,7 +175,7 @@ export class Session {
     const report = staticAudit(this.html, css, undefined, this.pkg);
     const seen = await observe(this.frames, css, this.states()); // shows each page in turn, pausing animations
     const findings = [...report.findings, ...renderFindings(seen.boxes)];
-    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, showers: this.states().showers, incomplete: seen.incomplete });
+    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, showers: this.states().showers, setters: this.states().setters, incomplete: seen.incomplete });
     // Laid out while the frames restart: no fix is offered that moves text in a size no frame shows.
     const net = this.layoutNet();
     const html = this.html;

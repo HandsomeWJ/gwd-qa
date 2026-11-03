@@ -35,6 +35,18 @@ describe('staticAudit', () => {
     expect(report.copy.filter((c) => c.text === 'Tap')).toHaveLength(1);
   });
 
+  it('marks keyframes that nothing mentions but their own @keyframes rules as unused', () => {
+    const orphan = html.replace('  </style>', '    @keyframes kf-orphan {\n      0% {\n        left: 5px;\n      }\n      100% {\n        left: 5px;\n      }\n    }\n  </style>');
+    expect(staticAudit(orphan).unchanged.map((u) => [u.block.name, u.unused])).toEqual([
+      ['kf-orphan', true],
+      ['gwd-gen-hand_gwd-keyframes', false],
+      ['gwd-gen-hand_gwd-keyframes', false],
+    ]);
+    // A script that names it may run it.
+    const named = orphan.replace('</body>', '<script>var kf = "kf-orphan";</script>\n</body>');
+    expect(staticAudit(named).unchanged.find((u) => u.block.name === 'kf-orphan')?.unused).toBe(false);
+  });
+
   it('flags environments other than Non-Google Ad', () => {
     const dv360 = html.replace('content="gwd-genericad"', 'content="gwd-dv360"');
     expect(staticAudit(dv360).findings.find((f) => f.check === 'environment')?.message).toContain('gwd-dv360');

@@ -97,8 +97,89 @@ describe('findStates', () => {
   it('skips GWD\'s own runtime and an ad with no states', () => {
     const s = states(page(`  <style>.gwd-p-a { font-size: 16px; } .gwd-p-a:hover { color: blue; }</style>
   <script data-source="gwd-events-support.1.0.js">gwd.actions.events.setInlineStyle('x', 'font-size: 9px');</script>`));
-    expect(s).toEqual({ rules: [], styles: [], classes: [], unknown: [], showers: { rules: [], keyframes: [], animators: [], scripts: [] } });
+    expect(s).toEqual({
+      rules: [],
+      styles: [],
+      classes: [],
+      unknown: [],
+      showers: { rules: [], keyframes: [], animators: [], scripts: [] },
+      setters: { rules: [{ selector: '.gwd-p-a:hover', props: ['color'] }], scripts: [], classes: [], animations: [], keyframes: {}, unknown: [] },
+    });
     expect(hasStates(s)).toBe(false);
+  });
+
+  it('lists what could set a style once the ad runs: rules that wait for a state or a class a script changes, and styles scripts set', () => {
+    const s = states(page(`  <style>
+    .gwd-div-a:hover { transform: scale(1.1); }
+    .gwd-div-b { opacity: 0.5; }
+    .gwd-div-c:first-child, .gwd-div-c::before, .gwd-div-c:hover::after { opacity: 1; }
+    .on .gwd-div-d { left: 10px; }
+    .gwd-div-e:not(:focus), .gwd-div-f { color: red; }
+  </style>
+  <script>
+    gwd.auto_click = function(event) {
+      gwd.actions.events.setInlineStyle('SA_a_1', 'transform: none; opacity: 1;');
+      document.getElementById('SA_b_1').style.webkitTransform = 'none';
+      document.getElementById('SA_c_1').style.setProperty('left', '0px');
+      document.getElementById('SA_d_1').classList.add('on');
+      event.target.style.cssText = 'top: 0px';
+    };
+  </script>`));
+    expect(s.setters?.rules).toEqual([
+      { selector: '.gwd-div-a:hover', props: ['transform'] },
+      { selector: '.on .gwd-div-d', props: ['left'] },
+      { selector: '.gwd-div-e:not(:focus)', props: ['color'] },
+    ]);
+    expect(s.setters?.scripts.map((x) => [x.ref, x.prop])).toEqual([
+      ['SA_a_1', 'transform'],
+      ['SA_a_1', 'opacity'],
+      ['SA_b_1', '-webkit-transform'],
+      ['SA_c_1', 'left'],
+      [null, 'top'],
+    ]);
+    expect(s.setters?.unknown).toEqual([]);
+  });
+
+  it("lists the style changes it cannot read: computed values, library calls, other sites' scripts", () => {
+    const s = states(page(`  <script src="https://creative.stackadapt.com/js/iframe-ct.js"></script>
+  <script src="https://cdn.example.com/resizer.js"></script>
+  <script src="jquery.min.js"></script>
+  <script src="own.js"></script>
+  <script>
+    function move(el, x, name, prop) {
+      el.style.transform = 'translate(' + x + 'px)';
+      el.classList.add(name);
+      el.style[prop] = '0';
+      el.setAttribute('style', name);
+      el.getAttribute('style');
+      var o = el.style.opacity;
+      if (el.className === 'x') return;
+    }
+  </script>
+  <script src="https://creative.stackadapt.com/js/param.js"></script>
+  <script src="https://stackadapttemp.s3.amazonaws.com/cs-scripts/resizer.js"></script>
+  <script>
+    gwd.auto_over = function(event) {
+      gwd.actions.events.setInlineStyle('SA_x_1, opacity: 0;');
+    };
+  </script>`), {
+      'Ad/jquery.min.js': 'function css(e,n,v){e.style[n]=v;e.className=v}',
+      'Ad/own.js': "$('#SA_a_1').css('opacity', 1); gsap.to('#SA_b_1', { x: 10 });",
+    });
+    expect(s.setters?.unknown).toEqual([
+      "cdn.example.com/resizer.js (another site's script)",
+      '.css in Ad/own.js',
+      'style.transform on el in move, with a value only known while the ad runs',
+      'classList.add on el in move, with a value only known while the ad runs',
+      'style[…] on el in move, with a value only known while the ad runs',
+      'setAttribute on el in move, with a value only known while the ad runs',
+    ]);
+    // StackAdapt's param.js sets background-color on elements its color_ parameters name, and resizer.js font-size
+    // on those the ad passes it. GWD's setInlineStyle() with no styles string sets nothing.
+    expect(s.setters?.scripts).toEqual([
+      { ref: null, prop: 'background-color', label: "StackAdapt's param.js (color_ parameters)" },
+      { ref: null, prop: 'font-size', label: "StackAdapt's resizer.js (resizeText)" },
+    ]);
   });
 
   it('lists what could show a hidden element: rules and keyframes that set visibility, and scripts that set it or change classes', () => {
