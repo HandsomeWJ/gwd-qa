@@ -9,7 +9,8 @@ export function renderFindings(boxes: Box[]): Finding[] {
   for (const b of boxes) {
     const where = { size: b.frame, ...(b.page ? { page: b.page } : {}), target: b.target };
     if (b.type) {
-      const { fontSize, scale } = b.type;
+      // Text hidden when measured is judged where the timeline shows it, when it does.
+      const { fontSize, scale } = b.type.hidden && b.type.shown ? b.type.shown : b.type;
       const px = Math.round(fontSize * scale * 100) / 100;
       // GWD's fitting only ever shrinks text, so below 8px before it is below 8px after it too.
       if (b.fit === 'missing' && px >= 8 && (b.type.onScreen || b.type.moves)) {
@@ -18,8 +19,9 @@ export function renderFindings(boxes: Box[]): Finding[] {
         const hint = scale < 0.999
           ? `It is ${+fontSize.toFixed(2)}px scaled by ${scale.toFixed(2)}. Scale its group to at least ${(Math.ceil((8 / fontSize) * 100) / 100).toFixed(2)}, raise its font-size to ${Math.ceil(8 / scale)}px in this size, or hide it in this size.`
           : `Raise its font-size to at least 8px in this size, or hide it in this size.`;
-        const hidden = b.type.hidden ? ' It is hidden right now, so this only matters if something shows it.' : '';
-        out.push({ check: 'type', level: 'fail', ...where, message: `"${b.text}" renders at ${px.toFixed(2)}px.${hidden}`, hint });
+        const hidden = !b.type.hidden ? '' : b.type.shown ? ' when it shows' : '';
+        const unseen = b.type.hidden && !b.type.shown ? ' It is hidden right now, so this only matters if something shows it.' : '';
+        out.push({ check: 'type', level: 'fail', ...where, message: `"${b.text}" renders at ${px.toFixed(2)}px${hidden}.${unseen}`, hint });
       } else if (px < 8) {
         out.push({ check: 'type', level: 'note', ...where, message: `"${b.text}" is ${px.toFixed(2)}px but sits off-canvas and never moves, so it is never visible.` });
       }

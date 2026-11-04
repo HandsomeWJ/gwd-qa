@@ -239,7 +239,7 @@ test('leaves text to you that its line-height would reach through a multiplier, 
   expect(detail).toBe('');
 });
 
-test('leaves text to you whose lines are not all one height, or whose font an animation changes', async ({ page, browser }) => {
+test('leaves text to you whose lines are not all one height, or whose font an animation changes, but not one that holds its own font', async ({ page, browser }) => {
   const css = [
     // An emoji and Chinese type that Arial lacks, each on one line of a wrapped text only.
     rule('.gwd-p-m', P(0, 'font-family: Arial; font-size: 14px')),
@@ -256,6 +256,14 @@ test('leaves text to you whose lines are not all one height, or whose font an an
     rule('.gwd-p-k', P(310, 'font-family: Arial; font-size: 14px')),
     rule('.gwd-span-k', 'color: rgb(200, 0, 0)'),
     rule('.gwd-play-animation .gwd-span-k', 'animation: 0.5s linear 4s 1 normal forwards grow'),
+    // Keyframes that hold a font-size throughout, as GWD writes them: the text's own, which changes
+    // nothing, and another, which changes it when the animation starts.
+    rule('.gwd-p-h', P(360, 'font-family: Arial; font-size: 14px')),
+    '    @keyframes hold-own {\n      0% {\n        font-size: 14px;\n        transform: translate3d(0px, 0px, 0px);\n      }\n      100% {\n        font-size: 14px;\n        transform: translate3d(2px, 0px, 0px);\n      }\n    }\n',
+    rule('.gwd-play-animation .gwd-p-h', 'animation: 0.5s linear 4s 1 normal forwards hold-own'),
+    rule('.gwd-p-d', P(410, 'font-family: Arial; font-size: 14px')),
+    '    @keyframes hold-other {\n      0% {\n        font-size: 16px;\n        transform: translate3d(0px, 0px, 0px);\n      }\n      100% {\n        font-size: 16px;\n        transform: translate3d(2px, 0px, 0px);\n      }\n    }\n',
+    rule('.gwd-play-animation .gwd-p-d', 'animation: 0.5s linear 4s 1 normal forwards hold-other'),
   ].join('');
   const html = ad(['300x250'], css, [[
     '<p class="gwd-p-m" id="SA_m_1">Fresh deals every single day for you 🔥 now</p>',
@@ -264,14 +272,18 @@ test('leaves text to you whose lines are not all one height, or whose font an an
     '<p class="gwd-p-o" id="SA_o_1">Some longer text that wraps onto lines</p>',
     '<p class="gwd-p-r" id="SA_r_1">Some longer text that wraps onto lines</p>',
     '<p class="gwd-p-k" id="SA_k_1">Save <span class="gwd-span-k" id="SA_k_2">50%</span> on everything today</p>',
+    '<p class="gwd-p-h" id="SA_h_1">Some longer text that wraps onto lines</p>',
+    '<p class="gwd-p-d" id="SA_d_1">Some longer text that wraps onto lines</p>',
   ].join('\n        ')]).replace('</body>', "  <script>window.addEventListener('load', () => setTimeout(() => document.getElementById('SA_r_1').animate([{ fontSize: '14px' }, { fontSize: '24px' }], { duration: 500, delay: 4000, fill: 'forwards' }), 100));</script>\n</body>");
   // Which characters draw in a fallback font depends on the fonts installed: the layout comparison
   // checks that nothing moved, whatever the machine.
   const { detail, manual, banner } = await applyAndCompare(page, browser, html, [[300, 250]]);
   expect(banner).toContain('exactly where they were');
-  for (const cls of ['gwd-p-f', 'gwd-p-o', 'gwd-p-r', 'gwd-span-k']) expect(manual).toContain(`.${cls}: an animation changes its font while the ad runs`);
+  for (const cls of ['gwd-p-f', 'gwd-p-o', 'gwd-p-r', 'gwd-span-k', 'gwd-p-d']) expect(manual).toContain(`.${cls}: an animation changes its font while the ad runs`);
+  expect(manual).not.toContain('.gwd-p-h');
+  expect(detail).toContain('.gwd-p-h');
   expect(manual).toContain('.gwd-p-k: span#SA_k_2 inside it takes its line-height and has its font changed by an animation');
-  for (const cls of ['gwd-p-f', 'gwd-p-o', 'gwd-p-r', 'gwd-p-k']) expect(detail).not.toContain(`.${cls}`);
+  for (const cls of ['gwd-p-f', 'gwd-p-o', 'gwd-p-r', 'gwd-p-k', 'gwd-p-d']) expect(detail).not.toContain(`.${cls}`);
 });
 
 test('leaves a class to you where a page it sits on never showed in a size', async ({ page, browser }) => {

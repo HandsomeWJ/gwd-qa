@@ -5,7 +5,7 @@
 import { lastCompound, singleClass, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
 import { looksSame, MOVES_NOTHING, propKey } from './props';
 import { gwdElements, gwdRefNames, type States } from './states';
-import { hasDirectText, label } from './static';
+import { hasDirectText, heldInBlock, label } from './static';
 import type { Box, Inheritor } from './types';
 
 export interface AdFrame {
@@ -249,13 +249,12 @@ export function scaleOf(win: Window, el: Element): number {
   return Math.hypot(m.a, m.b);
 }
 
-/** Invisible through opacity 0 or visibility: hidden on itself or an ancestor. */
+/**
+ * Invisible: not visible, or below 2% opacity with everything it sits in, as text is at the 0.01 a
+ * fade starts at.
+ */
 function hiddenNow(win: Window, el: Element): boolean {
-  if (win.getComputedStyle(el).visibility === 'hidden') return true;
-  for (let n: Element | null = el; n; n = n.parentElement) {
-    if (parseFloat(win.getComputedStyle(n).opacity) < 0.01) return true;
-  }
-  return false;
+  return shownOpacity(win, el) < 0.02;
 }
 
 function onScreen(win: Window, el: Element): boolean {
@@ -464,14 +463,39 @@ function inheritors(win: Window, el: Element, byEl: Map<Element, Box>, own: Map<
 const SPACING_KEYFRAME = /^(font|lineHeight)/;
 
 /**
+ * Whether an animation changes the font or line-height of its element: it animates one, unless it
+ * holds each throughout at a value that looks the same as the element's own (read with its effect
+ * taken off for a moment), which changes nothing at any moment. GWD writes such values into every
+ * keyframe.
+ */
+function changesSpacing(n: Element, a: Animation): boolean {
+  const effect = a.effect as KeyframeEffect | null;
+  const kfs = effect?.getKeyframes() ?? [];
+  const spacing = propsOf(kfs).filter((p) => SPACING_KEYFRAME.test(p));
+  if (!spacing.length) return false;
+  const held = heldProps(kfs);
+  if (spacing.some((p) => !held.includes(p))) return true;
+  a.effect = null;
+  try {
+    const own = n.ownerDocument.defaultView!.getComputedStyle(n) as unknown as Record<string, string>;
+    return spacing.some((p) => !looksSame(String(kfs[0][p]), own[p]));
+  } finally {
+    a.effect = effect;
+  }
+}
+
+/**
  * Whether an animation on the element or an element it sits in changes its font or line-height,
  * now or later in the timeline (one that has not started is not always running yet), so that what
  * was measured holds at one moment only.
  */
 function fontAnimated(el: Element, ctx: Context): boolean {
   for (let n: Element | null = el; n; n = n.parentElement) {
-    if (n.getAnimations().some((a) => propsOf((a.effect as KeyframeEffect).getKeyframes()).some((p) => SPACING_KEYFRAME.test(p)))) return true;
+    if (n.getAnimations().some((a) => changesSpacing(n!, a))) return true;
     if (ctx.animators.some((s) => matches(n!, s)) || ctx.stateAnimated(n)) return true;
+    // Keyframes that only hold a font or line-height are judged above where they run; one that could start later may hold another.
+    const running = n.getAnimations().map((a) => (a as CSSAnimation).animationName);
+    if (ctx.holders.some((h) => matches(n!, h.selector) && h.names.some((name) => !running.includes(name)))) return true;
   }
   return false;
 }
@@ -523,7 +547,10 @@ interface Context {
   claimed: WeakMap<Element, Set<number>>; // the blocks each element is already probed under
   specs: ProbeSpec[];
   /** The selectors (their last compound) that run keyframes setting a font property or line-height. */
+  /** Elements rules can run keyframes on that change a font or line-height, whatever state they wait for. */
   animators: string[];
+  /** The same, for keyframes that hold each font property or line-height they set at one value throughout. */
+  holders: { selector: string; names: string[] }[];
   /** Whether a script puts a class on the element that runs such keyframes, as when it is clicked. */
   stateAnimated: (el: Element) => boolean;
 }
@@ -679,6 +706,9 @@ function boxesIn(f: AdFrame, scope: Element, multi: boolean, ctx: Context): Box[
     byEl.set(el, box);
     out.push(box);
   }
+  // Text hidden now is judged where the timeline shows it.
+  const hidden = [...byEl].filter(([, b]) => b.type?.hidden).map(([el]) => el);
+  for (const [el, shown] of shownAt(win, hidden)) byEl.get(el)!.type!.shown = shown;
   const own = new Map<Element, string>();
   for (const [el, box] of byEl) {
     if (box.runtime || !box.classes.length) continue;
@@ -686,6 +716,50 @@ function boxesIn(f: AdFrame, scope: Element, multi: boolean, ctx: Context): Box[
     if (TEXT_TAGS.has(box.tag) && !box.declared.lineHeight) askProbes(win, el, box, ctx);
   }
   return out;
+}
+
+/** How visible it is: its opacity times that of everything it sits in, or 0 where it or any of them is not displayed, or it is not visible. */
+function shownOpacity(win: Window, el: Element): number {
+  if (win.getComputedStyle(el).visibility !== 'visible') return 0;
+  let opacity = 1;
+  for (let n: Element | null = el; n; n = parentOf(n)) {
+    const cs = win.getComputedStyle(n);
+    if (cs.display === 'none') return 0;
+    opacity *= parseFloat(cs.opacity);
+  }
+  return opacity;
+}
+
+/**
+ * Where the page's timeline shows each element fully: its font-size and scale at the last moment it is
+ * as visible as it ever gets, at least half, with every animation set to each moment in turn (up to
+ * 60 s; finished ones hold their fill). An element the timeline never shows is left out, as a script
+ * or a state may show it. The animations are put back as they were.
+ */
+function shownAt(win: Window, els: Element[]): Map<Element, { fontSize: number; scale: number }> {
+  const best = new Map<Element, { fontSize: number; scale: number; opacity: number }>();
+  if (!els.length) return new Map();
+  const anims = els[0].ownerDocument.getAnimations();
+  const before = anims.map((a) => ({ a, time: a.currentTime, running: a.playState === 'running' }));
+  anims.forEach((a) => a.pause());
+  const ends = anims.map((a) => Number(a.effect?.getComputedTiming().endTime ?? 0)).filter(Number.isFinite);
+  const last = Math.min(60_000, Math.max(0, ...ends));
+  const step = Math.max(50, last / 240);
+  const times = [...Array(Math.floor(last / step) + 1).keys()].map((i) => i * step).concat(last);
+  for (const t of times) {
+    anims.forEach((a) => { a.currentTime = t; });
+    for (const el of els) {
+      const opacity = shownOpacity(win, el);
+      const prev = best.get(el);
+      if (opacity < 0.5 || (prev && opacity < prev.opacity - 0.01)) continue;
+      best.set(el, { fontSize: parseFloat(win.getComputedStyle(el).fontSize), scale: scaleOf(win, el), opacity: Math.max(opacity, prev?.opacity ?? 0) });
+    }
+  }
+  before.forEach(({ a, time, running }) => {
+    if (time !== null) a.currentTime = time;
+    if (running) a.play();
+  });
+  return new Map([...best].map(([el, { fontSize, scale }]) => [el, { fontSize, scale }]));
 }
 
 /** The element and everything in it, open shadow roots included. */
@@ -883,12 +957,20 @@ export async function observe(frames: AdFrame[], css: CssModel, states?: States)
     }))
     .filter((fb) => fb.rules.length);
   const spacingKeyframes = new Set(css.keyframes.filter((k) => k.frames.some((fr) => fr.decls.some((d) => /^(font(-|$)|line-height$)/.test(d.prop)))).map((k) => k.name));
-  const animators = css.rules
-    .filter((r) => r.decls.some((d) => /^(-webkit-)?animation(-name)?$/.test(d.prop) && d.value.split(/[\s,]+/).some((name) => spacingKeyframes.has(name))))
+  // Every block of the name holds each font property and line-height it sets at one value throughout.
+  const holds = (name: string) => css.keyframes.filter((k) => k.name === name).every((k) => {
+    const held = heldInBlock(k);
+    return k.frames.every((fr) => fr.decls.every((d) => !/^(font(-|$)|line-height$)/.test(d.prop) || held.includes(d.prop)));
+  });
+  const runs = css.rules.flatMap((r) => {
+    const names = r.decls.filter((d) => /^(-webkit-)?animation(-name)?$/.test(d.prop)).flatMap((d) => d.value.split(/[\s,]+/)).filter((name) => spacingKeyframes.has(name));
     // the element it styles, whatever state (playing, clicked) the rest of the selector waits for
-    .flatMap((r) => r.selector.split(',').map((sel) => lastCompound(sel).replace(/::?[a-z-]+(\([^)]*\))?/gi, '') || '*'));
+    return names.length ? r.selector.split(',').map((sel) => ({ selector: lastCompound(sel).replace(/::?[a-z-]+(\([^)]*\))?/gi, '') || '*', names })) : [];
+  });
+  const animators = runs.filter((x) => !x.names.every(holds)).map((x) => x.selector);
+  const holders = runs.filter((x) => x.names.every(holds));
   // A class a script puts on an element (one it does not name: any element) that runs such keyframes.
-  const named = (states?.classes ?? []).filter((c) => c.op !== 'remove' && animators.some((a) => a.split(/(?=[.#:[])/).includes(`.${c.name}`)));
+  const named = (states?.classes ?? []).filter((c) => c.op !== 'remove' && runs.some((a) => a.selector.split(/(?=[.#:[])/).includes(`.${c.name}`)));
   const stateAnimated = (el: Element) => named.some((c) => c.ref === null || gwdRefNames(el, c.ref));
   const claimed = new WeakMap<Element, Set<number>>();
   const results = await Promise.all(frames.map(async (f) => {
@@ -896,7 +978,7 @@ export async function observe(frames: AdFrame[], css: CssModel, states?: States)
     const boxes: Box[] = [];
     const safety: SafetyMismatch[] = [];
     let checked = 0;
-    const ctx: Context = { css: live, blocks, fit: fittingOf(doc, win), claimed, specs: [], animators, stateAnimated };
+    const ctx: Context = { css: live, blocks, fit: fittingOf(doc, win), claimed, specs: [], animators, holders, stateAnimated };
     const visit = await visitPages(f, (scope, multi) => {
       boxes.push(...boxesIn(f, scope, multi, ctx));
       const s = keyframeSafety(f, scope, multi, states); // pauses animations, so it goes after the boxes

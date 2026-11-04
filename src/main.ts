@@ -306,6 +306,10 @@ function failing(check: CheckId): Finding[] {
   return result!.findings.filter((f) => f.check === check && f.level === 'fail' && !(check === 'type' && isDisclaimer(f.target)));
 }
 
+/** Whether a planned fix of another check clears this finding too: a held top or left the keyframes fix, still offered, deletes. */
+const cleared = (f: Finding) => result!.plan.fixes.some((x) => x.check === 'keyframes')
+  && (result!.plan.clears ?? []).some((c) => c.check === f.check && c.target === f.target && c.prop === f.prop);
+
 // The checks read from the ad as it renders in the frames (src/audit/render.ts), on each page.
 const RENDERED = new Set<CheckId>(['type', 'lineHeight', 'buttonPadding', 'buttonColor', 'marginBlock']);
 
@@ -426,7 +430,7 @@ function renderChecklist() {
     const fails = failing(c.id);
     const exempted = c.id === 'type' ? exempt().map((f) => ({ ...f, hint: undefined })) : [];
     const notes = r.findings.filter((f) => f.check === c.id && f.level === 'note');
-    const fixable = r.plan.fixes.some((f) => f.check === c.id);
+    const fixable = r.plan.fixes.some((f) => f.check === c.id) || fails.some(cleared);
     const targets = new Set(fails.map((f) => f.target)).size;
     const pill = { fail: '<span class="pill fail">Fail</span>', review: '<span class="pill info">Review</span>', pass: '<span class="pill pass">Pass</span>' }[verdict(c.id)];
     const extra = [
@@ -528,7 +532,7 @@ function renderFixes() {
     ...envFails.map((f) => ({ check: f.check, note: f.message })),
     ...(typeFails.length ? [{ check: 'type' as const, note: 'Text below 8px changes the design, so it is never fixed automatically; see the Type size row for each text and how to fix it.' }] : []),
     ...r.plan.manual.map((m) => ({ check: m.check, note: m.detail })),
-    ...(failing('position').length ? [{ check: 'position' as const, note: 'Keyframes move elements with top or left; re-animate that movement with transform: translate3d in GWD.' }] : []),
+    ...(failing('position').some((f) => !cleared(f)) ? [{ check: 'position' as const, note: 'Keyframes move elements with top or left; re-animate that movement with transform: translate3d in GWD.' }] : []),
   ];
   // Grouped under their checklist items, in the checklist's order.
   const groups = CHECKS.filter((c) => decisions.some((d) => d.check === c.id)).map((c) => {

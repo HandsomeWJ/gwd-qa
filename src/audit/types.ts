@@ -42,6 +42,7 @@ export interface Finding {
   target: string; // element or keyframes label
   message: string;
   hint?: string; // how to fix it by hand, for problems that are not fixed automatically
+  prop?: string; // the property a source-level finding is about, such as the left a keyframes block animates
   unknown?: boolean; // a note where the check could not decide, so the user must look
 }
 
@@ -61,7 +62,15 @@ export interface Box {
   classes: string[];
   text: string; // its text, whitespace collapsed, at most 40 characters
   /** Set for elements with their own text that render. */
-  type?: { fontSize: number; scale: number; onScreen: boolean; moves: boolean; hidden: boolean };
+  type?: {
+    fontSize: number;
+    scale: number;
+    onScreen: boolean;
+    moves: boolean;
+    hidden: boolean;
+    /** For text hidden when measured: its font-size and scale where the ad's timeline last shows it fully, if it does. */
+    shown?: { fontSize: number; scale: number };
+  };
   /** Values its own CSS declares (inline style or a rule that applies in this frame); '' when none. */
   declared: { lineHeight: string; color: string; width: string; height: string; marginBlockStart: string; marginBlockEnd: string };
   computed: {

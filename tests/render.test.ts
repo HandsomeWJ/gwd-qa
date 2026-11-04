@@ -23,6 +23,19 @@ describe('renderFindings', () => {
     expect(renderFindings([box({ declared: { lineHeight: '9px' }, fit: 'missing', type: { ...type, onScreen: false } })])).toEqual([]);
   });
 
+  it('judges text hidden when measured where the timeline shows it, and says so where it never does', () => {
+    const type = { fontSize: 8, scale: 0.75, onScreen: true, moves: false, hidden: true };
+    const at = (shown?: { fontSize: number; scale: number }) => renderFindings([box({ text: 'Learn', declared: { lineHeight: '9px' }, type: { ...type, ...(shown ? { shown } : {}) } })]);
+    // a pop-in from 0.75 that settles at 8px
+    expect(at({ fontSize: 8, scale: 1 })).toEqual([]);
+    const small = at({ fontSize: 8, scale: 0.9 })[0];
+    expect(small.message).toBe('"Learn" renders at 7.20px when it shows.');
+    expect(small.hint).toBe('It is 8px scaled by 0.90. Scale its group to at least 1.00, raise its font-size to 9px in this size, or hide it in this size.');
+    expect(at()[0].message).toBe('"Learn" renders at 6.00px. It is hidden right now, so this only matters if something shows it.');
+    // one that shows smaller than it was measured
+    expect(renderFindings([box({ text: 'Shrinks', declared: { lineHeight: '9px' }, type: { ...type, scale: 1, shown: { fontSize: 8, scale: 0.5 } } })])[0].message).toBe('"Shrinks" renders at 4.00px when it shows.');
+  });
+
   it('skips declaration checks on word spans a text effect makes at runtime', () => {
     expect(renderFindings([box({ tag: 'span', runtime: true, declared: { marginBlockStart: '' } })])).toEqual([]);
   });

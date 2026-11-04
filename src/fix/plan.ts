@@ -9,7 +9,7 @@ import type { HiddenSubtree, OffCanvas, SafetyMismatch } from '../audit/observe'
 import { MOVES_NOTHING, propKey } from '../audit/props';
 import { STACKADAPT_SCRIPTS, stackAdaptTag, type Spot, type StackAdaptScript } from '../audit/stackadapt';
 import { refStart, type Setters, type Showers } from '../audit/states';
-import { FADE_START, type StaticReport, type Subjects } from '../audit/static';
+import { FADE_START, POSITION, type StaticReport, type Subjects } from '../audit/static';
 import type { Box, CheckId, Inheritor } from '../audit/types';
 import { describeSize, parseSize } from '../sizes';
 
@@ -33,6 +33,8 @@ export interface FixPart {
 export interface FixPlan {
   fixes: PlannedFix[];
   manual: { check: CheckId; detail: string }[];
+  /** Findings of other checks a fix clears as well: the top or left a keyframes block holds, which deleting it ends. */
+  clears?: { check: CheckId; target: string; prop: string }[];
 }
 
 export interface PlanInput {
@@ -97,6 +99,7 @@ function paintOnlyTransition(value: string): boolean {
 class Planner {
   readonly fixes: PlannedFix[] = [];
   readonly manual: FixPlan['manual'] = [];
+  readonly clears: NonNullable<FixPlan['clears']> = [];
   /** Declarations some fix deletes; new lines never anchor to them. */
   private readonly deleted = new Set<Decl>();
   private readonly blockRules = new Map<string, StyleRule[]>();
@@ -731,6 +734,8 @@ class Planner {
     const roots = new Set<string>();
     const drop = (block: KeyframesRule, props: string[]) => {
       blocks++;
+      // Position animation flags each block that sets a top or left; one it holds goes with the rest.
+      for (const prop of props.filter((p) => POSITION.includes(p))) this.clears.push({ check: 'position', target: `${block.name}${block.media ? ` (${block.media})` : ''}`, prop });
       for (const frame of block.frames) {
         for (const d of frame.decls.filter((x) => props.includes(x.prop))) {
           edits.push(removeDecl(this.html, d));
@@ -799,7 +804,10 @@ class Planner {
       drop(block, gone);
     }
     const where = hidden ? `, ${hidden} of them on elements that never show` : '';
-    this.add('keyframes', 'Delete keyframe properties that never change', `${count} declarations in ${blocks} keyframes blocks${where}`, edits);
+    // Counted as the Position animation row counts its items: one per keyframes block.
+    const items = new Set(this.clears.map((c) => c.target)).size;
+    const moved = items ? `, which also clears ${items} Position animation item${items === 1 ? '' : 's'}` : '';
+    this.add('keyframes', 'Delete keyframe properties that never change', `${count} declarations in ${blocks} keyframes blocks${where}${moved}`, edits);
     const fix = this.fixes.find((f) => f.check === 'keyframes');
     if (fix && roots.size) fix.hidden = [...roots];
   }
@@ -897,5 +905,5 @@ export function planFixes(input: PlanInput): FixPlan {
   p.keyframes();
   p.stackAdapt();
   p.cssValues(); // last: it skips declarations the other fixes rewrite
-  return { fixes: p.fixes, manual: p.manual };
+  return { fixes: p.fixes, manual: p.manual, clears: p.clears };
 }

@@ -577,7 +577,8 @@ describe('keyframes and fades', () => {
 
   it('deletes the values of keyframes nothing runs, unless a style it cannot read could start them', () => {
     const orphan = html.replace('  </style>', '    @keyframes kf-orphan {\n      0% {\n        left: 5px;\n      }\n      100% {\n        left: 5px;\n      }\n    }\n  </style>');
-    expect(plan(orphan, [], frames).fix('keyframes')?.detail).toBe('6 declarations in 3 keyframes blocks');
+    // kf-orphan holds a left, so Position animation clears with it
+    expect(plan(orphan, [], frames).fix('keyframes')?.detail).toBe('6 declarations in 3 keyframes blocks, which also clears 1 Position animation item');
     const unread = plan(orphan, [], frames, [], { setters: { ...NO_SETTERS, unknown: ['style.animation on el, with a value only known while the ad runs'] } });
     expect(unread.fix('keyframes')).toBeUndefined();
     expect(unread.p.manual.map((m) => m.detail)).toContain("kf-orphan: what it runs on is not in the HTML, so what else sets its styles was not checked, which the value it holds now overrides, so deleting left could change how it looks; delete it in GWD only if that is wanted.");
@@ -671,6 +672,18 @@ describe('keyframes and fades', () => {
       // a page that never showed could hold what shows it
       expect(left(run(none, undefined, ['300x250']))).toContain(hand);
     });
+  });
+
+  it('counts a held top or left it deletes as clearing Position animation', () => {
+    // the base block holds a left instead of a transform
+    const held = html.replace('        transform: translate3d(-1px, -114px, 0px);\n        animation-timing-function: linear;\n      }\n      100% {\n        visibility: hidden;\n        opacity: 0.01;\n        transform: translate3d(-1px, -114px, 0px);',
+      '        left: 12px;\n        animation-timing-function: linear;\n      }\n      100% {\n        visibility: hidden;\n        opacity: 0.01;\n        left: 12px;');
+    const r = plan(held, [], frames, []);
+    expect(r.p.clears).toEqual([{ check: 'position', target: hand, prop: 'left' }]);
+    expect(r.fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks, which also clears 1 Position animation item');
+    expect(staticAudit(held).findings.filter((f) => f.check === 'position')).toEqual([expect.objectContaining({ target: hand, prop: 'left' })]);
+    // not where it stays
+    expect(plan(held, [], frames, [{ animation: hand, size: '300x600', prop: 'left' }]).p.clears).toEqual([]);
   });
 
   describe('what else sets the value held', () => {

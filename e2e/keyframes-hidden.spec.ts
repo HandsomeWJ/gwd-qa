@@ -59,7 +59,8 @@ const keyframesFix = (page: Page) => page.locator('#fixes .fixlist li', { hasTex
 
 test('deletes keyframe values on an element that never shows, without changing anything', async ({ page }) => {
   await load(page, ghostAd());
-  await expect(keyframesFix(page).locator('.detail')).toHaveText('6 declarations in 2 keyframes blocks, 1 of them on elements that never show');
+  // kf-ghost holds a top, so Position animation clears with it
+  await expect(keyframesFix(page).locator('.detail')).toHaveText('6 declarations in 2 keyframes blocks, 1 of them on elements that never show, which also clears 1 Position animation item');
   await expect(page.locator('#fixes .manual')).not.toContainText('kf-ghost');
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();

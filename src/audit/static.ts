@@ -5,10 +5,25 @@ import { checkCssValues, cssSupports, describeIssue, type AdFiles, type CssValid
 import { stackAdaptAudit, stackAdaptFindings, type StackAdaptReport } from './stackadapt';
 import type { CopyItem, Finding } from './types';
 
-const POSITION = ['top', 'left', 'right', 'bottom'];
+export const POSITION = ['top', 'left', 'right', 'bottom'];
 
 /** Where text that fades in must start: an opacity below it (0, 0.001) is flagged and raised to it. */
 export const FADE_START = '0.01';
+
+/**
+ * The properties a keyframes block holds at one value throughout (animation-timing-function aside):
+ * the first and last keyframes set them and every keyframe that sets them sets that value, as a
+ * keyframe between them that leaves one out interpolates between equal values.
+ */
+export function heldInBlock(block: KeyframesRule): string[] {
+  if (block.frames.length < 2) return [];
+  const frames = block.frames.map((f) => new Map(f.decls.map((d) => [d.prop, d.value])));
+  const props = [...new Set(frames.flatMap((f) => [...f.keys()]))].filter((p) => p !== 'animation-timing-function');
+  const at = (offset: number) => block.frames.flatMap((f, i) => (f.selector.split(',').some((s) => frameOffset(s) === offset) ? [i] : []));
+  const [starts, ends] = [at(0), at(100)];
+  const values = (p: string) => frames.filter((f) => f.has(p)).map((f) => f.get(p));
+  return props.filter((p) => starts.some((i) => frames[i].has(p)) && ends.some((i) => frames[i].has(p)) && new Set(values(p)).size === 1);
+}
 
 /** An opacity value as a number, percentages included; NaN for one it cannot read. */
 const opacityValue = (v: string) => (/%\s*$/.test(v) ? parseFloat(v) / 100 : parseFloat(v));
@@ -172,20 +187,13 @@ export function staticAudit(html: string, css: CssModel = parseCss(html), valid:
     const frames = block.frames.map((f) => new Map(f.decls.map((d) => [d.prop, d])));
     const props = [...new Set(frames.flatMap((f) => [...f.keys()]))].filter((p) => p !== 'animation-timing-function');
     for (const p of props.filter((p) => POSITION.includes(p))) {
-      findings.push({ check: 'position', level: 'fail', target: block.name + where, message: `Animates ${p}; move it with transform: translate3d instead.` });
+      findings.push({ check: 'position', level: 'fail', target: block.name + where, prop: p, message: `Animates ${p}; move it with transform: translate3d instead.` });
     }
-    if (frames.length > 1) {
-      // A property holds one value throughout where the first and last keyframes set it and every keyframe that
-      // sets it sets that value: a keyframe between them that leaves it out interpolates between equal values.
-      const at = (offset: number) => block.frames.flatMap((f, i) => (f.selector.split(',').some((s) => frameOffset(s) === offset) ? [i] : []));
-      const [starts, ends] = [at(0), at(100)];
-      const values = (p: string) => frames.filter((f) => f.has(p)).map((f) => f.get(p)!.value);
-      const same = props.filter((p) => starts.some((i) => frames[i].has(p)) && ends.some((i) => frames[i].has(p)) && new Set(values(p)).size === 1);
-      if (same.length) {
-        unchanged.push({ block, props: same, subjects: subjectsOf(block.name), unused: !mentioned(block.name) });
-        for (const p of same) {
-          findings.push({ check: 'keyframes', level: 'fail', target: block.name + where, message: `${p} never changes (${values(p)[0]}).` });
-        }
+    const same = heldInBlock(block);
+    if (same.length) {
+      unchanged.push({ block, props: same, subjects: subjectsOf(block.name), unused: !mentioned(block.name) });
+      for (const p of same) {
+        findings.push({ check: 'keyframes', level: 'fail', target: block.name + where, message: `${p} never changes (${frames.find((f) => f.has(p))!.get(p)!.value}).` });
       }
     }
     const first = [...block.frames].sort((a, b) => frameOffset(a.selector) - frameOffset(b.selector))[0];
