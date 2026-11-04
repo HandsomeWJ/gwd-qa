@@ -26,10 +26,10 @@ function patch(before: string, hunks: Hunk[]): string {
 describe('diffLines', () => {
   it('shows inserted and removed lines with context and line numbers', () => {
     const before = ['a {', '  top: 0px;', '  left: 0px;', '}', 'b {', '  opacity: 0;', '}'].join('\n');
-    const after = ['a {', '  top: 0px;', '  left: 0px;', '  line-height: 19px;', '}', 'b {', '  opacity: 0.001;', '}'].join('\n');
+    const after = ['a {', '  top: 0px;', '  left: 0px;', '  line-height: 19px;', '}', 'b {', '  opacity: 0.01;', '}'].join('\n');
     const hunks = diffLines(before, after, 1);
     expect(hunks.map((h) => h.lines.map((l) => `${l.kind}${l.old ?? '_'}/${l.new ?? '_'} ${l.text.trim()}`))).toEqual([
-      [' 3/3 left: 0px;', '+_/4 line-height: 19px;', ' 4/5 }', ' 5/6 b {', '-6/_ opacity: 0;', '+_/7 opacity: 0.001;', ' 7/8 }'],
+      [' 3/3 left: 0px;', '+_/4 line-height: 19px;', ' 4/5 }', ' 5/6 b {', '-6/_ opacity: 0;', '+_/7 opacity: 0.01;', ' 7/8 }'],
     ]);
     expect([hunks[0].old, hunks[0].new]).toEqual([3, 3]);
     expect(diffStats(hunks)).toEqual({ added: 2, removed: 1 });

@@ -673,9 +673,37 @@ describe('keyframes and fades', () => {
     });
   });
 
-  it('starts text fades at 0.001', () => {
+  describe('what else sets the value held', () => {
+    // The base block holds a background instead of a transform.
+    const painted = html.replace('        transform: translate3d(-1px, -114px, 0px);\n        animation-timing-function: linear;\n      }\n      100% {\n        visibility: hidden;\n        opacity: 0.01;\n        transform: translate3d(-1px, -114px, 0px);',
+      '        background-color: rgb(1, 2, 3);\n        animation-timing-function: linear;\n      }\n      100% {\n        visibility: hidden;\n        opacity: 0.01;\n        background-color: rgb(1, 2, 3);');
+    const param = { ...NO_SETTERS, scripts: [{ ref: null, prop: 'background-color', label: "StackAdapt's param.js (color_ parameters)" }] };
+
+    it("lets StackAdapt's color_ parameters set a background that looks as the element's own does", () => {
+      expect(plan(painted, [], frames, [], { setters: param }).fix('keyframes')?.detail).toBe('4 declarations in 2 keyframes blocks');
+      const differ = plan(painted, [], frames, [{ animation: hand, size: '300x600', prop: 'background-color' }], { setters: param });
+      expect(differ.p.manual.map((m) => m.detail)).toEqual([`${hand} in 300x600: deleting background-color would change how it looks, because those values differ from the element's own style.`]);
+      // another script that sets a background still keeps it
+      const other = { ...NO_SETTERS, scripts: [...param.scripts, { ref: null, prop: 'background-color', label: 'style.backgroundColor on event.target' }] };
+      expect(plan(painted, [], frames, [], { setters: other }).fix('keyframes')?.detail).toBe('2 declarations in 1 keyframes blocks');
+    });
+
+    it('lets a script that sets the very value held through, but not one that sets another', () => {
+      // the base block's own value; 300x250 holds another, so that block stays
+      const same = { ...NO_SETTERS, scripts: [{ ref: 'SA_group_20', prop: 'transform', value: 'translate3d(-1px, -114px, 0px) !important', label: 'setInlineStyle on SA_group_20' }] };
+      const r = plan(html, [], frames, [], { setters: same });
+      expect(r.fix('keyframes')?.detail).toBe('2 declarations in 1 keyframes blocks');
+      expect(r.p.manual.map((m) => m.detail)).toEqual([`${hand} in 300x250: setInlineStyle on SA_group_20 sets transform, which the value it holds now overrides, so deleting transform could change how it looks; delete it in GWD only if that is wanted.`]);
+      const other = { ...NO_SETTERS, scripts: [{ ...same.scripts[0], value: 'none' }] };
+      expect(plan(html, [], frames, [], { setters: other }).fix('keyframes')).toBeUndefined();
+    });
+  });
+
+  it('starts text fades at 0.01', () => {
+    const count = (s: string, value: string) => s.split(`opacity: ${value};`).length - 1;
     const out = plan(html, [], {}).applied('textFade');
-    expect(out.match(/opacity: 0\.001;/g)).toHaveLength(2);
+    expect(count(out, '0.01') - count(html, '0.01')).toBe(2);
+    expect(count(html, '0') - count(out, '0')).toBe(2);
   });
 });
 
@@ -703,10 +731,10 @@ describe('GWD groups', () => {
     expect(applied('lineHeight')).toContain('    @media (width: 300px) and (height: 600px) {\n      [data-gwd-group="Perks"] .gwd-span-two.gwd-grp-k2 {\n        line-height: 15px;\n      }\n    }');
   });
 
-  it('starts the group texts and what holds them at 0.001', () => {
+  it('starts the group texts and what holds them at 0.01', () => {
     const out = plan(html, [], {}).applied('textFade');
-    expect(out).toContain('    .gwd-div-cta {\n      position: absolute;\n      opacity: 0.001;');
-    expect(out).toContain('      line-height: 16px;\n      opacity: 0.001;');
+    expect(out).toContain('    .gwd-div-cta {\n      position: absolute;\n      opacity: 0.01;');
+    expect(out).toContain('      line-height: 16px;\n      opacity: 0.01;');
     expect(out).toContain('    .gwd-image-dot {\n      position: absolute;\n      opacity: 0;');
   });
 });

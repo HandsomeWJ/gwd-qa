@@ -9,7 +9,7 @@ import type { HiddenSubtree, OffCanvas, SafetyMismatch } from '../audit/observe'
 import { MOVES_NOTHING, propKey } from '../audit/props';
 import { STACKADAPT_SCRIPTS, stackAdaptTag, type Spot, type StackAdaptScript } from '../audit/stackadapt';
 import { refStart, type Setters, type Showers } from '../audit/states';
-import type { StaticReport, Subjects } from '../audit/static';
+import { FADE_START, type StaticReport, type Subjects } from '../audit/static';
 import type { Box, CheckId, Inheritor } from '../audit/types';
 import { describeSize, parseSize } from '../sizes';
 
@@ -68,6 +68,9 @@ const PAINT_ONLY = new Set([
 const INHERITED = /^(color|visibility|cursor|direction|quotes|hyphens|tabsize|whitespace|wordbreak|wordspacing|letterspacing|lineheight|overflowwrap|wordwrap|font.*|text.*|liststyle.*|captionside|bordercollapse|emptycells|webkittext.*)$/;
 // GWD components whose runtime sets no style on the element itself.
 const PASSIVE = new Set(['gwd-image', 'gwd-taparea']);
+// A value as a script or keyframe writes it, to compare: no !important, case or extra spaces.
+const bare = (v: string) => v.replace(/!\s*important\s*$/i, '').trim().replace(/\s+/g, ' ').toLowerCase();
+const sameValue = (a: string | undefined, b: string | undefined) => a !== undefined && b !== undefined && bare(a) === bare(b);
 // GWD's page structure, which stays put on an ad with one page, where no page transition runs.
 const STRUCTURE = new Set(['gwd-genericad', 'gwd-pagedeck', 'gwd-page']);
 // The words of a transition that are not the property it animates.
@@ -609,7 +612,7 @@ class Planner {
 
   textFade() {
     const decls = this.input.report.fadeDecls;
-    this.add('textFade', 'Start text fades at opacity 0.001', `${decls.length} declaration${decls.length === 1 ? '' : 's'}`, decls.map((d) => setValue(d, '0.001')));
+    this.add('textFade', `Start text fades at opacity ${FADE_START}`, `${decls.length} declaration${decls.length === 1 ? '' : 's'}`, decls.map((d) => setValue(d, FADE_START)));
   }
 
   /**
@@ -668,7 +671,7 @@ class Planner {
    * script, GWD's runtime, or a script this cannot read. The value the animation holds overrides it
    * today, so deleting that value would let it show. '' where nothing can.
    */
-  overridden(prop: string, subjects: Subjects | null): string {
+  overridden(prop: string, subjects: Subjects | null, accepts: (setter: { value?: string; label?: string }) => boolean = () => false): string {
     const s = this.input.setters;
     if (!s) return 'what else sets its styles was not checked';
     if (!subjects) return 'what it runs on is not in the HTML, so what else sets its styles was not checked';
@@ -683,7 +686,7 @@ class Planner {
     const rule = s.rules.find((r) => r.props.some((x) => propKey(x) === key) && (inherited || mayMatch(r.selector, ids, classes)));
     if (rule) return `${rule.selector} sets ${prop} in a state the ad can be put in`;
     const script = s.scripts.find((x) => {
-      if (propKey(x.prop) !== key) return false;
+      if (propKey(x.prop) !== key || accepts(x)) return false;
       const start = x.ref === null ? null : refStart(x.ref);
       return inherited || !start || start.deep || ids.has(start.id);
     });
@@ -765,15 +768,20 @@ class Planner {
       const gone: string[] = [];
       let onHidden = false;
       for (const p of props) {
-        const ms = [...strays, ...found.filter((m) => propKey(m.prop) === propKey(p))];
-        // Where a value differs from the element's own style, deleting it moves or restyles that element: safe only where
-        // it never shows, hidden or outside the ad.
+        const key = propKey(p);
+        const ms = [...strays, ...found.filter((m) => propKey(m.prop) === key)];
+        // Where a value looks different from the element's own style, deleting it moves or restyles that element: safe
+        // only where it never shows, hidden or outside the ad.
         const unseen = ms.map((m) => (this.neverShows(m.hidden) ? m.hidden!.path : this.staysOff(m.offCanvas, block.name) ? m.offCanvas!.path : null));
         if (unseen.includes(null)) {
           differ.push(p);
           continue;
         }
-        const why = this.overridden(p, subjects);
+        // A script that sets the very value held changes nothing once it is deleted. StackAdapt's color_ parameters
+        // then show the background color the feed sends for that element, which is what they are for; without
+        // them nothing changes.
+        const value = block.frames.flatMap((f) => f.decls).find((d) => d.prop === p)?.value;
+        const why = this.overridden(p, subjects, (x) => sameValue(x.value, value) || (x.label ?? '').startsWith("StackAdapt's param.js"));
         if (why) {
           kept.set(why, [...(kept.get(why) ?? []), p]);
           continue;

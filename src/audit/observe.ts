@@ -3,7 +3,7 @@
 // (Box) that the rendered checks and the fix planner read.
 
 import { lastCompound, singleClass, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
-import { MOVES_NOTHING, propKey } from './props';
+import { looksSame, MOVES_NOTHING, propKey } from './props';
 import { gwdElements, gwdRefNames, type States } from './states';
 import { hasDirectText, label } from './static';
 import type { Box, Inheritor } from './types';
@@ -265,6 +265,15 @@ function onScreen(win: Window, el: Element): boolean {
 
 function propsOf(kfs: Keyframe[]): string[] {
   return [...new Set(kfs.flatMap((k) => Object.keys(k).filter((p) => !KEYFRAME_META.includes(p))))];
+}
+
+/**
+ * Properties keyframes hold at one value throughout: the first and last keyframes set them and every
+ * keyframe that sets them sets that value (one between that leaves them out interpolates between equals).
+ */
+function heldProps(kfs: ComputedKeyframe[]): string[] {
+  const setAt = (p: string, offset: number) => kfs.some((k) => k.computedOffset === offset && k[p] !== undefined);
+  return propsOf(kfs).filter((p) => setAt(p, 0) && setAt(p, 1) && new Set(kfs.filter((k) => k[p] !== undefined).map((k) => k[p])).size === 1);
 }
 
 /** Whether the element or an ancestor has an animation that can carry it on screen. */
@@ -740,7 +749,8 @@ const parentOf = (el: Element): Element | null => el.parentElement ?? ((el.getRo
 function animatesPlace(el: Element): boolean {
   return el.getAnimations().some((a) => {
     const kfs = (a.effect as KeyframeEffect | null)?.getKeyframes() ?? [];
-    return propsOf(kfs).some((p) => !MOVES_NOTHING.test(propKey(p)) && !(kfs.every((k) => k[p] !== undefined) && new Set(kfs.map((k) => k[p])).size === 1));
+    const held = heldProps(kfs);
+    return propsOf(kfs).some((p) => !MOVES_NOTHING.test(propKey(p)) && !held.includes(p));
   });
 }
 
@@ -806,20 +816,33 @@ function offCanvasStart(f: AdFrame, win: Window, el: Element, multi: boolean, st
 const outside = (b: Box2, clip: Box2) => b.right <= clip.left - 1 || b.left >= clip.right + 1 || b.bottom <= clip.top - 1 || b.top >= clip.bottom + 1;
 
 /**
- * An unchanged keyframes value is only safe to delete when it equals the element's normal style, or
- * when the element never shows: hidden (see HiddenSubtree) or outside the ad (see OffCanvas); the
- * planner checks what could show it or bring it in.
+ * The element's animation at this place in a list read earlier, as it runs now: switching its CSS
+ * animations off and on again starts new ones and cancels those read before, which revive, still
+ * applying, when set again.
+ */
+function current(el: Element, earlier: Animation[], i: number): Animation | undefined {
+  const name = (earlier[i] as CSSAnimation).animationName;
+  if (name === undefined) return earlier[i];
+  const nth = earlier.slice(0, i).filter((a) => (a as CSSAnimation).animationName === name).length;
+  return el.getAnimations().filter((a) => (a as CSSAnimation).animationName === name)[nth];
+}
+
+/**
+ * An unchanged keyframes value is only safe to delete when it looks the same as the element's normal
+ * style (see looksSame), or when the element never shows: hidden (see HiddenSubtree) or outside the ad
+ * (see OffCanvas); the planner checks what could show it or bring it in.
  */
 function keyframeSafety(f: AdFrame, scope: Element, multi: boolean, states?: States): { checked: number; mismatches: SafetyMismatch[] } {
   const { win } = frameParts(f);
   const mismatches: SafetyMismatch[] = [];
   let checked = 0;
   for (const el of [scope, ...scope.querySelectorAll('*')]) {
-    for (const anim of el.getAnimations()) {
+    const first = el.getAnimations();
+    for (let n = 0; n < first.length; n++) {
+      const anim = current(el, first, n);
+      if (!anim) continue;
       const kfs = (anim.effect as KeyframeEffect).getKeyframes();
-      const unchanged = kfs.length > 1
-        ? propsOf(kfs).filter((p) => kfs.every((k) => k[p] !== undefined) && new Set(kfs.map((k) => k[p])).size === 1)
-        : [];
+      const unchanged = kfs.length > 1 ? heldProps(kfs) : [];
       if (!unchanged.length) continue;
       anim.pause();
       anim.currentTime = Number((anim.effect as KeyframeEffect).getTiming().delay ?? 0) + 1;
@@ -836,7 +859,7 @@ function keyframeSafety(f: AdFrame, scope: Element, multi: boolean, states?: Sta
       unchanged.forEach((p, i) => {
         checked++;
         const normal = (win.getComputedStyle(el) as unknown as Record<string, string>)[p];
-        if (normal !== animated[i]) {
+        if (!looksSame(normal, animated[i])) {
           mismatches.push({ size: f.label, target: label(el), animation: (anim as CSSAnimation).animationName, prop: p, keyframes: animated[i], normal, ...(hidden ? { hidden } : {}), ...(offCanvas ? { offCanvas } : {}) });
         }
       });

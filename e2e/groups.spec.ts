@@ -46,6 +46,6 @@ test("fixes the text in a GWD group through the group's own rules, without movin
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
   const rule = (selector: string) => new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{[^}]*\\}`).exec(fixed)?.[0] ?? '';
-  expect(rule('[data-gwd-group="Perks"] .gwd-grp-k.gwd-span-perk')).toMatch(/opacity: 0\.001;[\s\S]*margin-block: 0px auto;/);
-  expect(rule('.gwd-div-perks')).toContain('opacity: 0.001;');
+  expect(rule('[data-gwd-group="Perks"] .gwd-grp-k.gwd-span-perk')).toMatch(/opacity: 0\.01;[\s\S]*margin-block: 0px auto;/);
+  expect(rule('.gwd-div-perks')).toContain('opacity: 0.01;');
 });

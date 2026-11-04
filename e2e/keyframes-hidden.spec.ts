@@ -23,7 +23,7 @@ const GHOST_CSS = `    .gwd-div-ghost {
       0% {
         left: 40px;
         width: 150px;
-        opacity: 0.001;
+        opacity: 0.01;
       }
       100% {
         left: 40px;
@@ -69,7 +69,7 @@ test('deletes keyframe values on an element that never shows, without changing a
   await expect(page.locator('#checklist details[data-check="keyframes"] summary .pill')).toHaveText('Pass');
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
-  expect(/@keyframes kf-ghost \{[^@]*?\n    \}\n/.exec(fixed)?.[0]).toBe('@keyframes kf-ghost {\n      0% {\n        opacity: 0.001;\n      }\n      100% {\n        opacity: 1;\n      }\n    }\n');
+  expect(/@keyframes kf-ghost \{[^@]*?\n    \}\n/.exec(fixed)?.[0]).toBe('@keyframes kf-ghost {\n      0% {\n        opacity: 0.01;\n      }\n      100% {\n        opacity: 1;\n      }\n    }\n');
 });
 
 test('leaves them to you where the ad could show the element, or it could push what shows', async ({ page }) => {

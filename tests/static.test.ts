@@ -28,6 +28,33 @@ describe('staticAudit', () => {
     expect(report.fadeDecls.map((d) => html.slice(d.start, d.end))).toEqual(['opacity: 0;', 'opacity: 0;']);
   });
 
+  it('counts a value the first and last keyframes share as unchanged, where a keyframe between them leaves it out', () => {
+    const unchanged = (frames: [string, string][]) => {
+      const kf = frames.map(([at, decls]) => `      ${at} {\n${decls.split(';').filter((d) => d.trim()).map((d) => `        ${d.trim()};\n`).join('')}      }\n`).join('');
+      const ad = html.replace('  </style>', `    @keyframes kf-mid {\n${kf}    }\n    .gwd-p-swap {\n      animation: 1s linear 0s 1 normal forwards kf-mid;\n    }\n  </style>`);
+      const report = staticAudit(ad);
+      return [report.unchanged.filter((u) => u.block.name === 'kf-mid').flatMap((u) => u.props), report.findings.filter((f) => f.target === 'kf-mid').map((f) => f.message)];
+    };
+    expect(unchanged([['0%', 'width: 160px; transform: scale(1)'], ['25.3%', 'transform: scale(1.02)'], ['100%', 'width: 160px; transform: scale(1.1)']])).toEqual([['width'], ['width never changes (160px).']]);
+    expect(unchanged([['from', 'width: 160px; transform: scale(1)'], ['50%', 'transform: scale(2)'], ['to', 'width: 160px; transform: scale(1)']])[0]).toEqual(['width']);
+    // not where an end leaves it out, so it animates from the element's own value, or a keyframe sets another
+    expect(unchanged([['0%', 'width: 160px; transform: scale(1)'], ['50%', 'width: 160px'], ['100%', 'transform: scale(1.1)']])[0]).toEqual([]);
+    expect(unchanged([['0%', 'width: 160px'], ['50%', 'width: 150px'], ['100%', 'width: 160px']])[0]).toEqual([]);
+  });
+
+  it('flags a text fade that starts anywhere below 0.01, and passes one that starts at 0.01', () => {
+    const startingAt = (v: string) => {
+      const ad = html.replace('    @keyframes gwd-gen-fade_gwd-keyframes {\n      0% {\n        opacity: 0;', `    @keyframes gwd-gen-fade_gwd-keyframes {\n      0% {\n        opacity: ${v};`);
+      return staticAudit(ad).findings.filter((f) => f.check === 'textFade' && f.target === 'gwd-gen-fade_gwd-keyframes').map((f) => f.message);
+    };
+    expect(startingAt('0.001')).toEqual([expect.stringContaining('from opacity 0.001')]);
+    expect(startingAt('0.001')[0]).toContain('start at 0.01.');
+    expect(startingAt('0.5%')).toHaveLength(1);
+    expect(startingAt('0.01')).toEqual([]);
+    expect(startingAt('1%')).toEqual([]);
+    expect(startingAt('0.2')).toEqual([]);
+  });
+
   it('lists copy, base and per size, with entities decoded', () => {
     expect(report.copy).toContainEqual({ target: 'p#SA_headline_10', size: 'base', text: 'Sample headline' });
     expect(report.copy).toContainEqual({ target: 'p#SA_headline_10', size: '300x250', text: 'Sample BIG headline for this size' });
@@ -57,7 +84,7 @@ describe('mergeEdits', () => {
   it('lets a deletion win over an edit inside the deleted line', () => {
     const css = parseCss(html);
     const fade = css.keyframes[1].frames[0].decls.find((d) => d.prop === 'opacity')!;
-    const merged = mergeEdits([setValue(fade, '0.001'), removeDecl(html, fade)]);
+    const merged = mergeEdits([setValue(fade, '0.01'), removeDecl(html, fade)]);
     expect(merged).toHaveLength(1);
     expect(applyEdits(html, merged)).not.toContain('opacity: 0;\n        animation-timing-function: linear;\n      }\n      100%');
   });

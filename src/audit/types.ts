@@ -28,7 +28,7 @@ export const CHECKS: CheckInfo[] = [
   { id: 'environment', title: 'Non-Google Ad', passWhen: 'The file was converted with File → Ad Environment → Non Google Ad → Convert.' },
   { id: 'copy', title: 'Copy', passWhen: 'No typos or grammar errors, in the base text or any size. Read the list yourself.' },
   { id: 'position', title: 'Position animation', passWhen: 'Keyframes move elements with transform: translate3d, never top or left.' },
-  { id: 'textFade', title: 'Text fade-in', passWhen: 'Text that fades in starts at opacity 0.001, not 0.' },
+  { id: 'textFade', title: 'Text fade-in', passWhen: 'Text that fades in starts at opacity 0.01, not 0 or 0.001.' },
   { id: 'keyframes', title: 'Keyframes', passWhen: 'Keyframes hold only properties that change between them.' },
   { id: 'cssValues', title: 'CSS values', passWhen: 'Every CSS value is valid, including styles that events and scripts set (opacity: 0.3, not 0,3).' },
   { id: 'stackAdapt', title: 'StackAdapt scripts', passWhen: "The ad loads StackAdapt's iframe-ct.js and param.js once each, param.js after every tap area (class dynamicClick)." },

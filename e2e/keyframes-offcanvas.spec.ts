@@ -31,7 +31,7 @@ const OFF_CSS = `    #page1 {
     @keyframes kf-off {
       0% {
         transform: translate3d(0px, -400px, 0px);
-        opacity: 0.001;
+        opacity: 0.01;
       }
       100% {
         transform: translate3d(0px, -400px, 0px);
@@ -80,7 +80,7 @@ test('deletes keyframe values on an element measured outside the ad, without cha
   await expect(page.locator('#checklist details[data-check="keyframes"] summary .pill')).toHaveText('Pass');
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
-  expect(/@keyframes kf-off \{[^@]*?\n {4}\}\n/.exec(fixed)?.[0]).toBe('@keyframes kf-off {\n      0% {\n        opacity: 0.001;\n      }\n      100% {\n        opacity: 1;\n      }\n    }\n');
+  expect(/@keyframes kf-off \{[^@]*?\n {4}\}\n/.exec(fixed)?.[0]).toBe('@keyframes kf-off {\n      0% {\n        opacity: 0.01;\n      }\n      100% {\n        opacity: 1;\n      }\n    }\n');
 });
 
 test('leaves them to you where the element would show, or something could bring it in', async ({ page }) => {

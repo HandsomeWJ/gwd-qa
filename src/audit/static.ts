@@ -7,12 +7,19 @@ import type { CopyItem, Finding } from './types';
 
 const POSITION = ['top', 'left', 'right', 'bottom'];
 
+/** Where text that fades in must start: an opacity below it (0, 0.001) is flagged and raised to it. */
+export const FADE_START = '0.01';
+
+/** An opacity value as a number, percentages included; NaN for one it cannot read. */
+const opacityValue = (v: string) => (/%\s*$/.test(v) ? parseFloat(v) / 100 : parseFloat(v));
+const startsTooLow = (d: Decl) => opacityValue(d.value) < parseFloat(FADE_START);
+
 export interface StaticReport {
   sizes: string[];
   environment: string | null;
   findings: Finding[];
   copy: CopyItem[];
-  /** Opacity declarations that make text start at 0; fixable by writing 0.001. */
+  /** Opacity declarations that make text start below FADE_START; fixable by writing FADE_START. */
   fadeDecls: Decl[];
   /**
    * Keyframes properties that never change, per block, and what runs them; removable once checked safe.
@@ -168,17 +175,22 @@ export function staticAudit(html: string, css: CssModel = parseCss(html), valid:
       findings.push({ check: 'position', level: 'fail', target: block.name + where, message: `Animates ${p}; move it with transform: translate3d instead.` });
     }
     if (frames.length > 1) {
-      const same = props.filter((p) => frames.every((f) => f.has(p)) && new Set(frames.map((f) => f.get(p)!.value)).size === 1);
+      // A property holds one value throughout where the first and last keyframes set it and every keyframe that
+      // sets it sets that value: a keyframe between them that leaves it out interpolates between equal values.
+      const at = (offset: number) => block.frames.flatMap((f, i) => (f.selector.split(',').some((s) => frameOffset(s) === offset) ? [i] : []));
+      const [starts, ends] = [at(0), at(100)];
+      const values = (p: string) => frames.filter((f) => f.has(p)).map((f) => f.get(p)!.value);
+      const same = props.filter((p) => starts.some((i) => frames[i].has(p)) && ends.some((i) => frames[i].has(p)) && new Set(values(p)).size === 1);
       if (same.length) {
         unchanged.push({ block, props: same, subjects: subjectsOf(block.name), unused: !mentioned(block.name) });
         for (const p of same) {
-          findings.push({ check: 'keyframes', level: 'fail', target: block.name + where, message: `${p} never changes (${frames[0].get(p)!.value}).` });
+          findings.push({ check: 'keyframes', level: 'fail', target: block.name + where, message: `${p} never changes (${values(p)[0]}).` });
         }
       }
     }
     const first = [...block.frames].sort((a, b) => frameOffset(a.selector) - frameOffset(b.selector))[0];
     const opacity = first && opacityOf(first.decls);
-    if (opacity && parseFloat(opacity.value) === 0) {
+    if (opacity && startsTooLow(opacity)) {
       const textRunners = (runners.get(block.name) ?? []).flatMap((s) => query(doc, lastCompound(s))).filter((el) => holdsText(el, defs));
       if (textRunners.length) {
         fadeDecls.push(opacity);
@@ -186,17 +198,17 @@ export function staticAudit(html: string, css: CssModel = parseCss(html), valid:
           check: 'textFade',
           level: 'fail',
           target: block.name + where,
-          message: `Fades text in from opacity 0 (${[...new Set(textRunners.map(label))].join(', ')}); start at 0.001.`,
+          message: `Fades text in from opacity ${opacity.value} (${[...new Set(textRunners.map(label))].join(', ')}); start at ${FADE_START}.`,
         });
       }
     }
   }
 
-  // Text whose own rules start it at opacity 0, or a group it sits in: the value it shows before its
-  // keyframes start (which may start at 0.001), or until a script or transition fades it in.
+  // Text whose own rules start it below FADE_START, or a group it sits in: the value it shows before its
+  // keyframes start (which may start at FADE_START), or until a script or transition fades it in.
   for (const rule of css.rules) {
     const opacity = opacityOf(rule.decls);
-    if (!opacity || parseFloat(opacity.value) !== 0) continue;
+    if (!opacity || !startsTooLow(opacity)) continue;
     const text = query(doc, lastCompound(rule.selector)).filter((el) => holdsText(el, defs));
     if (!text.length) continue;
     fadeDecls.push(opacity);
@@ -204,7 +216,7 @@ export function staticAudit(html: string, css: CssModel = parseCss(html), valid:
       check: 'textFade',
       level: 'fail',
       target: [...new Set(text.map(label))].join(', '),
-      message: `${rule.selector}${rule.media ? ` (${rule.media})` : ''} starts it at opacity 0. Text that fades in must start at 0.001, and 0.001 still looks hidden.`,
+      message: `${rule.selector}${rule.media ? ` (${rule.media})` : ''} starts it at opacity ${opacity.value}. Text that fades in must start at ${FADE_START}, and ${FADE_START} still looks hidden.`,
     });
   }
 
