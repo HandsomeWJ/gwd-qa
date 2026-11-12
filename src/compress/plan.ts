@@ -56,8 +56,8 @@ export interface SavingsInput {
 
 export type Run = (job: Omit<ShrinkJob, 'id'>) => Promise<ShrinkDone>;
 
-const IMAGE = /\.(jpe?g|png)$/i;
-const MIN_BYTES = 8_000; // smaller images are not worth the risk
+export const IMAGE = /\.(jpe?g|png)$/i;
+export const MIN_BYTES = 8_000; // smaller images are not worth the risk
 // Below these, a re-encode is offered ticked: the mean is levels of 255, the 99th percentile the
 // largest channel difference all but 1% of pixels stay within. A 256-color PNG of a photo-like
 // mascot at 2.2 and 14 looked the same as its original at its size on screen (2026-11-13).

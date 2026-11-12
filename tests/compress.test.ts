@@ -4,6 +4,7 @@ import { jpegInfo } from '../src/compress/jpeg';
 import type { ImageUse } from '../src/compress/measure';
 import { encodeIndexedPng, encodeRgbaPng, pngInfo } from '../src/compress/png';
 import { difference, toPalette } from '../src/compress/pixels';
+import { autoShrink, TARGET } from '../src/compress/auto';
 import { findSavings, needed, unusedFiles, type Run } from '../src/compress/plan';
 import type { FileRef } from '../src/audit/package';
 
@@ -135,5 +136,61 @@ describe('what to make smaller', () => {
       ['Ad/big.jpg', 'shows at most 300 × 150, so 2× that is enough', true],
       ['Ad/named.jpg', 'kept at its size: a script names it', true],
     ]);
+  });
+});
+
+describe('fixing the package weight for the user', () => {
+  const use = (w: number, h: number): ImageUse => ({ w, h, fit: 'fill' });
+  // A stand-in for the worker: an image's bytes scale with its pixels and its quality or colors.
+  const fake: Run = async (job) => {
+    const info = jpegInfo(new Uint8Array(job.data)) ?? pngInfo(new Uint8Array(job.data))!;
+    const w = job.resize?.width ?? info.width;
+    const h = job.resize?.height ?? info.height;
+    const full = job.data.byteLength * ((w * h) / (info.width * info.height));
+    const factor = job.type === 'image/jpeg' ? ({ 0.92: 0.9, 0.85: 0.6, 0.75: 0.45, 0.7: 0.4, 0.6: 0.3 } as Record<number, number>)[job.quality] : job.colors ? 0.4 : 0.95;
+    return { id: 0, data: new ArrayBuffer(Math.round(full * factor)), width: w, height: h, mean: 1, p99: 4, lossy: true };
+  };
+  const jpegOf = (w: number, h: number, bytes: number) => Uint8Array.from([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, h >> 8, h & 255, w >> 8, w & 255, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xda, 0, 2, ...new Uint8Array(bytes - 27), 0xff, 0xd9]);
+  const input = (files: Map<string, Uint8Array>, uses: Map<string, ImageUse[]>) => ({ files, upload: [...files.keys()], htmlPath: 'Ad/Responsive.html', refs: [], uses, loaded: new Set<string>() });
+  const sum = (files: Map<string, Uint8Array>) => [...files.values()].reduce((n, d) => n + d.length, 0);
+
+  it('stops after what nobody sees when that is enough, and leaves out files no ad can load', async () => {
+    const files = new Map([
+      ['Ad/Responsive.html', new Uint8Array(10_000)],
+      ['Ad/hero.jpg', jpegOf(2000, 1000, 3_000_000)],
+      ['Ad/photo.jpg', jpegOf(600, 300, 1_500_000)],
+      ['Ad/gwd_workspace.json', new Uint8Array(20_000)],
+    ]);
+    const uses = new Map([['Ad/hero.jpg', [use(300, 150)]], ['Ad/photo.jpg', [use(600, 300)]]]);
+    const r = await autoShrink(input(files, uses), sum(files), fake);
+    expect(r.omit.map((f) => f.path)).toEqual(['Ad/gwd_workspace.json']);
+    // hero shows at 300 × 150: 600 × 300 at 2×, quality 92; photo shows at its size, so it is saved again at 92 only
+    expect(r.picks.map((p) => [p.path, p.level, p.how])).toEqual([
+      ['Ad/hero.jpg', 0, 'resized to 600 × 300, quality 92'],
+      ['Ad/photo.jpg', 0, 'quality 92'],
+    ]);
+    expect(r.reached).toBe(true);
+  });
+
+  it('goes further only while the zip is over, the images that save most first, and no more of them than it takes', async () => {
+    const files = new Map([
+      ['Ad/Responsive.html', new Uint8Array(10_000)],
+      ['Ad/a.jpg', jpegOf(600, 300, 2_400_000)],
+      ['Ad/b.jpg', jpegOf(600, 300, 2_000_000)],
+      ['Ad/c.jpg', jpegOf(600, 300, 300_000)],
+    ]);
+    const uses = new Map(['Ad/a.jpg', 'Ad/b.jpg', 'Ad/c.jpg'].map((p) => [p, [use(600, 300)]]));
+    const r = await autoShrink(input(files, uses), sum(files), fake);
+    // 92 gives 4.24 MB, still over; at 85, a alone (-0.72 MB) brings it under, so b and c stay at 92
+    expect(r.picks.map((p) => [p.path, p.level])).toEqual([['Ad/a.jpg', 1], ['Ad/b.jpg', 0], ['Ad/c.jpg', 0]]);
+    expect(r.after).toBeLessThanOrEqual(TARGET);
+    expect(r.after).toBeGreaterThan(3_400_000);
+  });
+
+  it('says so when even its strongest step leaves the zip over', async () => {
+    const files = new Map([['Ad/Responsive.html', new Uint8Array(10_000)], ['Ad/a.jpg', jpegOf(600, 300, 20_000_000)]]);
+    const r = await autoShrink(input(files, new Map([['Ad/a.jpg', [use(600, 300)]]])), sum(files), fake);
+    expect(r.reached).toBe(false);
+    expect(r.picks.map((p) => p.level)).toEqual([4]);
   });
 });

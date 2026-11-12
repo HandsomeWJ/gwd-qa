@@ -34,6 +34,7 @@ test('resizes an image far larger than it shows, moving no text, and Undo puts i
   await expect(row(page, 'weight').locator('summary .pill')).toHaveText('Fail');
 
   // Every color kept: the resize is the whole change, so the image is offered ticked.
+  await page.locator('#fixes details.choose summary').click();
   await page.locator('select[data-savings="colors"]').selectOption('0');
   await page.getByRole('button', { name: 'Find savings' }).click();
   const item = page.locator('.savings > li', { hasText: 'noise.png' });
@@ -54,6 +55,21 @@ test('resizes an image far larger than it shows, moving no text, and Undo puts i
   await page.getByRole('button', { name: 'Undo fixes' }).click();
   await expect(row(page, 'weight').locator('summary .pill')).toHaveText('Fail', { timeout: 120_000 });
   await expect.poll(shown).toEqual([1300, 100]);
+});
+
+test('Fix package weight compresses as far as it takes in one press, moving no text', async ({ page }) => {
+  test.setTimeout(300_000);
+  const html = mockAdHtml().replace('<div id="SA_dot_1"></div>', '<div id="SA_dot_1"></div>\n        <img id="SA_noise_1" src="assets/noise.png" alt="" style="position: absolute; left: 180px; top: 120px; width: 100px; height: 100px;">');
+  const zip = Buffer.from(zipSync({ 'Mock Ad/Responsive.html': strToU8(html), 'Mock Ad/mock-gwd.js': strToU8(MOCK_RUNTIME), 'Mock Ad/assets/noise.png': [noisePng(), { level: 0 }], 'Mock Ad/gwd_workspace.json': strToU8('{}') }));
+  await page.goto('./');
+  await page.locator('#file').setInputFiles({ name: 'heavy.zip', mimeType: 'application/zip', buffer: zip });
+  await expect(page.locator('#summary')).toBeVisible({ timeout: 120_000 });
+  await page.getByRole('button', { name: 'Fix package weight' }).click();
+  await expect(page.locator('#fixes .banner.ok')).toContainText('exactly where they were', { timeout: 180_000 });
+  await expect(row(page, 'weight').locator('summary .pill')).toHaveText('Pass');
+  await expect(page.locator('#summary')).toContainText('Replaced with smaller versions: noise.png');
+  await expect(page.locator('#summary')).toContainText('Left out of the zip for upload: gwd_workspace.json');
+  await expect.poll(() => ad(page).locator('#SA_noise_1').evaluate((img) => [(img as HTMLImageElement).naturalWidth, img.getBoundingClientRect().width])).toEqual([200, 100]);
 });
 
 test("deletes a value browsers ignore from the ad's own stylesheet, or writes what it meant where you tick Fix anyway", async ({ page }) => {
