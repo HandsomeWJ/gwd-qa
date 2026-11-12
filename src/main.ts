@@ -13,7 +13,7 @@ import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
 import { describeSize, frameSizes, type FrameSize } from './sizes';
 import { loadedPaths, measureImages } from './compress/measure';
-import { autoShrink, type AutoResult } from './compress/auto';
+import { autoShrink, type AutoProgress, type AutoResult } from './compress/auto';
 import { DEFAULT_OPTIONS, findSavings, shrinker, type Savings, type SavingsOptions } from './compress/plan';
 import { isGwdBackup, keyFor, legacyKey, type AdPackage } from './zip';
 
@@ -27,7 +27,7 @@ let busy = false;
 let savings: { result: Savings; version: number; upload: number; urls: string[] } | null = null;
 let savingsOptions: SavingsOptions = { ...DEFAULT_OPTIONS };
 // What Fix package weight last did, for the files it left (Session.version), to say so where the zip is still over.
-let lastAuto: { result: AutoResult; version: number } | null = null;
+let lastAuto: { result: AutoResult; version: number; before: number; after: number } | null = null;
 // The files last picked or dropped, for a bug report, whether or not they loaded.
 let picked: PickedFile[] | null = null;
 
@@ -652,7 +652,8 @@ function weightHtml(): string {
   if (s.pkg.kind === 'html') return '';
   if (savings && savings.version !== s.version) dropSavings();
   const over = failing('weight').length > 0;
-  if (!over && !savings) return '';
+  const auto = lastAuto && lastAuto.version === s.version ? lastAuto : null;
+  if (!over && !savings && !auto) return '';
   const o = savingsOptions;
   const select = (name: string, options: [string, string][], current: number) =>
     `<select data-savings="${name}">${options.map(([v, label]) => `<option value="${v}"${Number(v) === current ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
@@ -662,12 +663,8 @@ function weightHtml(): string {
       <label>PNG colors ${select('colors', [['256', '256, smaller'], ['0', 'every color']], o.colors)}</label>
       <button type="button" data-action="find-savings">${savings ? 'Find again' : 'Find savings'}</button>
     </div>`;
-  const auto = lastAuto && lastAuto.version === s.version ? lastAuto.result : null;
-  const still = auto && !auto.reached
-    ? `<div class="banner warn">Fix package weight compressed as far as it goes: the zip for upload went from ${mb(auto.before)} to ${mb(auto.after)}, still over the 4 MB limit. Make the largest files smaller in an editor (a video most often), or choose images yourself below at a lower quality.</div>`
-    : '';
-  const intro = `<h3 class="decide">Package weight</h3><p class="decide-sub">${over ? 'The zip for upload is over the 4 MB limit. ' : ''}Fix package weight makes the images as small as it takes and no smaller, in this browser: first what nobody can see (each image resized to twice its largest size on screen, saved again without visible loss, and GWD's working files left out of the zip for upload), then, only while the zip is still over, stronger compression, the images that save most first. Undo fixes puts everything back.</p>${still}
-    ${over ? '<div class="weight-actions"><button class="primary" data-action="fix-weight">Fix package weight</button></div>' : ''}`;
+  const intro = `<h3 class="decide">Package weight</h3>${auto ? weightResult(auto) : ''}${over || !auto ? `<p class="decide-sub">${over ? 'The zip for upload is over the 4 MB limit. ' : ''}Fix package weight makes the images as small as it takes and no smaller, in this browser: first what nobody can see (each image resized to twice its largest size on screen, saved again without visible loss, and GWD's working files left out of the zip for upload), then, only while the zip is still over, stronger compression, the images that save most first. Undo fixes puts everything back.</p>` : ''}
+    ${over && !auto ? '<div class="weight-actions"><button class="primary" data-action="fix-weight">Fix package weight</button></div>' : ''}`;
   if (!savings) return `${intro}<details class="choose"><summary>Or choose images yourself</summary>${controls}</details>`;
   const r = savings.result;
   const name = (path: string) => esc(path.split('/').pop()!);
@@ -694,13 +691,56 @@ function weightHtml(): string {
     ${shrinks.length || unused.length ? `<p class="savings-total" id="savings-total">${esc(savingsTotal())}</p><button data-action="apply-savings">Apply compression</button>` : ''}</details>`;
 }
 
+/** What Fix package weight did: the zip for upload before and after, and every file it changed or left out. */
+function weightResult(auto: NonNullable<typeof lastAuto>): string {
+  const r = auto.result;
+  const under = auto.after <= 4_000_000;
+  const head = !r.picks.length && !r.omit.length
+    ? `Fix package weight found nothing it could make smaller: the zip for upload stays ${mb(auto.before)}. Make the largest files smaller in an editor (a video most often).`
+    : under
+      ? `Fix package weight made the zip for upload ${mb(auto.before)} → ${mb(auto.after)}, under the 4 MB limit.`
+      : `Fix package weight compressed as far as it goes: ${mb(auto.before)} → ${mb(auto.after)}, still over the 4 MB limit. Make the largest files smaller in an editor (a video most often), or choose images yourself below at a lower quality.`;
+  const name = (path: string) => esc(path.split('/').pop()!);
+  const rows = [
+    ...r.picks.map((p) => `<tr><td>${name(p.path)}</td><td>${mb(p.before.bytes)}<span class="dims">${p.before.width} × ${p.before.height}</span></td><td>${mb(p.after.bytes)}<span class="dims">${p.after.width} × ${p.after.height}</span></td><td>${esc(p.how)}</td></tr>`),
+    ...r.omit.map((f) => `<tr><td>${name(f.path)}</td><td>${mb(f.bytes)}</td><td>none</td><td>left out of the zip for upload: no ad loads it</td></tr>`),
+  ];
+  const table = rows.length ? `<div class="scroll-x"><table class="weight-result"><thead><tr><th>File</th><th>Before</th><th>After</th><th>What changed</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '';
+  return `<div class="banner ${under && rows.length ? 'ok' : 'warn'} weight-head">${esc(head)}</div>${table}`;
+}
+
+const STEP_NAMES = ['what nobody can see', 'a little more', 'more', 'smaller on screen', 'the strongest'];
+
+/** The progress card of Fix package weight: its stage, a bar, the image it is on, and the zip as it shrinks. */
+function weightProgress(stage: 'measure' | 'compress' | 'apply', before: number, p?: AutoProgress) {
+  const bar = (pct: number | null) => `<div class="meter${pct === null ? ' busy' : ''}" role="progressbar" aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`}><span${pct === null ? '' : ` style="width:${pct}%"`}></span></div>`;
+  let line: string;
+  let meter: string;
+  let meta = '';
+  if (stage === 'measure') {
+    line = 'Measuring how large each image shows, in every size, through the timeline…';
+    meter = bar(null);
+  } else if (stage === 'apply' || !p) {
+    line = 'Putting the smaller files in and checking that no text moved…';
+    meter = bar(null);
+  } else {
+    line = `Step ${p.step + 1} of up to ${p.steps}: ${STEP_NAMES[p.step] ?? 'stronger'}`;
+    meter = bar(p.total ? Math.round((p.done / p.total) * 100) : 100);
+    meta = `${p.path ? `Image ${Math.min(p.done + 1, p.total)} of ${p.total}: ${esc(p.path.split('/').pop()!)}` : `${plural(p.total, 'image')} done`}`;
+  }
+  const size = p && p.size < before ? `Zip for upload: ${mb(before)} → ${mb(p.size)} so far; the limit is 4 MB` : `Zip for upload: ${mb(before)}; the limit is 4 MB`;
+  status(`<span class="progress"><strong>Fixing package weight</strong> · ${line}${meter}<span class="progress-meta">${meta ? `${meta} · ` : ''}${size}</span></span>`, 'busy');
+}
+
 /**
  * The package weight fixed for the user: measures how large each image shows, picks the least
  * compression that brings the zip for upload under 4 MB, and applies it, proving no text moved.
  */
 async function fixWeight() {
   const r = result!;
-  return changeHtml('Measuring how large each image shows…', async (s) => {
+  const before = session!.zip(true).size;
+  return changeHtml('Fixing package weight…', async (s) => {
+    weightProgress('measure', before);
     const uses = await measureImages(s.frames, s.id);
     const loaded = loadedPaths(s.frames, s.id);
     const files = s.files();
@@ -708,20 +748,18 @@ async function fixWeight() {
     const worker = shrinker();
     let auto: AutoResult;
     try {
-      auto = await autoShrink({ files, upload, htmlPath: s.pkg.htmlPath, refs: r.report.files, uses, loaded }, s.zip(true).size, worker.run, (step, done, total) => {
-        status(`Compressing images, ${step ? `step ${step + 1}` : 'first what nobody can see'}: ${done + 1} of ${total}…`, 'busy');
-      });
+      auto = await autoShrink({ files, upload, htmlPath: s.pkg.htmlPath, refs: r.report.files, uses, loaded }, before, worker.run, (p) => weightProgress('compress', before, p));
     } finally {
       worker.close();
     }
     if (!auto.picks.length && !auto.omit.length) {
-      lastAuto = { result: auto, version: s.version };
+      lastAuto = { result: auto, version: s.version, before, after: before };
       return;
     }
-    status('Applying and comparing text positions…', 'busy');
+    weightProgress('apply', before);
     const detail = [auto.picks.length ? `${plural(auto.picks.length, 'image')} made smaller` : '', auto.omit.length ? `${plural(auto.omit.length, 'file')} left out of the zip for upload` : ''].filter(Boolean).join(', ');
     await s.applyFiles(new Map(auto.picks.map((p) => [p.path, p.after.data])), auto.omit.map((f) => f.path), { check: 'weight', title: 'Fix package weight', detail, edits: [] });
-    lastAuto = { result: auto, version: s.version };
+    lastAuto = { result: auto, version: s.version, before, after: s.zip(true).size };
   });
 }
 

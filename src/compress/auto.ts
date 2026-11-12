@@ -51,6 +51,16 @@ export interface AutoPick {
   p99: number;
 }
 
+/** Where Fix package weight is: the step (0 is what nobody can see), the image it is on, and the zip for upload as the steps so far leave it. */
+export interface AutoProgress {
+  step: number;
+  steps: number;
+  done: number;
+  total: number;
+  path: string;
+  size: number;
+}
+
 export interface AutoResult {
   picks: AutoPick[];
   /** Files left out of the zip for upload: ones no ad can load. */
@@ -74,7 +84,7 @@ interface Image {
   current: (AutoPick & { key: string }) | null;
 }
 
-export async function autoShrink(input: SavingsInput, uploadBytes: number, run: Run, progress?: (step: number, done: number, total: number) => void): Promise<AutoResult> {
+export async function autoShrink(input: SavingsInput, uploadBytes: number, run: Run, progress?: (p: AutoProgress) => void): Promise<AutoResult> {
   const scripted = new Set(input.refs.filter((r) => r.script).map((r) => r.actual ?? r.path));
   const images: Image[] = [];
   for (const path of input.upload) {
@@ -90,11 +100,12 @@ export async function autoShrink(input: SavingsInput, uploadBytes: number, run: 
   const omit = unusedFiles(input).filter((f) => NEVER_LOADED.test(f.path));
   let total = uploadBytes - omit.reduce((n, f) => n + f.bytes, 0);
 
-  for (let level = 0; level < 5 && (level === 0 || total > TARGET); level++) {
+  const steps = LEVELS['image/jpeg'].length;
+  for (let level = 0; level < steps && (level === 0 || total > TARGET); level++) {
     const cands: { img: Image; pick: Image['current'] & {}; gain: number }[] = [];
     const todo = images.filter((img) => !(level === 0 && img.profiled));
     for (const [i, img] of todo.entries()) {
-      progress?.(level, i, todo.length);
+      progress?.({ step: level, steps, done: i, total: todo.length, path: img.path, size: total });
       const lv = LEVELS[img.type][level];
       const share = img.share === null ? 1 : Math.min(1, img.share * lv.dpr);
       const resize = share < 0.9 ? { width: Math.max(1, Math.round(img.width * share)), height: Math.max(1, Math.round(img.height * share)) } : null;
@@ -111,18 +122,17 @@ export async function autoShrink(input: SavingsInput, uploadBytes: number, run: 
       const now = img.current?.after.bytes ?? img.data.length;
       if (bytes >= now * 0.97) continue;
       const how = [resize ? `resized to ${out.width} × ${out.height}` : '', img.type === 'image/jpeg' ? `quality ${Math.round(lv.quality * 100)}` : lv.colors ? `${lv.colors} colors` : 'stored without loss'].filter(Boolean).join(', ');
-      cands.push({
-        img,
-        gain: now - bytes,
-        pick: { path: img.path, type: img.type, before: { bytes: img.data.length, width: img.width, height: img.height }, after: { bytes, width: out.width, height: out.height, data: new Uint8Array(out.data) }, level, how, mean: out.mean, p99: out.p99, key },
-      });
+      const pick = { path: img.path, type: img.type, before: { bytes: img.data.length, width: img.width, height: img.height }, after: { bytes, width: out.width, height: out.height, data: new Uint8Array(out.data) }, level, how, mean: out.mean, p99: out.p99, key };
+      if (level === 0) {
+        // Nobody sees these: all of them, whatever the zip weighs, so the zip shrinks image by image.
+        img.current = pick;
+        total -= now - bytes;
+      } else {
+        cands.push({ img, gain: now - bytes, pick });
+      }
     }
     if (level === 0) {
-      // Nobody sees these: all of them, whatever the zip weighs.
-      for (const c of cands) {
-        c.img.current = c.pick;
-        total -= c.gain;
-      }
+      progress?.({ step: level, steps, done: todo.length, total: todo.length, path: '', size: total });
       continue;
     }
     // The images that save most first, until the zip is under; then back out any it did not need.
@@ -144,6 +154,7 @@ export async function autoShrink(input: SavingsInput, uploadBytes: number, run: 
       c.img.current = c.pick;
       total -= c.gain;
     }
+    progress?.({ step: level, steps, done: todo.length, total: todo.length, path: '', size: total });
   }
   const picks = images.flatMap((img) => {
     if (!img.current) return [];

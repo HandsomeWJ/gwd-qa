@@ -234,3 +234,16 @@ details.compare > summary { cursor: pointer; color: var(--muted); font-size: 13p
 .weight-actions { margin: 10px 0 6px; }
 details.choose { margin-top: 10px; }
 details.choose > summary { cursor: pointer; color: var(--muted); font-size: 13.5px; font-weight: 600; }
+.progress { display: inline-block; width: calc(100% - 26px); vertical-align: top; }
+.meter { height: 8px; border-radius: 999px; background: var(--code-bg); overflow: hidden; margin: 8px 0 6px; }
+.meter > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.25s ease; }
+.meter.busy > span { width: 30%; animation: meter-slide 1.1s ease-in-out infinite; }
+@keyframes meter-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.progress-meta { display: block; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.weight-head { margin: 6px 0 10px; }
+table.weight-result { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-bottom: 10px; }
+table.weight-result th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.weight-result td { padding: 6px 8px; border-bottom: 1px dashed var(--line); vertical-align: top; overflow-wrap: anywhere; }
+table.weight-result td:nth-child(2), table.weight-result td:nth-child(3) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.weight-result .dims { display: block; color: var(--muted); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .meter.busy > span { animation: none; width: 100%; opacity: 0.5; } }
