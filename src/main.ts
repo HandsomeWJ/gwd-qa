@@ -181,6 +181,7 @@ function clearResults() {
   lastAuto = null;
   dropSavings();
   for (const id of ['summary', 'checklist', 'fixes', 'copy']) $(`#${id}`).hidden = true;
+  $('#copy').replaceChildren();
 }
 
 function clearPreview() {
@@ -860,13 +861,18 @@ function decisionHtml(note: string, check: CheckId): string {
 function renderCopy() {
   const box = $('#copy');
   box.hidden = false;
-  const rows = result!.report.copy
+  // Folded for each new ad; once opened, it stays open when a fix re-renders the page.
+  const open = box.querySelector<HTMLDetailsElement>('details.copy-list')?.open ?? false;
+  const copy = result!.report.copy;
+  const rows = copy
     .map((c) => `<tr><td class="el">${esc(c.target)}</td><td>${esc(describeSize(c.size))}</td><td>${esc(c.text)}</td></tr>`)
     .join('');
+  const which = copy.length === 1 ? 'the text' : `all ${copy.length} texts`;
   box.innerHTML = `
     <h2>Copy</h2>
     <p class="sub">Every text in the ad, the base version and each size's override. Read it for typos and grammar.</p>
-    <div class="scroll-x"><table class="copy"><thead><tr><th>Element</th><th>Size</th><th>Text</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    ${copy.length ? `<details class="choose copy-list"${open ? ' open' : ''}><summary><span class="when-closed">Show ${which}</span><span class="when-open">Hide ${which}</span></summary>
+      <div class="scroll-x"><table class="copy"><thead><tr><th>Element</th><th>Size</th><th>Text</th></tr></thead><tbody>${rows}</tbody></table></div></details>` : '<p>No text found in the ad.</p>'}`;
 }
 
 async function applySelected() {

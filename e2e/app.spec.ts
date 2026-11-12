@@ -25,6 +25,14 @@ test('checks every page and both ends of a range, then fixes without moving text
   ]);
   await expect(page.locator('#checklist .sub')).toContainText('on each of its 2 pages');
 
+  // The copy is folded until opened, and stays open when a fix re-renders the page.
+  const copyTable = page.locator('#copy table.copy');
+  await expect(copyTable).toBeHidden();
+  await expect(page.locator('#copy summary')).toHaveText(/^Show all \d+ texts$/, { useInnerText: true });
+  await page.locator('#copy summary').click();
+  await expect(copyTable).toBeVisible();
+  await expect(page.locator('#copy summary')).toHaveText(/^Hide all \d+ texts$/, { useInnerText: true });
+
   // Page two is out of the DOM until GWD shows it, so finding it proves every page was visited.
   const lineHeight = row(page, 'lineHeight');
   await lineHeight.locator('summary').click();
@@ -61,6 +69,7 @@ test('checks every page and both ends of a range, then fixes without moving text
   await expect(page.locator('#fixes .manual')).toContainText('kf-in: it also runs inside a size range, between the sizes the previews show, so deleting transform was not checked; do it in GWD.');
   await expect(cssValues.locator('summary .pill')).toHaveText('Pass');
   await expect(page.locator('#summary details.edits summary')).toContainText('Review the changes to Responsive.html');
+  await expect(copyTable).toBeVisible();
 
   const zipOf = async (button: string) => {
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: button, exact: true }).click()]);
