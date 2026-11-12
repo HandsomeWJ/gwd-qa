@@ -4,7 +4,8 @@
 // (type below 8px).
 
 import { insertDecl, insertRule, lineIndent, removeDecl, setValue, type Edit } from '../css/edit';
-import { elementClass, lastCompound, sizeOfMedia, type CssModel, type Decl, type KeyframesRule, type MediaBlock, type StyleRule } from '../css/parse';
+import { elementClass, lastCompound, parseCss, sizeOfMedia, type CssModel, type Decl, type KeyframesRule, type MediaBlock, type StyleRule } from '../css/parse';
+import type { CssValueIssue } from '../audit/cssvalues';
 import type { HiddenSubtree, OffCanvas, SafetyMismatch } from '../audit/observe';
 import { MOVES_NOTHING, propKey } from '../audit/props';
 import { STACKADAPT_SCRIPTS, stackAdaptTag, type Spot, type StackAdaptScript } from '../audit/stackadapt';
@@ -58,6 +59,8 @@ export interface PlanInput {
   report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues' | 'sizes'> & Partial<Pick<StaticReport, 'stackAdapt' | 'fadeVisible' | 'files'>>;
   /** The clickable elements every frame saw, with their cursors; without them, no cursor is set. */
   clicks?: ClickBox[];
+  /** The text of one of the ad's files as it is now (its stylesheets and scripts), or null; without it, no other file is edited. */
+  text?: (path: string) => string | null;
   /** Keyframes values that differ from the element's own style, with the frame they were read in, and whether that element never shows. */
   safety: Pick<SafetyMismatch, 'animation' | 'size' | 'prop' | 'hidden' | 'offCanvas'>[];
   /** What could set a style on an element once the ad has started; without it, no keyframes value is deleted. */
@@ -936,44 +939,86 @@ class Planner {
     if (fix && roots.size) fix.hidden = [...roots];
   }
 
+  /**
+   * Deletes a declaration browsers ignore, which changes nothing: from a style block or one of the ad's
+   * stylesheets, whole; from a style attribute or a string a script sets, from its name to its ';'.
+   * Null where it cannot be told apart in the source, where another browser may read it (a vendor
+   * prefix), or where a script sets it alone (style.opacity = …), whose statement is not the CSS.
+   */
+  deletion(v: CssValueIssue): Edit | null {
+    if (/-(webkit|moz|ms|o)-/i.test(v.value) || /^style\.(?!cssText$)/.test(v.via)) return null;
+    const text = v.file ? this.input.text?.(v.file) ?? null : this.html;
+    if (text === null || !Number.isFinite(v.start) || !Number.isFinite(v.end) || text.slice(v.start, v.end) !== v.value) return null;
+    const where = v.file ? { file: v.file } : {};
+    if (v.via === '') {
+      // A file is parsed as a <style> element, as the check read it; '</style' in it made inert.
+      const shift = v.file ? '<style>'.length : 0;
+      const src = v.file ? `<style>${text.replace(/<\/(?=style)/gi, '< ')}</style>` : text;
+      const css = v.file ? parseCss(src) : this.css;
+      const decl = [...css.rules.flatMap((r) => r.decls), ...css.keyframes.flatMap((k) => k.frames.flatMap((f) => f.decls))].find((d) => d.valueStart - shift === v.start);
+      if (!decl) return null;
+      const e = removeDecl(src, decl);
+      return { start: e.start - shift, end: e.end - shift, text: '', ...where };
+    }
+    // In a list of declarations: back to the previous ';' or the opening quote, on to its ';' or the closing quote.
+    let s = v.start;
+    while (s > 0 && !/[;"'`{]/.test(text[s - 1])) s--;
+    const head = /^(\s*)-{0,2}[a-zA-Z][\w-]*\s*:\s*$/.exec(text.slice(s, v.start));
+    const tail = /^\s*(!\s*important\s*)?(;\s*)?/i.exec(text.slice(v.end))!;
+    const end = v.end + tail[0].length;
+    if (!s || !head || (!tail[2] && !/^["'`]/.test(text.slice(end)))) return null;
+    return { start: s + head[1].length, end, text: '', ...where };
+  }
+
   cssValues() {
     // Declarations another fix rewrites; that fix replaces the bad value anyway.
-    const rewritten = this.fixes.flatMap((f) => f.edits).filter((e) => e.text && e.end > e.start);
+    const rewritten = this.fixes.flatMap((f) => f.edits).filter((e) => !e.file && e.text && e.end > e.start);
     const safe: { edits: Edit[]; notes: string[] } = { edits: [], notes: [] };
+    const gone: { edits: Edit[]; notes: string[] } = { edits: [], notes: [] };
     for (const v of this.input.report.cssValues) {
       const handler = v.handler ? ` (in ${v.handler})` : '';
       const file = v.file ? ` in ${v.file}` : '';
       const invalid = `${v.target} ${v.prop}: ${v.value}${handler}${file} ${v.note ? `is ignored: ${v.note}` : 'is not valid CSS, so browsers ignore it'}`;
-      if (!v.fixed) {
-        this.manualNote('cssValues', `${invalid}; correct it in ${v.file ?? 'GWD'}.`);
-        continue;
-      }
-      // Only the HTML is edited; another file's offsets are not the HTML's.
-      if (v.file) {
-        this.manualNote('cssValues', `${invalid}; write ${v.fixed} in ${v.file}.`);
-        continue;
-      }
       const located = Number.isFinite(v.start) && Number.isFinite(v.end);
-      if (located && rewritten.some((e) => e.start < v.end && v.start < e.end)) continue;
+      if (!v.file && located && rewritten.some((e) => e.start < v.end && v.start < e.end)) continue;
+      const text = v.file ? this.input.text?.(v.file) ?? null : this.html;
       // Edited in place only when the source reads exactly as the browser does: a comma written as
       // &#44; or \x2c would stay, and a value without a place in the source has nothing to replace.
-      if (!located || this.html.slice(v.start, v.end) !== v.value) {
-        this.manualNote('cssValues', `${invalid}; write ${v.fixed} in GWD.`);
-        continue;
-      }
+      const plain = located && text !== null && text.slice(v.start, v.end) === v.value;
       // Browsers ignore the value today, so once valid it changes what it styles: only paint on what
-      // shows no text is left as it looks.
-      const transition = v.prop === 'transition' || v.prop === 'transition-property';
-      const paintOnly = transition ? paintOnlyTransition(v.fixed) : PAINT_ONLY.has(v.prop);
-      if (!paintOnly || v.showsText !== false) {
-        const what = !paintOnly ? 'size, place or animate what it styles, which can move text' : v.showsText ? 'change how its text looks' : 'change how what it styles looks, which may be text';
-        this.manualNote('cssValues', `${invalid}; write ${v.fixed} in GWD. Once valid it would ${what}, so it is not changed here.`, [{ start: v.start, end: v.end, text: v.fixed }]);
-        continue;
+      // shows no text is left as it looks. A file's declarations are not known to show no text.
+      let what = '';
+      if (v.fixed && plain && !v.file) {
+        const transition = v.prop === 'transition' || v.prop === 'transition-property';
+        const paintOnly = transition ? paintOnlyTransition(v.fixed) : PAINT_ONLY.has(v.prop);
+        if (paintOnly && v.showsText === false) {
+          safe.edits.push({ start: v.start, end: v.end, text: v.fixed });
+          safe.notes.push(`${v.target} ${v.prop}: ${v.value} -> ${v.fixed}${handler}`);
+          continue;
+        }
+        what = !paintOnly ? 'size, place or animate what it styles, which can move text' : v.showsText ? 'change how its text looks' : 'change how what it styles looks, which may be text';
       }
-      safe.edits.push({ start: v.start, end: v.end, text: v.fixed });
-      safe.notes.push(`${v.target} ${v.prop}: ${v.value} -> ${v.fixed}${handler}`);
+      // Deleting it changes nothing, as browsers ignore it. A value it likely meant is written instead
+      // only by someone who ticks Fix anyway, as it would then apply.
+      const del = this.deletion(v);
+      if (del) {
+        gone.edits.push(del);
+        gone.notes.push(`${v.target} ${v.prop}: ${v.value}${handler}${file}`);
+      }
+      const meant = v.fixed ?? v.suggested ?? null;
+      const write = meant && plain ? [{ start: v.start, end: v.end, text: meant, ...(v.file ? { file: v.file } : {}) }] : undefined;
+      const where = v.file ? ` in ${v.file}` : ' in GWD';
+      if (meant && del) {
+        const once = what ? `: once valid it would ${what}` : ', which may change how the ad looks once it applies';
+        this.manualNote('cssValues', `${invalid}; the fix above deletes it, which changes nothing. To have it apply instead, write ${meant}${where}${once}.`, write);
+      } else if (meant) {
+        this.manualNote('cssValues', `${invalid}; write ${meant}${where}.${what ? ` Once valid it would ${what}, so it is not changed here.` : ''}`, write);
+      } else if (!del) {
+        this.manualNote('cssValues', `${invalid}; correct it in ${v.file ?? 'GWD'}.`);
+      }
     }
     this.add('cssValues', 'Write decimal points in CSS values', safe.notes.join(', '), safe.edits);
+    this.add('cssValues', 'Delete CSS values browsers ignore (nothing changes)', gone.notes.join(', '), gone.edits);
   }
 
   /**

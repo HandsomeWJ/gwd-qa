@@ -1,7 +1,7 @@
 import './styles.css';
 import { CHECKS, type CheckId, type Finding } from './audit/types';
 import { staticAudit } from './audit/static';
-import { applyEdits, mergeEdits } from './css/edit';
+import { applyEdits, byFile, mergeEdits, type Edit } from './css/edit';
 import { diffLines, diffStats, type Hunk } from './diff';
 import { engineOf } from './engine';
 import type { PlannedFix } from './fix/plan';
@@ -12,13 +12,19 @@ import { initReports, noteError } from './report';
 import { startWorker } from './serve';
 import { Session, type ApplyResult, type AuditResult } from './session';
 import { describeSize, frameSizes, type FrameSize } from './sizes';
-import { keyFor, legacyKey, type AdPackage } from './zip';
+import { loadedPaths, measureImages } from './compress/measure';
+import { DEFAULT_OPTIONS, findSavings, shrinker, type Savings, type SavingsOptions } from './compress/plan';
+import { isGwdBackup, keyFor, legacyKey, type AdPackage } from './zip';
 
 const app = document.getElementById('app')!;
 const ENGINE = engineOf(navigator.userAgent);
 let session: Session | null = null;
 let result: AuditResult | null = null;
 let busy = false;
+// The package weight fix once found, for the files as they were then (Session.version), with the
+// object URLs of its before and after images; and the options it is found with.
+let savings: { result: Savings; version: number; upload: number; urls: string[] } | null = null;
+let savingsOptions: SavingsOptions = { ...DEFAULT_OPTIONS };
 // The files last picked or dropped, for a bug report, whether or not they loaded.
 let picked: PickedFile[] | null = null;
 
@@ -160,8 +166,14 @@ async function check() {
 }
 
 /** Takes the results off the page, so no button acts on results that no longer hold. */
+function dropSavings() {
+  savings?.urls.forEach((u) => URL.revokeObjectURL(u));
+  savings = null;
+}
+
 function clearResults() {
   result = null;
+  dropSavings();
   for (const id of ['summary', 'checklist', 'fixes', 'copy']) $(`#${id}`).hidden = true;
 }
 
@@ -393,14 +405,41 @@ function renderSummary() {
       <div class="actions">
         ${s.changed ? '<button data-action="undo">Undo fixes</button>' : ''}
         <button class="${s.changed ? 'primary' : ''}" data-action="download">${s.changed ? `Download fixed ${fileKind}` : `Download ${fileKind}`}</button>
-        ${s.backups.length ? '<button data-action="download-upload">Download for upload</button>' : ''}
+        ${s.backups.length || s.omitted.size ? '<button data-action="download-upload">Download for upload</button>' : ''}
         <button data-action="reset">Check another ad</button>
       </div>
     </div>
-    ${s.backups.length ? `<p class="sub upload-note">Download for upload leaves out GWD's backup copies: ${esc(backupFolders(s).join(', '))} (${plural(s.backups.length, 'file')}).</p>` : ''}
+    ${s.backups.length || s.omitted.size ? `<p class="sub upload-note">Download for upload leaves out ${[s.backups.length ? `GWD's backup copies: ${esc(backupFolders(s).join(', '))} (${plural(s.backups.length, 'file')})` : '', s.omitted.size ? `${plural(s.omitted.size, 'file')} the ad never loads` : ''].filter(Boolean).join(', and ')}.</p>` : ''}
     ${video ? '<div class="banner warn standin">This looks like an interactive video (VPAID) ad, which this site does not support yet: its own checklist items were not checked, and the results and fixes here may not suit it.</div>' : ''}
     ${note ? `<div class="banner warn standin">${esc(note)}</div>` : ''}
-    ${s.changed ? diffBox(`Review the changes to ${s.pkg.htmlPath.split('/').pop()}`, s.originalHtml, s.html) : ''}`;
+    ${s.changed ? changesHtml(s) : ''}`;
+}
+
+/** A file size as people read it: KB below 0.1 MB, else MB to two decimals. */
+const mb = (n: number) => (n < 100_000 ? `${Math.max(1, Math.round(n / 1000))} KB` : `${(n / 1_000_000).toFixed(2)} MB`);
+
+/** What the fixes changed so far: each text file's edits, the files replaced by smaller ones, the files left out. */
+function changesHtml(s: Session): string {
+  const parts: string[] = [];
+  if (s.html !== s.originalHtml) parts.push(diffBox(`Review the changes to ${s.pkg.htmlPath.split('/').pop()}`, s.originalHtml, s.html));
+  const decoder = new TextDecoder();
+  const images: string[] = [];
+  for (const c of s.changes) {
+    if (/\.(css|js|html?|json|txt|svg)$/i.test(c.path)) parts.push(diffBox(`Review the changes to ${c.path.split('/').pop()}`, decoder.decode(c.before), decoder.decode(c.after)));
+    else images.push(`${c.path.split('/').pop()}: ${mb(c.before.length)} → ${mb(c.after.length)}`);
+  }
+  if (images.length) parts.push(`<p class="sub">Replaced with smaller versions: ${esc(listed(images, 8))}.</p>`);
+  if (s.omitted.size) parts.push(`<p class="sub">Left out of the zip for upload: ${esc(listed([...s.omitted].map((p) => p.split('/').pop()!), 8))}.</p>`);
+  return parts.join('');
+}
+
+/** The edits views of a set of edits: the HTML's, and each of the ad's other files'. */
+function editsHtml(edits: Edit[]): string {
+  const s = session!;
+  return [...byFile(edits)].map(([path, list]) => {
+    const before = path ? s.text(path) ?? '' : s.html;
+    return diffBox(path ? `Show the edits in ${path.split('/').pop()}` : 'Show the edits', before, applyEdits(before, mergeEdits(list)));
+  }).join('');
 }
 
 function backupFolders(s: Session): string[] {
@@ -542,14 +581,13 @@ function renderFixes() {
     ...r.plan.manual.map((m) => ({ check: m.check, note: m.detail })),
     ...(failing('position').some((f) => !cleared(f)) ? [{ check: 'position' as const, note: 'Keyframes move elements with top or left; re-animate that movement with transform: translate3d in GWD.' }] : []),
   ];
-  const html = session!.html;
   // A note's fix, written out, for someone who accepts that it may change how the ad looks: its index
   // in plan.anyway, and the edits view, or null where it has none or its edits cannot go in together.
   const anyway = r.plan.anyway ?? [];
   const risky = new Map<string, { k: number; diff: string }>();
   anyway.forEach((a, k) => {
     try {
-      risky.set(a.detail, { k, diff: diffBox('Show the edits', html, applyEdits(html, mergeEdits(a.edits))) });
+      risky.set(a.detail, { k, diff: editsHtml(a.edits) });
     } catch {
       // edits that overlap each other: offered to no one
     }
@@ -572,7 +610,7 @@ function renderFixes() {
       <input type="checkbox" id="fix-${i}" data-fix="${i}" checked>
       <div><label for="fix-${i}"><strong>${esc(f.title)}</strong> <span class="pill info">${esc(CHECKS.find((c) => c.id === f.check)!.title)}</span>
         <div class="detail">${esc(f.detail)}</div></label>
-        ${diffBox('Show the edits', html, applyEdits(html, mergeEdits(f.edits)))}</div>
+        ${editsHtml(f.edits)}</div>
     </li>`).join('');
   box.innerHTML = `
     <h2>Fixes</h2>
@@ -581,7 +619,111 @@ function renderFixes() {
     ${fixes.length
       ? `<ul class="fixlist">${list}</ul>${applyButton}`
       : `<p>${session!.changed ? 'Nothing left to fix automatically.' : 'Nothing to fix automatically.'}</p>`}
-    ${groups.length ? `<h3 class="decide">Needs your decision</h3><p class="decide-sub">Fixing these here could move text or change the design, so they are left to you. Open an item for its checklist row.${risky.size ? ` Where the fix can be written, tick Fix anyway to apply it with the fixes${fixes.length ? ' above' : ''} if you accept that risk, as when it is a false alarm. The check after applying lists every text that moved and line spacing that changed, but not images or shapes, so look at the preview too; Undo fixes puts everything back.` : ''}</p><ul class="manual">${groups.join('')}</ul>${!fixes.length && risky.size ? applyButton : ''}` : ''}`;
+    ${groups.length ? `<h3 class="decide">Needs your decision</h3><p class="decide-sub">Fixing these here could move text or change the design, so they are left to you. Open an item for its checklist row.${risky.size ? ` Where the fix can be written, tick Fix anyway to apply it with the fixes${fixes.length ? ' above' : ''} if you accept that risk, as when it is a false alarm. The check after applying lists every text that moved and line spacing that changed, but not images or shapes, so look at the preview too; Undo fixes puts everything back.` : ''}</p><ul class="manual">${groups.join('')}</ul>${!fixes.length && risky.size ? applyButton : ''}` : ''}
+    ${weightHtml()}`;
+  // The estimate reads the boxes, which exist only now.
+  const total = box.querySelector('#savings-total');
+  if (total) total.textContent = savingsTotal();
+}
+
+
+// Rounded down, so a file that is still there never reads as 100% smaller.
+const pct = (part: number, whole: number) => Math.min(99, Math.floor((part / whole) * 100));
+
+/** The upload zip's size with the ticked savings, from the one it had when they were found. */
+function savingsTotal(): string {
+  if (!savings) return '';
+  let size = savings.upload;
+  for (const box of app.querySelectorAll<HTMLInputElement>('input[data-shrink]:checked')) {
+    const x = savings.result.shrinks[Number(box.dataset.shrink)];
+    size -= x.before.bytes - x.after.bytes;
+  }
+  for (const box of app.querySelectorAll<HTMLInputElement>('input[data-unused]:checked')) size -= savings.result.unused[Number(box.dataset.unused)].bytes;
+  return `With what is ticked, the zip for upload goes from ${mb(savings.upload)} to about ${mb(size)}${size <= 4_000_000 ? ', under the 4 MB limit' : ', still over the 4 MB limit'}.`;
+}
+
+/** The package weight fix: its options, and once found, every image it makes smaller and every file it can leave out. */
+function weightHtml(): string {
+  const s = session!;
+  if (s.pkg.kind === 'html') return '';
+  if (savings && savings.version !== s.version) dropSavings();
+  const over = failing('weight').length > 0;
+  if (!over && !savings) return '';
+  const o = savingsOptions;
+  const select = (name: string, options: [string, string][], current: number) =>
+    `<select data-savings="${name}">${options.map(([v, label]) => `<option value="${v}"${Number(v) === current ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
+  const controls = `<div class="savings-options">
+      <label>Keep images sharp on ${select('dpr', [['2', '2× screens: most laptops and phones'], ['3', '3× screens: the sharpest phones']], o.dpr)}</label>
+      <label>JPEG quality ${select('quality', [['0.9', '90'], ['0.85', '85'], ['0.75', '75']], o.quality)}</label>
+      <label>PNG colors ${select('colors', [['256', '256, smaller'], ['0', 'every color']], o.colors)}</label>
+      <button type="button" data-action="find-savings">${savings ? 'Find again' : 'Find savings'}</button>
+    </div>`;
+  const intro = `<h3 class="decide">Package weight</h3><p class="decide-sub">${over ? 'The zip for upload is over the 4 MB limit. ' : ''}Smaller images, and leaving out files the ad never loads, bring it down. An image is made smaller where it shows smaller than it is, and re-encoded, which changes its pixels a little: each one shows before and after, and how far its pixels moved, and those that move little are ticked. Nothing changes until you press Apply compression. Images are compressed in this browser.</p>`;
+  if (!savings) return intro + controls;
+  const r = savings.result;
+  const name = (path: string) => esc(path.split('/').pop()!);
+  const shrinks = r.shrinks.map((x, i) => {
+    const dims = x.after.width !== x.before.width ? `${x.before.width} × ${x.before.height} → ${x.after.width} × ${x.after.height}` : `${x.before.width} × ${x.before.height}`;
+    const pixels = x.lossy ? `pixels differ by ${x.mean.toFixed(1)} of 255 on average, by at most ${x.p99} for 99% of them` : 'the same pixels, stored more tightly';
+    const width = Math.round(Math.min(360, x.shows?.w ?? x.after.width));
+    return `<li><input type="checkbox" id="shrink-${i}" data-shrink="${i}"${x.recommended ? ' checked' : ''}>
+      <div><label for="shrink-${i}"><strong>${name(x.path)}</strong> ${mb(x.before.bytes)} → ${mb(x.after.bytes)} <span class="stat">−${pct(x.before.bytes - x.after.bytes, x.before.bytes)}%</span>
+        <div class="detail">${esc(dims)} · ${esc(x.why)} · ${esc(pixels)}${x.recommended ? '' : ' · not ticked: compare it first'}</div></label>
+        <details class="compare"><summary>Compare before and after</summary><div class="pair">
+          <figure><img src="${savings!.urls[2 * i]}" alt="" style="width:${width}px"><figcaption>Before</figcaption></figure>
+          <figure><img src="${savings!.urls[2 * i + 1]}" alt="" style="width:${width}px"><figcaption>After</figcaption></figure>
+        </div></details></div></li>`;
+  });
+  const unused = r.unused.map((u, i) => `<li><input type="checkbox" id="unused-${i}" data-unused="${i}">
+      <div><label for="unused-${i}"><strong>${name(u.path)}</strong> ${mb(u.bytes)}
+        <div class="detail">Nothing in the ad names it and no preview loaded it: left out of the zip for upload, kept in the full zip. Tick it only if no script builds its name.</div></label></div></li>`);
+  const skipped = r.skipped.length ? `<p class="sub">Left as they are: ${esc(listed(r.skipped.map((x) => `${x.path.split('/').pop()} (${x.why})`), 8))}.</p>` : '';
+  const none = !shrinks.length && !unused.length ? '<p>Nothing here to make smaller: compress the largest files in an image editor, or shorten the video.</p>' : '';
+  return `${intro}${controls}
+    ${shrinks.length || unused.length ? `<ul class="fixlist savings">${shrinks.join('')}${unused.join('')}</ul>` : none}
+    ${skipped}
+    ${shrinks.length || unused.length ? `<p class="savings-total" id="savings-total">${esc(savingsTotal())}</p><button class="primary" data-action="apply-savings">Apply compression</button>` : ''}`;
+}
+
+/** Measures how large each image shows, then makes the smaller versions, one at a time, in a worker. */
+async function findAllSavings() {
+  const s = session!;
+  const r = result!;
+  const uses = await measureImages(s.frames, s.id);
+  const loaded = loadedPaths(s.frames, s.id);
+  const files = s.files();
+  const upload = [...files.keys()].filter((path) => !isGwdBackup(path) && !s.omitted.has(path));
+  const worker = shrinker();
+  try {
+    const found = await findSavings({ files, upload, htmlPath: s.pkg.htmlPath, refs: r.report.files, uses, loaded }, savingsOptions, worker.run, (done, total) => {
+      if (total) status(`Compressing images: ${done} of ${total}…`, 'busy');
+    });
+    dropSavings();
+    const urls = found.shrinks.flatMap((x) => [
+      URL.createObjectURL(new Blob([files.get(x.path)! as BlobPart], { type: x.type })),
+      URL.createObjectURL(new Blob([x.after.data as BlobPart], { type: x.type })),
+    ]);
+    savings = { result: found, version: s.version, upload: s.zip(true).size, urls };
+  } finally {
+    worker.close();
+  }
+  status('');
+  renderFixes();
+  $('#fixes').querySelector('.savings-options')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+async function applySavings() {
+  if (!savings) return;
+  const found = savings.result;
+  const replace = new Map<string, Uint8Array>();
+  for (const box of app.querySelectorAll<HTMLInputElement>('input[data-shrink]:checked')) {
+    const x = found.shrinks[Number(box.dataset.shrink)];
+    replace.set(x.path, x.after.data);
+  }
+  const omit = [...app.querySelectorAll<HTMLInputElement>('input[data-unused]:checked')].map((b) => found.unused[Number(b.dataset.unused)].path);
+  if (!replace.size && !omit.length) return;
+  const detail = [replace.size ? `${plural(replace.size, 'image')} made smaller` : '', omit.length ? `${plural(omit.length, 'file')} left out of the zip for upload` : ''].filter(Boolean).join(', ');
+  return changeHtml('Compressing and comparing text positions…', (s) => s.applyFiles(replace, omit, { check: 'weight', title: 'Compress the package', detail, edits: [] }));
 }
 
 /**
@@ -612,11 +754,16 @@ function renderCopy() {
 
 async function applySelected() {
   const chosen = [...app.querySelectorAll<HTMLInputElement>('input[data-fix]:checked')].map((i) => result!.plan.fixes[Number(i.dataset.fix)]);
-  // The notes ticked to fix anyway, whose risk the user accepts.
-  for (const box of app.querySelectorAll<HTMLInputElement>('input[data-anyway]:checked')) {
+  // The notes ticked to fix anyway, whose risk the user accepts. Their edits win over a ticked fix's
+  // where both change the same text: a value written instead of the declaration deleted around it.
+  const anyway = [...app.querySelectorAll<HTMLInputElement>('input[data-anyway]:checked')].flatMap((box) => {
     const a = result!.plan.anyway?.[Number(box.dataset.anyway)];
-    if (a) chosen.push({ check: a.check, title: 'Fixed anyway', detail: a.detail, edits: a.edits });
-  }
+    return a ? [{ check: a.check, title: 'Fixed anyway', detail: a.detail, edits: a.edits }] : [];
+  });
+  const taken = anyway.flatMap((f) => f.edits);
+  const clashes = (e: Edit) => taken.some((a) => (a.file ?? '') === (e.file ?? '') && a.start < Math.max(e.end, e.start + 1) && e.start < Math.max(a.end, a.start + 1));
+  const kept = chosen.map((f) => ({ ...f, edits: f.edits.filter((e) => !clashes(e)) })).filter((f) => f.edits.length);
+  chosen.splice(0, chosen.length, ...kept, ...anyway);
   if (!chosen.length) return;
   return changeHtml('Applying fixes and comparing text positions…', (s) => s.apply(chosen));
 }
@@ -627,14 +774,14 @@ async function applySelected() {
  */
 async function changeHtml(what: string, change: (s: Session) => Promise<unknown>) {
   const s = session!;
-  const checked = { html: s.html, lastApply: s.lastApply, result };
+  const checked = { ...s.state(), version: s.version, result };
   setBusy(true);
   try {
     status(what, 'busy');
     await change(s);
     await check();
   } catch (err) {
-    const stale = s.html !== checked.html && result === checked.result;
+    const stale = s.version !== checked.version && result === checked.result;
     if (stale) await s.revert(checked).catch(() => undefined);
     status(esc(err instanceof Error ? err.message : String(err)) + (stale ? ' The file was put back as it was, so the results below still match it.' : ''), 'err');
   } finally {
@@ -673,6 +820,8 @@ app.addEventListener('click', async (e) => {
   if (action === 'open-check') return openCheck(btn.dataset.check ?? '');
   if (busy) return;
   if (action === 'apply') return applySelected();
+  if (action === 'find-savings') return run('Measuring how large each image shows…', findAllSavings);
+  if (action === 'apply-savings') return applySavings();
   if (action === 'download') return download();
   if (action === 'download-upload') return download(true);
   if (action === 'reset') return reset();
@@ -719,6 +868,11 @@ drop.addEventListener('click', (e) => {
 app.addEventListener('change', (e) => {
   const box = e.target as HTMLInputElement;
   if (box.id === 'allow-net') setThirdParty(box.checked);
+  if (box.dataset.savings !== undefined) savingsOptions = { ...savingsOptions, [box.dataset.savings]: Number(box.value) };
+  if (box.dataset.shrink !== undefined || box.dataset.unused !== undefined) {
+    const total = app.querySelector('#savings-total');
+    if (total) total.textContent = savingsTotal();
+  }
   // "Fix all anyway" ticks or clears every item of its checklist item, and follows them.
   if (box.dataset.anywayAll !== undefined) {
     for (const item of app.querySelectorAll<HTMLInputElement>(`input[data-anyway-check="${CSS.escape(box.dataset.anywayAll)}"]`)) item.checked = box.checked;

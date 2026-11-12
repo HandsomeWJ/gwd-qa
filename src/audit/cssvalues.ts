@@ -29,6 +29,8 @@ export interface CssValueIssue {
   end: number;
   /** The value with its decimal commas made points, when that makes it valid. */
   fixed: string | null;
+  /** Another value it most likely meant, where that is valid: a number without the px a unitless property cannot take (z-index: 10px). */
+  suggested?: string;
   /** Why the browser ignores it, when the value is not what is wrong. */
   note?: string;
   /** Set by staticAudit for a <style> declaration: whether what it styles shows text. Absent where that is not known. */
@@ -145,7 +147,9 @@ export function checkCssValues(
     const top = pointDecimals(value, true);
     const all = pointDecimals(value, false);
     const fixed = top !== value && valid(prop, top) ? top : all !== value && all !== top && valid(prop, all) ? all : null;
-    issues.push({ ...where, prop, value, start, end, fixed });
+    const number = /^\s*(-?(?:\d+\.?\d*|\.\d+))px\s*$/i.exec(value)?.[1];
+    const suggested = !fixed && number !== undefined && valid(prop, number) ? number : undefined;
+    issues.push({ ...where, prop, value, start, end, fixed, ...(suggested ? { suggested } : {}) });
   };
   /** `at` maps an offset in the text the declarations were read from to the HTML (or the file). */
   const checkDecls = (decls: Decl[], where: Where, at: (i: number) => number = (i) => i) => {

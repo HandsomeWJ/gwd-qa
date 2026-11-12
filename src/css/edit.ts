@@ -7,7 +7,19 @@ export interface Edit {
   start: number;
   end: number;
   text: string;
+  /** The ad's file it changes, by package path, when it is not the ad's HTML: its offsets are that file's. */
+  file?: string;
 }
+
+/** Edits by the file they change, '' standing for the ad's HTML. */
+export function byFile(edits: Edit[]): Map<string, Edit[]> {
+  const out = new Map<string, Edit[]>();
+  for (const e of edits) out.set(e.file ?? '', [...(out.get(e.file ?? '') ?? []), e]);
+  return out;
+}
+
+/** The edits to the ad's HTML alone. */
+export const htmlEdits = (edits: Edit[]) => edits.filter((e) => !e.file);
 
 export function applyEdits(src: string, edits: Edit[]): string {
   const sorted = [...edits].sort((a, b) => b.start - a.start || b.end - a.end);

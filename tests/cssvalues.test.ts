@@ -24,6 +24,7 @@ const VALUES: Record<string, RegExp> = {
   background: /^url\((("[^"]*")|[^)"]*)\) (calc\(\d*\.?\d+px\)|\d*\.?\d+px) \d*\.?\d+px no-repeat$/,
   font: /^\d*\.?\d+em "[^"]*"$/,
   '-webkit-text-stroke': /^\d*\.?\d+px$/,
+  'z-index': /^-?\d+$/,
 };
 const valid: CssValidator = (prop, value) => (value === 'inherit' ? Object.hasOwn(VALUES, prop) : VALUES[prop]?.test(value) ?? false);
 const issues = (html: string) => cssValueIssues(html, parseCss(html), valid);
@@ -499,6 +500,31 @@ describe("the ad's other files", () => {
     ]);
   });
 
+  it("deletes the values browsers ignore in the ad's own stylesheets and scripts, and offers what they likely meant anyway", () => {
+    const own = page(`  <style type="text/css">
+    @import "carousel.css";
+  </style>
+  <script src="js/custom.js"></script>`, '  <div class="btn"></div>');
+    const texts: Record<string, string> = {
+      'Ad/carousel.css': '.btn {\n  position: absolute;\n  z-index: 10px;\n}\n',
+      'Ad/js/custom.js': "function go(el) {\n  el.style.opacity = '0,6';\n  gwd.actions.events.setInlineStyle('x', 'left: 1px; opacity: 0,2;');\n}",
+    };
+    const report = staticAudit(own, parseCss(own), valid, ad(texts));
+    const p = planFixes({ html: own, css: parseCss(own), boxes: [], media: new Map(), report, safety: [], text: (path) => texts[path] ?? null });
+    const gone = p.fixes.find((f) => f.title.startsWith('Delete CSS values'))!;
+    expect(gone.detail).toBe('.btn z-index: 10px in Ad/carousel.css, x opacity: 0,2 (in go) in Ad/js/custom.js');
+    const edited = (path: string, edits: { file?: string; start: number; end: number; text: string }[]) => applyEdits(texts[path], mergeEdits(edits.filter((e) => e.file === path)));
+    expect(edited('Ad/carousel.css', gone.edits)).toBe('.btn {\n  position: absolute;\n}\n');
+    expect(edited('Ad/js/custom.js', gone.edits)).toBe(texts['Ad/js/custom.js'].replace("'left: 1px; opacity: 0,2;'", "'left: 1px; '"));
+    // z-index takes a whole number: 10 is offered to whoever ticks Fix anyway, as is the point a script's lone value needs.
+    expect(p.manual.map((m) => m.detail)).toEqual([
+      '.btn z-index: 10px in Ad/carousel.css is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 10 in Ad/carousel.css, which may change how the ad looks once it applies.',
+      'el opacity: 0,6 (in go) in Ad/js/custom.js is not valid CSS, so browsers ignore it; write 0.6 in Ad/js/custom.js.',
+      'x opacity: 0,2 (in go) in Ad/js/custom.js is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 0.2 in Ad/js/custom.js, which may change how the ad looks once it applies.',
+    ]);
+    expect(p.anyway?.map((a) => a.edits.map((e) => [e.file, e.text]))).toEqual([[['Ad/carousel.css', '10']], [['Ad/js/custom.js', '0.6']], [['Ad/js/custom.js', '0.2']]]);
+  });
+
   it("never takes a value in another file for the HTML's own at the same offset", () => {
     const fade = page(`  <style type="text/css">
     @import "fade.css";
@@ -536,27 +562,32 @@ describe('fixing CSS values', () => {
     }
   </style>`, '  <div id="SA_bg_1" style="opacity: 0,6"></div>\n  <img id="navigation3_3" src="dot.png">');
 
-  it('writes decimal points in place where only paint changes, on what shows no text', () => {
+  it('writes decimal points in place where only paint changes, on what shows no text, and deletes the rest, which browsers ignore', () => {
     const p = plan(html);
-    const [safe, ...more] = p.fixes.filter((f) => f.check === 'cssValues');
+    const [safe, gone, ...more] = p.fixes.filter((f) => f.check === 'cssValues');
     expect(more).toEqual([]);
     expect(safe.detail).toBe('navigation3_3 opacity: 0,3 -> 0.3 (in gwd.framechange_savings), div#SA_bg_1 opacity: 0,6 -> 0.6');
     expect(applyEdits(html, mergeEdits(safe.edits))).toBe(
       html.replace("'opacity: 0,3;'", "'opacity: 0.3;'").replace('style="opacity: 0,6"', 'style="opacity: 0.6"'),
     );
+    expect(gone.title).toBe('Delete CSS values browsers ignore (nothing changes)');
+    expect(gone.detail).toBe('.gwd-p-a left: 1,5px, .gwd-p-a opacity: abc, .gwd-div-box filter: blur(0,5px)');
+    expect(applyEdits(html, mergeEdits(gone.edits))).toBe(html.replace('      left: 1,5px;\n      opacity: abc;\n', '').replace('      filter: blur(0,5px);\n', ''));
   });
 
   it('leaves to you a value that, once valid, would change how text looks', () => {
     const text = page(HANDLERS, '  <div id="navigation3_3"><span>Next</span></div>\n  <p id="SA_bg_1" style="opacity: 0,6">Hello</p>\n  <div id="SA_x_1" style="opacity: 0,7"><gwd-image></gwd-image></div>');
     const p = plan(text);
-    expect(p.fixes.map((f) => f.detail)).toEqual(['div#SA_x_1 opacity: 0,7 -> 0.7']);
+    // Deleted instead, which changes nothing; writing the point is there for whoever ticks Fix anyway.
+    expect(p.fixes.map((f) => f.detail)).toEqual(['div#SA_x_1 opacity: 0,7 -> 0.7', 'navigation3_3 opacity: 0,3 (in gwd.framechange_savings), p#SA_bg_1 opacity: 0,6']);
     expect(p.manual.map((m) => m.detail)).toEqual([
-      'navigation3_3 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; write 0.3 in GWD. Once valid it would change how its text looks, so it is not changed here.',
-      'p#SA_bg_1 opacity: 0,6 is not valid CSS, so browsers ignore it; write 0.6 in GWD. Once valid it would change how its text looks, so it is not changed here.',
+      'navigation3_3 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 0.3 in GWD: once valid it would change how its text looks.',
+      'p#SA_bg_1 opacity: 0,6 is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 0.6 in GWD: once valid it would change how its text looks.',
     ]);
+    expect(p.anyway?.map((a) => a.edits.map((e) => e.text))).toEqual([['0.3'], ['0.6']]);
     // Where what it styles is not known, it may be text.
     expect(plan(page(HANDLERS)).manual.map((m) => m.detail)).toEqual([
-      'navigation3_3 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; write 0.3 in GWD. Once valid it would change how what it styles looks, which may be text, so it is not changed here.',
+      'navigation3_3 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 0.3 in GWD: once valid it would change how what it styles looks, which may be text.',
     ]);
   });
 
@@ -569,15 +600,20 @@ describe('fixing CSS values', () => {
     };
   </script>`, ['SA_cta_1', 'SA_cta_2', 'SA_cta_3'].map((id) => `  <div id="${id}"></div>`).join('\n'));
     const p = plan(transitions);
-    expect(p.fixes.map((f) => f.detail)).toEqual(['SA_cta_2 transition: opacity 0,5s cubic-bezier(0.42,0,0.58,1) -> opacity 0.5s cubic-bezier(0.42,0,0.58,1) (in gwd.hover)']);
+    expect(p.fixes.map((f) => f.detail)).toEqual([
+      'SA_cta_2 transition: opacity 0,5s cubic-bezier(0.42,0,0.58,1) -> opacity 0.5s cubic-bezier(0.42,0,0.58,1) (in gwd.hover)',
+      'SA_cta_1 transition: all 0,2s linear (in gwd.hover), SA_cta_3 transition-duration: 0,5s (in gwd.hover)',
+    ]);
+    // Deleted from the strings setInlineStyle reads, the rest of each left as it was.
+    expect(applyEdits(transitions, mergeEdits(p.fixes[1].edits))).toBe(transitions.replace("'transition: all 0,2s linear; color: white;'", "'color: white;'").replace("'transition-duration: 0,5s'", "''"));
     // all, or a duration for whatever the element transitions, would make text that jumps slide or grow.
     expect(p.manual.map((m) => m.detail)).toEqual([
-      'SA_cta_1 transition: all 0,2s linear (in gwd.hover) is not valid CSS, so browsers ignore it; write all 0.2s linear in GWD. Once valid it would size, place or animate what it styles, which can move text, so it is not changed here.',
-      'SA_cta_3 transition-duration: 0,5s (in gwd.hover) is not valid CSS, so browsers ignore it; write 0.5s in GWD. Once valid it would size, place or animate what it styles, which can move text, so it is not changed here.',
+      'SA_cta_1 transition: all 0,2s linear (in gwd.hover) is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write all 0.2s linear in GWD: once valid it would size, place or animate what it styles, which can move text.',
+      'SA_cta_3 transition-duration: 0,5s (in gwd.hover) is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 0.5s in GWD: once valid it would size, place or animate what it styles, which can move text.',
     ]);
   });
 
-  it('never edits a URL or string, and offers no fix for what setInlineStyle ignores whatever its value', () => {
+  it('never edits a URL or string, and deletes what setInlineStyle ignores whatever its value', () => {
     const html = page(`  <style type="text/css">
     .gwd-div-a {
       background: url("assets/hero_1,5x.png") 1,5px 1,5px no-repeat;
@@ -590,20 +626,22 @@ describe('fixing CSS values', () => {
     };
   </script>`, '  <div class="gwd-div-a"></div>');
     const p = plan(html);
-    expect(p.fixes.map((f) => f.detail)).toEqual(['.gwd-div-a background: url("assets/hero_1,5x.png") 1,5px 1,5px no-repeat -> url("assets/hero_1,5x.png") 1.5px 1.5px no-repeat']);
-    expect(applyEdits(html, mergeEdits(p.fixes[0].edits))).toBe(html.replace('1,5px 1,5px', '1.5px 1.5px'));
-    expect(p.manual.map((m) => m.detail)).toEqual([
-      'a opacity: 0,3 !important (in gwd.styles) is ignored: setInlineStyle takes !important as part of the value, which browsers then reject; correct it in GWD.',
-      'b opacity : 0,4 (in gwd.styles) is ignored: setInlineStyle takes the spaces around the name as part of it, so browsers know no such property; correct it in GWD.',
+    expect(p.fixes.map((f) => f.detail)).toEqual([
+      '.gwd-div-a background: url("assets/hero_1,5x.png") 1,5px 1,5px no-repeat -> url("assets/hero_1,5x.png") 1.5px 1.5px no-repeat',
+      'a opacity: 0,3 !important (in gwd.styles), b opacity : 0,4 (in gwd.styles)',
     ]);
+    expect(applyEdits(html, mergeEdits(p.fixes[0].edits))).toBe(html.replace('1,5px 1,5px', '1.5px 1.5px'));
+    // GWD's runtime never sets either, so deleting them changes nothing.
+    expect(applyEdits(html, mergeEdits(p.fixes[1].edits))).toBe(html.replace("'opacity: 0,3 !important;'", "''").replace("'opacity : 0,4'", "''"));
+    expect(p.manual).toEqual([]);
   });
 
-  it('leaves other invalid values to you, and those that would size or place things', () => {
+  it('deletes other invalid values, and leaves writing those that would size or place things to you', () => {
     // A filter makes its element the containing block of positioned text inside it, so it can move text.
+    // opacity: abc has no value it likely meant, so deleting it leaves nothing to decide.
     expect(plan(html).manual.map((m) => m.detail)).toEqual([
-      '.gwd-p-a left: 1,5px is not valid CSS, so browsers ignore it; write 1.5px in GWD. Once valid it would size, place or animate what it styles, which can move text, so it is not changed here.',
-      '.gwd-p-a opacity: abc is not valid CSS, so browsers ignore it; correct it in GWD.',
-      '.gwd-div-box filter: blur(0,5px) is not valid CSS, so browsers ignore it; write blur(0.5px) in GWD. Once valid it would size, place or animate what it styles, which can move text, so it is not changed here.',
+      '.gwd-p-a left: 1,5px is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 1.5px in GWD: once valid it would size, place or animate what it styles, which can move text.',
+      '.gwd-div-box filter: blur(0,5px) is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write blur(0.5px) in GWD: once valid it would size, place or animate what it styles, which can move text.',
     ]);
   });
 

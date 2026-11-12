@@ -81,10 +81,11 @@ test('checks every page and both ends of a range, then fixes without moving text
 test('leaves to you a CSS value that, once valid, would change how text looks', async ({ page }) => {
   // The same event, on the button that says "Go".
   await load(page, mockZip(mockAdHtml().replace("setInlineStyle('SA_dot_1', 'opacity: 0,3;')", "setInlineStyle('SA_cta_1', 'opacity: 0,3;')")));
-  await expect(page.locator('#fixes .manual')).toContainText('SA_cta_1 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; write 0.3 in GWD. Once valid it would change how its text looks, so it is not changed here.');
-  const details = page.locator('#fixes .fixlist .detail');
-  await expect(details.filter({ hasText: 'div#SA_rule_1 opacity: 0,5 -> 0.5' })).toHaveCount(1);
-  expect((await details.allInnerTexts()).join('\n')).not.toContain('SA_cta_1');
+  // Deleted, which changes nothing as browsers ignore it; writing the point is left to whoever ticks Fix anyway.
+  await expect(page.locator('#fixes .manual')).toContainText('SA_cta_1 opacity: 0,3 (in gwd.framechange_savings) is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 0.3 in GWD: once valid it would change how its text looks.');
+  const points = page.locator('#fixes .fixlist li', { hasText: 'Write decimal points in CSS values' }).locator('.detail');
+  await expect(points).toHaveText('div#SA_rule_1 opacity: 0,5 -> 0.5');
+  await expect(page.locator('#fixes .fixlist li', { hasText: 'Delete CSS values browsers ignore' }).locator('.detail')).toHaveText('SA_cta_1 opacity: 0,3 (in gwd.framechange_savings)');
 });
 
 test('checks CSS values as Chromium reads them, skipping GWD\'s runtime and styles that never apply', async ({ page }) => {
@@ -142,7 +143,9 @@ test("checks the ad's own stylesheets and scripts, and what GWD's setInlineStyle
   const cssFix = page.locator('#fixes .fixlist li', { hasText: 'Write decimal points in CSS values' }).first();
   await expect(cssFix).toContainText('.gwd-div-z background: url("hero_1,5x.png") 1,5px 1,5px no-repeat -> url("hero_1,5x.png") 1.5px 1.5px no-repeat');
   await expect(cssFix.locator('input')).toBeChecked();
-  await expect(page.locator('#fixes .manual')).toContainText('opacity: 0,7 in Mock Ad/extra.css is not valid CSS, so browsers ignore it; write 0.7 in Mock Ad/extra.css.');
+  await expect(page.locator('#fixes .manual')).toContainText('opacity: 0,7 in Mock Ad/extra.css is not valid CSS, so browsers ignore it; the fix above deletes it, which changes nothing. To have it apply instead, write 0.7 in Mock Ad/extra.css, which may change how the ad looks once it applies.');
+  // A script's lone style.opacity is a statement, not CSS to delete: only writing the point is offered.
+  await expect(page.locator('#fixes .manual')).toContainText('el opacity: 0,8 (in go) in Mock Ad/js/custom.js is not valid CSS, so browsers ignore it; write 0.8 in Mock Ad/js/custom.js.');
 });
 
 test('shows Review, not Pass, for CSS values when a stylesheet the ad loads is not among its files', async ({ page }) => {

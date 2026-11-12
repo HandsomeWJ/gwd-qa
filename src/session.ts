@@ -1,6 +1,6 @@
 // One loaded ad: its files, the preview frames, the checks, and the fixes applied to it.
 
-import { applyEdits, mergeEdits } from './css/edit';
+import { applyEdits, byFile, mergeEdits } from './css/edit';
 import { parseCss } from './css/parse';
 import { LayoutNet, layoutSizes, type LayoutDiff } from './audit/layout';
 import { findStates, type States } from './audit/states';
@@ -29,6 +29,16 @@ export interface AuditResult {
   layout: { sizes: number; unseen: number; state: string | null; ms: number };
 }
 
+/** What the ad's files are at one moment, for putting them back. */
+export interface SessionState {
+  html: string;
+  lastApply: ApplyResult | null;
+  /** The ad's other files as fixes and compression left them, by path. */
+  edited: Map<string, Uint8Array>;
+  /** Files the zip for upload leaves out. */
+  omitted: Set<string>;
+}
+
 export interface ApplyResult {
   applied: PlannedFix[];
   positions: ReturnType<typeof comparePositions>;
@@ -49,6 +59,12 @@ export class Session {
   /** GWD runtime files the ad came with that cannot run beside the stand-in, so it runs in their place too. */
   readonly displacedRuntime: string[] = [];
   html: string;
+  /** The ad's other files as fixes and compression left them, by path; the HTML is `html`. */
+  private edited = new Map<string, Uint8Array>();
+  /** Files the zip for upload leaves out, as ones the ad never loads, by the user's choice. */
+  readonly omitted = new Set<string>();
+  /** Counts every change to the files, so a result can tell whether it still matches them. */
+  version = 0;
   frames: AdFrame[] = [];
   sizes: string[] = [];
   /** Served sizes with no preview: not a size GWD writes, or a range no size fits. */
@@ -79,12 +95,34 @@ export class Session {
   }
 
   get changed(): boolean {
-    return this.html !== this.originalHtml;
+    return this.html !== this.originalHtml || this.edited.size > 0 || this.omitted.size > 0;
   }
 
   /** Every file, with the fixes applied. */
   files(): Map<string, Uint8Array> {
-    return new Map([...this.pkg.files, [this.pkg.htmlPath, encoder.encode(this.html)]]);
+    return new Map([...this.pkg.files, ...this.edited, [this.pkg.htmlPath, encoder.encode(this.html)]]);
+  }
+
+  /**
+   * A file's text as it is now, or null for one the ad does not have, or one whose bytes would not come
+   * back the same from its text (not UTF-8, or with a byte order mark), which no edit may then touch.
+   */
+  text(path: string): string | null {
+    if (path === this.pkg.htmlPath) return this.html;
+    const data = this.edited.get(path) ?? this.pkg.files.get(path);
+    if (!data) return null;
+    const text = decoder.decode(data);
+    const back = encoder.encode(text);
+    return back.length === data.length && back.every((b, i) => b === data[i]) ? text : null;
+  }
+
+  /** The other files changed so far, with what they were. */
+  get changes(): { path: string; before: Uint8Array; after: Uint8Array }[] {
+    return [...this.edited].map(([path, after]) => ({ path, before: this.pkg.files.get(path) ?? new Uint8Array(0), after }));
+  }
+
+  state(): SessionState {
+    return { html: this.html, lastApply: this.lastApply, edited: new Map(this.edited), omitted: new Set(this.omitted) };
   }
 
   /** GWD's backup copies, which the upload-ready zip leaves out. */
@@ -173,10 +211,10 @@ export class Session {
   async audit(): Promise<AuditResult> {
     this.assertStarted();
     const css = parseCss(this.html);
-    const report = staticAudit(this.html, css, undefined, this.pkg);
+    const report = staticAudit(this.html, css, undefined, { files: this.files(), htmlPath: this.pkg.htmlPath });
     const seen = await observe(this.frames, css, this.states(), report.clicks); // shows each page in turn, pausing animations
     const findings = [...report.findings, ...renderFindings(seen.boxes), ...clickFindings(seen.clicks), ...this.weigh()];
-    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, clicks: seen.clicks, media: seen.media, report, safety: seen.safety, showers: this.states().showers, setters: this.states().setters, incomplete: seen.incomplete });
+    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, clicks: seen.clicks, media: seen.media, report, safety: seen.safety, showers: this.states().showers, setters: this.states().setters, incomplete: seen.incomplete, text: (path) => this.text(path) });
     // Laid out while the frames restart: no fix is offered that moves text in a size no frame shows.
     const net = this.layoutNet();
     const html = this.html;
@@ -203,8 +241,19 @@ export class Session {
     this.assertStarted();
     const before = await positions(this.frames);
     const html = this.html;
-    this.html = applyEdits(this.html, mergeEdits(fixes.flatMap((f) => f.edits)));
+    const groups = byFile(fixes.flatMap((f) => f.edits));
+    this.html = applyEdits(this.html, mergeEdits(groups.get('') ?? []));
     await updateFile(this.id, this.pkg.htmlPath, encoder.encode(this.html));
+    // A fix in one of the ad's own stylesheets or scripts edits that file's text.
+    for (const [path, edits] of groups) {
+      if (!path) continue;
+      const text = this.text(path);
+      if (text === null) throw new Error(`${path} is not among the ad's files.`);
+      const data = encoder.encode(applyEdits(text, mergeEdits(edits)));
+      this.edited.set(path, data);
+      await updateFile(this.id, path, data);
+    }
+    this.version++;
     await this.reloadAll();
     this.assertStarted();
     const moved = comparePositions(before, await positions(this.frames), fixes.flatMap((f) => f.hidden ?? []));
@@ -221,29 +270,60 @@ export class Session {
     return result;
   }
 
-  undo(): Promise<void> {
-    return this.revert({ html: this.originalHtml, lastApply: null });
+  /**
+   * Replaces the ad's files with smaller ones (compressed images) and leaves files out of the zip for
+   * upload, then proves text did not move, as apply() does.
+   */
+  async applyFiles(replace: Map<string, Uint8Array>, omit: string[], fix: PlannedFix): Promise<ApplyResult> {
+    await this.reloadAll();
+    this.assertStarted();
+    const before = await positions(this.frames);
+    for (const [path, data] of replace) {
+      this.edited.set(path, data);
+      await updateFile(this.id, path, data);
+    }
+    omit.forEach((path) => this.omitted.add(path));
+    this.version++;
+    await this.reloadAll();
+    this.assertStarted();
+    const moved = comparePositions(before, await positions(this.frames), []);
+    await this.reloadAll(); // positions() leaves the frames paused on their last page
+    // The HTML is as it was, so the layout without scripts has nothing to compare.
+    const result = { applied: [fix], positions: moved, layout: { diffs: [], sizes: 0, ms: 0 } };
+    this.lastApply = result;
+    return result;
   }
 
-  /** Puts the HTML back as it was at an earlier point, such as when the results on the page were checked. */
-  async revert(to: { html: string; lastApply: ApplyResult | null }): Promise<void> {
+  undo(): Promise<void> {
+    return this.revert({ html: this.originalHtml, lastApply: null, edited: new Map(), omitted: new Set() });
+  }
+
+  /** Puts the files back as they were at an earlier point, such as when the results on the page were checked. */
+  async revert(to: SessionState): Promise<void> {
+    const touched = new Set([...this.edited.keys(), ...to.edited.keys()]);
     this.html = to.html;
     this.lastApply = to.lastApply;
+    this.edited = new Map(to.edited);
+    this.omitted.clear();
+    to.omitted.forEach((path) => this.omitted.add(path));
+    this.version++;
     await updateFile(this.id, this.pkg.htmlPath, encoder.encode(this.html));
+    for (const path of touched) await updateFile(this.id, path, this.edited.get(path) ?? this.pkg.files.get(path)!);
     await this.reloadAll();
   }
 
   /** The package weight check: the zip for upload as it downloads now, with the fixes applied so far. */
   private weigh(): Finding[] {
     if (this.pkg.kind === 'html') return weightFindings(0, [], true);
-    const files = [...this.files()].filter(([path]) => !isGwdBackup(path)).map(([path, data]): [string, number] => [path, data.length]);
+    const files = [...this.files()].filter(([path]) => !isGwdBackup(path) && !this.omitted.has(path)).map(([path, data]): [string, number] => [path, data.length]);
     return weightFindings(this.zip(true).size, files, false);
   }
 
-  /** The zip with the fixes applied; `forUpload` leaves out GWD's backup copies. */
+  /** The zip with the fixes applied; `forUpload` leaves out GWD's backup copies and the files chosen to leave out. */
   zip(forUpload = false): Blob {
-    const changed = new Map([[this.pkg.htmlPath, encoder.encode(this.html)]]);
-    return new Blob([writeZip(this.pkg, changed, forUpload ? isGwdBackup : undefined) as BlobPart], { type: 'application/zip' });
+    const changed = new Map([...this.edited, [this.pkg.htmlPath, encoder.encode(this.html)]]);
+    const leaveOut = forUpload ? (name: string) => isGwdBackup(name) || this.omitted.has(name) : undefined;
+    return new Blob([writeZip(this.pkg, changed, leaveOut) as BlobPart], { type: 'application/zip' });
   }
 
   /** The HTML with the fixes applied, for an ad that came as just its HTML. */

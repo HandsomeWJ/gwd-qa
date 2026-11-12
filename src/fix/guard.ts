@@ -3,7 +3,7 @@
 // text and line spacing as it is. Whatever would change one is taken out of the plan and left to you,
 // with a note: a class at a time where a fix has a part per class, else the whole fix.
 
-import { applyEdits, mergeEdits, type Edit } from '../css/edit';
+import { applyEdits, htmlEdits, mergeEdits, type Edit } from '../css/edit';
 import type { LayoutDiff } from '../audit/layout';
 import type { CheckId } from '../audit/types';
 import { withoutPart, type FixPlan, type PlannedFix } from './plan';
@@ -29,7 +29,8 @@ function note(plan: FixPlan, check: CheckId, detail: string, edits: Edit[]) {
 
 /** Takes out of the plan whatever the layout check finds moving text, with a note for each. */
 export async function guardPlan(plan: FixPlan, html: string, check: LayoutCheck): Promise<void> {
-  const withFixes: WithFixes = (fixes) => applyEdits(html, mergeEdits(fixes.flatMap((f) => f.edits)));
+  // Edits to the ad's other files are left out: only fixes that cannot change how anything is laid out edit them.
+  const withFixes: WithFixes = (fixes) => applyEdits(html, mergeEdits(htmlEdits(fixes.flatMap((f) => f.edits))));
   try {
     await guardParts(plan, plan.fixes.find((f) => f.check === 'lineHeight' && f.parts?.length), html, check, withFixes);
     await guardOthers(plan, html, check, withFixes);
