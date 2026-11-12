@@ -319,6 +319,19 @@ export class Session {
     return weightFindings(this.zip(true).size, files, false);
   }
 
+  private originalUpload = -1;
+  private currentUpload = { version: -1, bytes: 0 };
+
+  /** The zip for upload's size: as the ad came, or as it downloads now (worked out once per change). */
+  uploadSize(original = false): number {
+    if (original) {
+      if (this.originalUpload < 0) this.originalUpload = writeZip(this.pkg, new Map(), isGwdBackup).length;
+      return this.originalUpload;
+    }
+    if (this.currentUpload.version !== this.version) this.currentUpload = { version: this.version, bytes: this.zip(true).size };
+    return this.currentUpload.bytes;
+  }
+
   /** The zip with the fixes applied; `forUpload` leaves out GWD's backup copies and the files chosen to leave out. */
   zip(forUpload = false): Blob {
     const changed = new Map([...this.edited, [this.pkg.htmlPath, encoder.encode(this.html)]]);

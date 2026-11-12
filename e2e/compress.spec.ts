@@ -48,7 +48,7 @@ test('resizes an image far larger than it shows, moving no text, and Undo puts i
   await page.getByRole('button', { name: 'Apply compression' }).click();
   await expect(page.locator('#fixes .banner.ok')).toContainText('exactly where they were', { timeout: 120_000 });
   await expect(row(page, 'weight').locator('summary .pill')).toHaveText('Pass');
-  await expect(page.locator('#summary')).toContainText('Replaced with smaller versions: noise.png');
+  await expect(page.locator('#summary table.weight-result tr', { hasText: 'noise.png' })).toContainText('200 × 200');
   const shown = () => ad(page).locator('#SA_noise_1').evaluate((img) => [(img as HTMLImageElement).naturalWidth, img.getBoundingClientRect().width]);
   await expect.poll(shown).toEqual([200, 100]);
 
@@ -68,11 +68,12 @@ test('Fix package weight compresses as far as it takes in one press, moving no t
   await page.evaluate(() => {
     const seen: string[] = [];
     Object.assign(window, { progressSeen: seen });
-    const status = document.querySelector('#status')!;
+    // Beside the button, where the progress shows.
+    const beside = document.querySelector('#weight-progress')!;
     new MutationObserver(() => {
-      const p = status.querySelector('.progress');
+      const p = beside.querySelector('.progress');
       if (p) seen.push(p.textContent ?? '');
-    }).observe(status, { childList: true, subtree: true, characterData: true });
+    }).observe(beside, { childList: true, subtree: true, characterData: true });
   });
   await page.getByRole('button', { name: 'Fix package weight' }).click();
   await expect(page.locator('#fixes .banner.ok').first()).toContainText('exactly where they were', { timeout: 180_000 });
@@ -83,13 +84,32 @@ test('Fix package weight compresses as far as it takes in one press, moving no t
   expect(seen.some((t) => /Zip for upload: 5\.\d\d MB → 0\.\d\d MB so far/.test(t))).toBe(true);
   expect(seen.some((t) => t.includes('checking that no text moved'))).toBe(true);
   // What it did stays on the page: the zip before and after, and each file's.
-  await expect(page.locator('#fixes .weight-head')).toHaveText(/^Fix package weight made the zip for upload 5\.\d\d MB → (\d+ KB|0\.\d\d MB), under the 4 MB limit\.$/);
-  const noise = page.locator('table.weight-result tr', { hasText: 'noise.png' });
+  // Beside the button, where the progress showed: the zip before and after.
+  const done = page.locator('#fixes .weight-actions .weight-done');
+  await expect(done.locator('strong')).toHaveText(/^Zip for upload: 5\.\d\d MB → (\d+ KB|0\.\d\d MB)$/);
+  await expect(done).toContainText(', under the 4 MB limit.');
+  await expect(done.locator('.progress-meta')).toHaveText(/^1 image made smaller, 5\.\d\d MB → (\d+ KB|0\.\d\d MB) · gwd_workspace\.json left out of the zip for upload$/);
+  const button = page.locator('#fixes .weight-actions').getByRole('button', { name: 'Package weight fixed' });
+  await expect(button).toBeDisabled();
+  const [b, d] = [(await button.boundingBox())!, (await done.boundingBox())!];
+  expect(d.x).toBeGreaterThanOrEqual(b.x + b.width);
+  expect(Math.abs(d.y - b.y)).toBeLessThan(2);
+  const noise = page.locator('#fixes table.weight-result tr', { hasText: 'noise.png' });
   await expect(noise.locator('td').nth(1)).toHaveText(/^5\.\d\d MB1300 × 1300$/);
   await expect(noise.locator('td').nth(2)).toContainText('200 × 200');
   await expect(noise.locator('td').nth(3)).toHaveText('resized to 200 × 200, stored without loss');
-  await expect(page.locator('table.weight-result tr', { hasText: 'gwd_workspace.json' })).toContainText('left out of the zip for upload');
-  await expect(page.locator('#summary')).toContainText('Replaced with smaller versions: noise.png');
+  await expect(page.locator('#fixes table.weight-result tr', { hasText: 'gwd_workspace.json' })).toContainText('left out of the zip for upload');
+  // Other fixes applied after it leave what it did on the page.
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#fixes .banner').first()).toContainText('exactly where they were', { timeout: 180_000 });
+  await expect(page.locator('#fixes .weight-done')).toContainText('under the 4 MB limit');
+  await expect(page.locator('#fixes .weight-actions').getByRole('button', { name: 'Package weight fixed' })).toBeDisabled();
+  await expect(page.locator('#summary .weight-total')).toContainText('under the 4 MB limit');
+  // The summary at the top says it too: the zip before and after, and each file's.
+  await expect(page.locator('#summary .weight-total')).toHaveText(/^Zip for upload: 5\.\d\d MB → (\d+ KB|0\.\d\d MB), under the 4 MB limit\.$/);
+  const top = page.locator('#summary table.weight-result tr', { hasText: 'noise.png' });
+  await expect(top.locator('td').nth(1)).toHaveText(/^5\.\d\d MB1300 × 1300$/);
+  await expect(top.locator('td').nth(2)).toContainText('200 × 200');
   await expect(page.locator('#summary')).toContainText('Left out of the zip for upload: gwd_workspace.json');
   await expect.poll(() => ad(page).locator('#SA_noise_1').evaluate((img) => [(img as HTMLImageElement).naturalWidth, img.getBoundingClientRect().width])).toEqual([200, 100]);
 });
