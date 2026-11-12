@@ -186,3 +186,28 @@ test('deletes keyframe values only where the ad looks the same without them', as
   expect(block(fixed, 'kf-veil')).toContain('opacity: 0.5;');
   expect(block(fixed, 'kf-twin-b')).toContain('height: 30px;');
 });
+
+test('deletes values that look different too, where you tick Fix anyway and accept the risk', async ({ page }) => {
+  await load(page, looksAd());
+  const note = (name: string) => page.locator('#fixes .manual li li', { hasText: `${name}: deleting` });
+  await expect(note('kf-photo').locator('input[data-anyway]')).not.toBeChecked();
+  // Fix all ticks every keyframes item; clearing one leaves it half ticked.
+  const all = page.locator('#fixes .manual input[data-anyway-all="keyframes"]');
+  await expect(all.locator('xpath=..')).toHaveText('Fix all 3 anyway');
+  await all.check();
+  for (const box of await page.locator('#fixes .manual input[data-anyway-check="keyframes"]').all()) await expect(box).toBeChecked();
+  await note('kf-veil').locator('input[data-anyway]').uncheck();
+  await expect(all).not.toBeChecked();
+  expect(await all.evaluate((el) => (el as HTMLInputElement).indeterminate)).toBe(true);
+
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#fixes .banner')).toContainText(/^Applied \d+ fixes\./, { timeout: 90_000 });
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
+  const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
+  expect(block(fixed, 'kf-photo')).not.toContain('height');
+  expect(block(fixed, 'kf-twin-b')).not.toContain('height');
+  expect(block(fixed, 'kf-veil')).toContain('opacity: 0.5;'); // not ticked
+  expect(block(fixed, 'kf-band')).not.toContain('width'); // the fix that keeps the look went in as well
+  await expect(page.locator('#fixes .manual')).toContainText('kf-veil: deleting opacity would change how it looks');
+  await expect(page.locator('#fixes .manual')).not.toContainText('kf-photo:');
+});

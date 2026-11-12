@@ -89,8 +89,10 @@ test('a failed check after applying puts the file back, so the fixes on the page
 
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   await expect(page.locator('#fixes .banner')).toContainText('exactly where they were', { timeout: 90_000 });
-  // the small note, not marked as a disclaimer, and kf-in, which also runs inside the range where no preview measures it
-  await expect(page.locator('#summary')).toContainText('2 checks failing');
+  // kf-in, which also runs inside the range where no preview measures it; the small note, not marked as a
+  // disclaimer, is a recommendation (QA checklist, 2026-11-13)
+  await expect(page.locator('#summary')).toContainText('1 check failing');
+  await expect(page.locator('#summary')).toContainText('1 recommendation');
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download fixed zip', exact: true }).click()]);
   const fixed = strFromU8(unzipSync(new Uint8Array(readFileSync((await download.path())!)))['Mock Ad/Responsive.html']);
   expect(fixed).toContain("setInlineStyle('SA_dot_1', 'opacity: 0.3;')");
@@ -127,7 +129,8 @@ test('the apply banner counts changed line spacings and moved texts apart', asyn
   });
   await page.getByRole('button', { name: 'Apply selected fixes' }).click();
   const banner = page.locator('#fixes .banner.warn');
-  await expect(banner).toContainText('Applied 6 fixes, but 6 line spacings changed and 6 texts moved.', { timeout: 90_000 });
+  // Seven fixes, the pointer cursor for the whole ad among them (it loads param.js and has no tap area).
+  await expect(banner).toContainText('Applied 7 fixes, but 6 line spacings changed and 6 texts moved.', { timeout: 90_000 });
   await expect(banner.locator('li').first()).toHaveText('300x250 page1 p#SA_headline_1 line-height');
 });
 
@@ -248,7 +251,8 @@ test('a text whose label is a name every object has is not a disclaimer until it
     .replace(/\s*<p class="gwd-p-d" id="SA_disclaimer_1">Small print<\/p>/, '');
   await load(page, 'constructor.zip', mockZip(html));
   const type = row(page, 'type');
-  await expect(type.locator('summary .pill')).toHaveText('Fail');
+  // Type size is a recommendation, not a blocking error (QA checklist, 2026-11-13).
+  await expect(type.locator('summary .pill')).toHaveText('Recommendation');
   await expect(type.locator('summary .count')).toHaveText('1 item');
   await type.locator('summary').click();
   await expect(type.locator('input[data-disclaimer="constructor"]').first()).not.toBeChecked();
@@ -287,10 +291,12 @@ test('a page that never showed leaves the checks of what renders to review, neve
   await expect(meta).not.toContainText('Every check passes');
   // What renders never passes; what is read from the source alone still does, but for the keyframes values, which
   // are checked as they render: the page that never showed was not checked, so they stay.
+  // The first six rows read what renders (the pointer cursor among them), then environment, position, text
+  // fade-in, keyframes, CSS values, StackAdapt scripts, package files and package weight.
   const pills = await page.locator('#checklist details[data-check] summary .pill').allInnerTexts();
-  expect(pills.slice(0, 5).filter((p) => p === 'Pass')).toEqual([]);
-  expect(pills.slice(0, 5)).toContain('Review');
-  expect(pills.slice(5)).toEqual(['Pass', 'Pass', 'Pass', 'Fail', 'Pass', 'Pass']);
+  expect(pills.slice(0, 6).filter((p) => p === 'Pass')).toEqual([]);
+  expect(pills.slice(0, 6)).toContain('Review');
+  expect(pills.slice(6)).toEqual(['Pass', 'Pass', 'Pass', 'Fail', 'Pass', 'Pass', 'Pass', 'Pass']);
 });
 
 test('a served size with no preview leaves the checks of what renders to review', async ({ page }) => {

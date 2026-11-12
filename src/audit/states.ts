@@ -76,7 +76,7 @@ const STATIC_PSEUDO = /^(first-child|last-child|only-child|first-of-type|last-of
 /** A selector part that styles a pseudo-element, not the element. */
 const PSEUDO_ELEMENT = /::|:(before|after|first-line|first-letter)(?![\w-])/i;
 /** Script libraries whose code only runs when the ad's own code calls it; their calls are found instead. */
-const LIBRARY = /^(jquery|zepto|gsap|tweenmax|tweenlite|timelinemax|timelinelite|anime|velocity|hammer|lottie|bodymovin)[\w.-]*\.js$/i;
+export const LIBRARY = /^(jquery|zepto|gsap|tweenmax|tweenlite|timelinemax|timelinelite|anime|velocity|hammer|lottie|bodymovin)[\w.-]*\.js$/i;
 /** Library calls that set styles or classes. */
 const LIBRARY_CALL = /\.(css|addClass|removeClass|toggleClass|animate|fadeIn|fadeOut|fadeTo|fadeToggle|slideUp|slideDown|slideToggle|show|hide|toggle)\s*\(|\.attr\s*\(\s*['"](style|class)['"]|\b(gsap|TweenMax|TweenLite|TimelineMax|TimelineLite|anime|Velocity|lottie|bodymovin)\s*[.(]/;
 

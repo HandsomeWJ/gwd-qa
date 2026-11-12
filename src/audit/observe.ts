@@ -4,9 +4,10 @@
 
 import { lastCompound, singleClass, type CssModel, type Decl, type MediaBlock, type StyleRule } from '../css/parse';
 import { looksSame, MOVES_NOTHING, propKey } from './props';
+import type { ClickReport } from './clicks';
 import { gwdElements, gwdRefNames, type States } from './states';
 import { hasDirectText, heldInBlock, label } from './static';
-import type { Box, Inheritor } from './types';
+import type { Box, ClickBox, Inheritor } from './types';
 
 export interface AdFrame {
   size: string; // served size key
@@ -77,6 +78,8 @@ export function domPath(el: Element): string {
 
 export interface Observation {
   boxes: Box[];
+  /** The clickable elements, as each frame saw them on each page. */
+  clicks: ClickBox[];
   /** Per frame label, the stylesheet's media conditions that apply in that frame. */
   media: Map<string, Set<string>>;
   safety: SafetyMismatch[];
@@ -236,6 +239,73 @@ export function declared(win: Window, el: Element, props: string[]): Record<stri
   for (const p of props) {
     const inline = (el as HTMLElement).style?.getPropertyValue(p);
     if (inline) out[p] = inline;
+  }
+  return out;
+}
+
+/**
+ * The cursor a :hover rule gives the element, as it shows under the mouse; null when none does. The
+ * last such rule that matches wins, as declared() reads them.
+ */
+function hoverCursor(win: Window, el: Element): string | null {
+  let found: string | null = null;
+  const walk = (rules: CSSRuleList) => {
+    for (const rule of rules) {
+      const media = (rule as CSSMediaRule).media;
+      if (media && (rule as CSSMediaRule).cssRules) {
+        if (win.matchMedia(media.mediaText).matches) walk((rule as CSSMediaRule).cssRules);
+        continue;
+      }
+      const style = rule as CSSStyleRule;
+      if (!style.selectorText?.includes(':hover') || !style.style?.getPropertyValue('cursor')) continue;
+      for (const part of style.selectorText.split(',')) {
+        if (!part.includes(':hover')) continue;
+        try {
+          if (el.matches(part.replace(/:hover\b/g, '') || '*')) found = style.style.getPropertyValue('cursor');
+        } catch {
+          // a selector this browser cannot match
+        }
+      }
+    }
+  };
+  for (const sheet of win.document.styleSheets) {
+    try {
+      walk(sheet.cssRules);
+    } catch {
+      // cross-origin stylesheet (e.g. Google Fonts)
+    }
+  }
+  return found;
+}
+
+/** The clickable elements in scope, each once per frame, with the cursor each shows: for the pointer cursor check. */
+function clicksIn(f: AdFrame, scope: Element, multi: boolean, report: ClickReport, seen: WeakSet<Element>): ClickBox[] {
+  const { doc, win } = frameParts(f);
+  const out: ClickBox[] = [];
+  for (const r of report.refs) {
+    let els: Element[];
+    try {
+      els = r.kind === 'gwd' ? gwdElements(doc, r.ref).filter((el) => scope.contains(el)) : [...(scope.matches(r.ref) ? [scope] : []), ...scope.querySelectorAll(r.ref)];
+    } catch {
+      continue; // a selector this browser cannot match
+    }
+    for (const el of els) {
+      if (seen.has(el) || el.closest('template')) continue;
+      seen.add(el);
+      const cs = win.getComputedStyle(el);
+      out.push({
+        frame: f.label,
+        page: pageOf(el, multi),
+        target: label(el),
+        id: el.id,
+        tag: el.tagName.toLowerCase(),
+        classes: [...el.classList],
+        why: r.why,
+        cursor: hoverCursor(win, el) ?? cs.cursor,
+        own: declared(win, el, ['cursor']).cursor,
+        inert: cs.pointerEvents === 'none',
+      });
+    }
   }
   return out;
 }
@@ -947,7 +1017,7 @@ function keyframeSafety(f: AdFrame, scope: Element, multi: boolean, states?: Sta
  * Reads every frame, showing each GWD page in turn. Leaves the frames on their last page. `states`
  * holds the classes the ad's scripts put on elements, as when they are clicked.
  */
-export async function observe(frames: AdFrame[], css: CssModel, states?: States): Promise<Observation> {
+export async function observe(frames: AdFrame[], css: CssModel, states?: States, clickables?: ClickReport): Promise<Observation> {
   const conditions = [...new Set(css.media.map((m) => m.media))];
   const live: CssModel = { ...css, rules: css.rules.map((r) => ({ ...r, decls: r.decls.filter(kept) })) };
   const blocks = css.media
@@ -976,20 +1046,24 @@ export async function observe(frames: AdFrame[], css: CssModel, states?: States)
   const results = await Promise.all(frames.map(async (f) => {
     const { doc, win } = frameParts(f);
     const boxes: Box[] = [];
+    const clicks: ClickBox[] = [];
+    const clicked = new WeakSet<Element>();
     const safety: SafetyMismatch[] = [];
     let checked = 0;
     const ctx: Context = { css: live, blocks, fit: fittingOf(doc, win), claimed, specs: [], animators, holders, stateAnimated };
     const visit = await visitPages(f, (scope, multi) => {
       boxes.push(...boxesIn(f, scope, multi, ctx));
+      if (clickables) clicks.push(...clicksIn(f, scope, multi, clickables, clicked));
       const s = keyframeSafety(f, scope, multi, states); // pauses animations, so it goes after the boxes
       checked += s.checked;
       safety.push(...s.mismatches);
     });
     await runProbes(doc, ctx.specs);
-    return { f, media: new Set(conditions.filter((c) => win.matchMedia(c).matches)), boxes, safety, checked, visit };
+    return { f, media: new Set(conditions.filter((c) => win.matchMedia(c).matches)), boxes, clicks, safety, checked, visit };
   }));
   return {
     boxes: results.flatMap((r) => r.boxes),
+    clicks: results.flatMap((r) => r.clicks),
     media: new Map(results.map((r) => [r.f.label, r.media])),
     safety: results.flatMap((r) => r.safety),
     safetyChecked: results.reduce((n, r) => n + r.checked, 0),

@@ -22,7 +22,9 @@ test('groups what is left to you by checklist item, and opens that item', async 
   // note's text is kept as written. The exact 300x250 block also wins at the range's 300x250 end.
   await expect(padding.locator('ul li .todo')).toHaveText('change it in GWD.');
   const note = '.gwd-button-b has padding 2px 0px 0px in 300x250, 300x250 (range 300x250 to 320x480), which cannot be zeroed without moving its text';
-  expect(await padding.locator('ul li').innerText()).toBe(`${note}\nChange it in GWD.`);
+  // Under it, unticked, the fix written out for someone who accepts that it moves the text.
+  expect((await padding.locator('ul li').innerText()).split('\nFix anyway')[0]).toBe(`${note}\nChange it in GWD.`);
+  await expect(padding.locator('ul li input[data-anyway]')).not.toBeChecked();
   await expect(page.locator('#fixes .manual')).toContainText(`${note}; change it in GWD.`);
 
   const row = page.locator('#checklist details[data-check="buttonPadding"]');
@@ -30,4 +32,22 @@ test('groups what is left to you by checklist item, and opens that item', async 
   await padding.getByRole('button', { name: 'Button padding' }).click();
   await expect(row).toHaveAttribute('open', '');
   await expect(row).toBeInViewport();
+});
+
+test('fixes an item anyway where you accept the risk, and says what moved', async ({ page }) => {
+  // In 300x250 the button's text sits 2px lower for its padding, which zeroing moves back up.
+  const html = mockAdHtml()
+    .replace('      width: 120px;\n      height: 30px;\n    }', '      width: 120px;\n      height: 30px;\n      padding: 0px;\n    }')
+    .replace('    @media (width: 300px) and (height: 250px) {\n', '    @media (width: 300px) and (height: 250px) {\n      .gwd-button-b {\n        padding-top: 2px;\n      }\n');
+  await page.goto('./');
+  await page.locator('#file').setInputFiles({ name: 'risk.zip', mimeType: 'application/zip', buffer: mockZip(html) });
+  await expect(page.locator('#summary')).toBeVisible({ timeout: 120_000 });
+  const item = page.locator('#fixes .manual li li', { hasText: 'which cannot be zeroed without moving its text' });
+  await item.locator('input[data-anyway]').check();
+  await page.getByRole('button', { name: 'Apply selected fixes' }).click();
+  await expect(page.locator('#fixes .banner.warn')).toContainText(/texts? moved/, { timeout: 120_000 });
+  await expect(page.locator('#fixes .banner.warn li', { hasText: 'button#SA_cta_1' }).first()).toBeVisible();
+  await expect(page.locator('#checklist details[data-check="buttonPadding"] summary .pill')).toHaveText('Pass');
+  await page.getByRole('button', { name: 'Undo fixes' }).click();
+  await expect(page.locator('#checklist details[data-check="buttonPadding"] summary .pill')).toHaveText('Fail', { timeout: 120_000 });
 });

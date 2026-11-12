@@ -449,7 +449,7 @@ function namedRef(ref: string, name: string): string | undefined {
 }
 
 /** An attribute's text as the browser reads it; `undecoded` names a reference it could not read. */
-function htmlText(raw: string, base: number): Source {
+export function htmlText(raw: string, base: number): Source {
   let undecoded: string | undefined;
   const src = decode(raw, base, ENTITY, ([ref, hex, dec, name]) => {
     if (!name) return numericRef(hex ? parseInt(hex, 16) : parseInt(dec, 10));

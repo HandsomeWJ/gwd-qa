@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { renderFindings } from '../src/audit/render';
+import { clickFindings, renderFindings } from '../src/audit/render';
+import type { ClickBox } from '../src/audit/types';
 import { box } from './boxes';
 
 describe('renderFindings', () => {
@@ -49,5 +50,19 @@ describe('renderFindings', () => {
       ['buttonColor', 'page2', 'No explicit color (renders rgb(0, 0, 0)).'],
       ['marginBlock', undefined, 'Missing margin-block: 0px auto.'],
     ]);
+  });
+});
+
+describe('pointer cursor', () => {
+  const click = (cursor: string, more: Partial<ClickBox> = {}): ClickBox => ({ frame: '300x250', page: '', target: 'div#SA_x', id: 'SA_x', tag: 'div', classes: [], why: 'a GWD click event', cursor, own: '', inert: false, ...more });
+
+  it('fails the default cursors, notes a custom one, and skips what no click reaches', () => {
+    const out = clickFindings([click('pointer'), click('auto'), click('default', { own: 'default' }), click('grab'), click('auto', { inert: true })]);
+    expect(out.map((f) => [f.level, f.message])).toEqual([
+      ['fail', "Clickable through a GWD click event, but it shows the browser's default cursor (an arrow, or a text cursor over text), not the pointer."],
+      ['fail', 'Clickable through a GWD click event, but it shows the arrow, not the pointer.'],
+      ['note', 'Clickable through a GWD click event; it shows cursor: grab, taken as a custom cursor of its own.'],
+    ]);
+    expect(out[1].hint).toBe('Its own CSS sets cursor: default; set cursor: pointer in GWD.');
   });
 });

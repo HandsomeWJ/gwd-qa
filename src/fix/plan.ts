@@ -9,8 +9,8 @@ import type { HiddenSubtree, OffCanvas, SafetyMismatch } from '../audit/observe'
 import { MOVES_NOTHING, propKey } from '../audit/props';
 import { STACKADAPT_SCRIPTS, stackAdaptTag, type Spot, type StackAdaptScript } from '../audit/stackadapt';
 import { refStart, type Setters, type Showers } from '../audit/states';
-import { FADE_START, POSITION, type StaticReport, type Subjects } from '../audit/static';
-import type { Box, CheckId, Inheritor } from '../audit/types';
+import { FADE_START, label, POSITION, type StaticReport, type Subjects } from '../audit/static';
+import type { Box, CheckId, ClickBox, Inheritor } from '../audit/types';
 import { describeSize, parseSize } from '../sizes';
 
 export interface PlannedFix {
@@ -30,9 +30,21 @@ export interface FixPart {
   notes: { at: number; text: string }[]; // its items in the fix's detail, and their places there
 }
 
+/**
+ * A fix left to a person because it may move text or change how the ad looks, written out so that
+ * someone who accepts that risk can apply it anyway: `detail` is the note it belongs to.
+ */
+export interface AnywayFix {
+  check: CheckId;
+  detail: string;
+  edits: Edit[];
+}
+
 export interface FixPlan {
   fixes: PlannedFix[];
   manual: { check: CheckId; detail: string }[];
+  /** The edits that fix a note anyway, by its detail, where they can be written. */
+  anyway?: AnywayFix[];
   /** Findings of other checks a fix clears as well: the top or left a keyframes block holds, which deleting it ends. */
   clears?: { check: CheckId; target: string; prop: string }[];
 }
@@ -43,7 +55,9 @@ export interface PlanInput {
   boxes: Box[];
   /** Per frame label, the media conditions that apply in that frame. */
   media: Map<string, Set<string>>;
-  report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues' | 'sizes'> & Partial<Pick<StaticReport, 'stackAdapt'>>;
+  report: Pick<StaticReport, 'fadeDecls' | 'unchanged' | 'cssValues' | 'sizes'> & Partial<Pick<StaticReport, 'stackAdapt' | 'fadeVisible' | 'files'>>;
+  /** The clickable elements every frame saw, with their cursors; without them, no cursor is set. */
+  clicks?: ClickBox[];
   /** Keyframes values that differ from the element's own style, with the frame they were read in, and whether that element never shows. */
   safety: Pick<SafetyMismatch, 'animation' | 'size' | 'prop' | 'hidden' | 'offCanvas'>[];
   /** What could set a style on an element once the ad has started; without it, no keyframes value is deleted. */
@@ -99,6 +113,7 @@ function paintOnlyTransition(value: string): boolean {
 class Planner {
   readonly fixes: PlannedFix[] = [];
   readonly manual: FixPlan['manual'] = [];
+  readonly anyway: AnywayFix[] = [];
   readonly clears: NonNullable<FixPlan['clears']> = [];
   /** Declarations some fix deletes; new lines never anchor to them. */
   private readonly deleted = new Set<Decl>();
@@ -189,8 +204,28 @@ class Planner {
     return out;
   }
 
-  manualNote(check: CheckId, detail: string) {
+  /** A note for a person; with `anyway`, the edits that fix it all the same for someone who accepts the risk. */
+  manualNote(check: CheckId, detail: string, anyway?: Edit[]) {
     if (!this.manual.some((m) => m.detail === detail)) this.manual.push({ check, detail });
+    if (!anyway?.length) return;
+    const known = this.anyway.find((a) => a.detail === detail);
+    if (known) known.edits.push(...anyway);
+    else this.anyway.push({ check, detail, edits: [...anyway] });
+  }
+
+  /** Edits that zero a class's padding however it sets it: each rule's first padding declaration becomes padding: 0px and the rest go; with none, its base rule gets one. */
+  zeroPadding(cls: string): Edit[] {
+    const rules = this.css.rules.filter((r) => elementClass(r.selector) === cls && r.decls.some((d) => PADDING.test(d.prop)));
+    if (!rules.length) return this.addToBase(new Map([[cls, ['padding: 0px;']]]));
+    return rules.flatMap((r) => {
+      const [first, ...rest] = r.decls.filter((d) => PADDING.test(d.prop));
+      return [{ start: first.start, end: first.end, text: 'padding: 0px;' }, ...rest.map((d) => removeDecl(this.html, d))];
+    });
+  }
+
+  /** Edits that delete `props` from every keyframe of a block. */
+  removals(block: KeyframesRule, props: string[]): Edit[] {
+    return block.frames.flatMap((f) => f.decls.filter((d) => props.includes(d.prop)).map((d) => removeDecl(this.html, d)));
   }
 
   /**
@@ -240,7 +275,7 @@ class Planner {
         continue;
       }
       if (this.unseenNote(cls)) {
-        this.manualNote('buttonPadding', `${this.unseenNote(cls)}; set its padding in GWD.`);
+        this.manualNote('buttonPadding', `${this.unseenNote(cls)}; set its padding in GWD.`, this.zeroPadding(cls));
         continue;
       }
       const cs = padded[0].computed;
@@ -255,7 +290,7 @@ class Planner {
         const bySize = new Map<string, Set<string>>();
         for (const b of padded) bySize.set(b.computed.paddingText, (bySize.get(b.computed.paddingText) ?? new Set()).add(b.frame));
         const where = [...bySize].map(([text, frames]) => `${text} in ${[...frames].join(', ')}`).join(' and ');
-        this.manualNote('buttonPadding', `.${cls} has padding ${where}, which cannot be zeroed without moving its text; change it in GWD.`);
+        this.manualNote('buttonPadding', `.${cls} has padding ${where}, which cannot be zeroed without moving its text; change it in GWD.`, this.zeroPadding(cls));
         continue;
       }
       if (rule && padDecls.length) {
@@ -274,7 +309,7 @@ class Planner {
         const centred = /center$/.test(cs.textAlign) && top === bottom && left === right;
         if (!fixedSize || !centred) {
           const why = fixedSize ? 'does not centre its text, so zeroing' : 'sizes to its content, so zeroing';
-          this.manualNote('buttonPadding', `.${cls} ${why} the browser's default padding (${cs.paddingText}) would move its text; set its padding in GWD.`);
+          this.manualNote('buttonPadding', `.${cls} ${why} the browser's default padding (${cs.paddingText}) would move its text; set its padding in GWD.`, this.zeroPadding(cls));
           continue;
         }
         adds.set(cls, ['padding: 0px;']);
@@ -293,7 +328,7 @@ class Planner {
       if (cls.startsWith('#') || !bare.length) continue;
       const colors = [...new Set(bare.map((b) => b.computed.color))];
       if (this.unseenNote(cls)) {
-        this.manualNote('buttonColor', `${this.unseenNote(cls)}; set its color in GWD.`);
+        this.manualNote('buttonColor', `${this.unseenNote(cls)}; set its color in GWD.`, colors.length === 1 ? this.addToBase(new Map([[cls, [`color: ${colors[0]};`]]])) : undefined);
         continue;
       }
       if (colors.length > 1) {
@@ -324,9 +359,9 @@ class Planner {
       });
       if (margined) {
         const cs = margined.computed;
-        this.manualNote('marginBlock', `.${cls} has margin ${px(cs.marginTop)} / ${px(cs.marginBottom)} today, so margin-block: 0px auto would move its text; add it in GWD and put the text back in place.`);
+        this.manualNote('marginBlock', `.${cls} has margin ${px(cs.marginTop)} / ${px(cs.marginBottom)} today, so margin-block: 0px auto would move its text; add it in GWD and put the text back in place.`, this.addToBase(new Map([[cls, ['margin-block: 0px auto;']]])));
       } else if (this.unseenNote(cls)) {
-        this.manualNote('marginBlock', `${this.unseenNote(cls)}; add margin-block: 0px auto in GWD.`);
+        this.manualNote('marginBlock', `${this.unseenNote(cls)}; add margin-block: 0px auto in GWD.`, this.addToBase(new Map([[cls, ['margin-block: 0px auto;']]])));
       } else {
         safe.set(cls, ['margin-block: 0px auto;']);
       }
@@ -598,8 +633,33 @@ class Planner {
     const inherits = [...inherit].filter((cls) => !refused.has(cls));
     inherits.forEach((cls) => baseAdds.set(cls, ['line-height: inherit;']));
     edits.push(...this.addToBase(baseAdds, owner));
-    refused.forEach((why) => this.manualNote('lineHeight', why));
-    noBase.forEach((why, cls) => { if (!refused.has(cls)) this.manualNote('lineHeight', why); });
+    // Anyway, for a person who accepts that the spacing may change: a refused class gets the value each
+    // size renders now in that size's block, as above (nothing where it renders two values in one size),
+    // and a class whose base size got none gets its base value.
+    const writeEdits = (w: Write): Edit[] => {
+      if (w.rule) return [insertDecl(this.html, w.rule, `line-height: ${w.px}px;`, this.deleted)];
+      if (w.block) return [insertRule(this.html, w.block, this.selectorOf(w.cls), [`line-height: ${w.px}px;`])];
+      return this.addToBase(new Map([[w.cls, [`line-height: ${w.px}px;`]]]));
+    };
+    const anyway = (cls: string): Edit[] => {
+      const mine = new Map<string, Write>();
+      for (const b of open) {
+        if (this.mainClass(b.classes) !== cls) continue;
+        const px = rendered(b);
+        if (px === undefined) return [];
+        const block = this.sizeBlock(b.frame, b.size);
+        const { rule, key } = keyOf(cls, block);
+        const prior = mine.get(key);
+        if (prior && !same(prior.px, px)) return [];
+        if (!prior) mine.set(key, { cls, px, rule, block: rule ? undefined : block, base: !block, where: '' });
+      }
+      return [...mine.values()].flatMap(writeEdits);
+    };
+    refused.forEach((why, cls) => this.manualNote('lineHeight', why, anyway(cls)));
+    noBase.forEach((why, cls) => {
+      const base = writes.get(keyOf(cls).key);
+      if (!refused.has(cls)) this.manualNote('lineHeight', why, base?.base ? writeEdits(base) : undefined);
+    });
     const notes = [
       ...kept.map((w) => ({ cls: w.cls, text: `.${w.cls}${w.where ? ` in ${w.where}` : ''}: ${w.px}px` })),
       ...inherits.map((cls) => ({ cls, text: `.${cls}: inherit` })),
@@ -616,6 +676,70 @@ class Planner {
   textFade() {
     const decls = this.input.report.fadeDecls;
     this.add('textFade', `Start text fades at opacity ${FADE_START}`, `${decls.length} declaration${decls.length === 1 ? '' : 's'}`, decls.map((d) => setValue(d, FADE_START)));
+    for (const v of this.input.report.fadeVisible ?? []) {
+      this.manualNote('textFade', `${v.target} fades text in from opacity ${v.value}, so ${FADE_START} would make it start fainter; set ${FADE_START} in GWD if that is right.`, v.decl ? [setValue(v.decl, FADE_START)] : undefined);
+    }
+  }
+
+  /**
+   * cursor: pointer for clickable elements that show the default cursor. It changes the mouse pointer
+   * and nothing else. One .dynamicClick rule covers StackAdapt's tap areas (as designers write it), the
+   * ad's root takes it where param.js makes the whole ad clickable, and any other element through its
+   * class, when only clickable elements have that class, else its id.
+   */
+  cursor() {
+    const seen = this.input.clicks ?? [];
+    const failing = seen.filter((c) => !c.inert && (c.cursor === 'auto' || c.cursor === 'default'));
+    if (!failing.length) return;
+    const doc = new DOMParser().parseFromString(this.html, 'text/html');
+    const all = (selector: string) => [doc, ...[...doc.querySelectorAll('template')].map((t) => t.content)].flatMap((root) => [...root.querySelectorAll(selector)]);
+    const clickable = new Set(seen.map((c) => c.target));
+    const chosen = new Map<string, string>(); // selector -> what it is for
+    for (const c of failing) {
+      if (c.own) {
+        this.manualNote('cursor', `${c.target} sets cursor: ${c.own} in its own CSS, which a new rule may not override; set cursor: pointer in GWD.`);
+        continue;
+      }
+      let selector: string | null = null;
+      if (c.classes.includes('dynamicClick')) {
+        selector = '.dynamicClick';
+      } else if ((c.tag === 'gwd-genericad' || c.tag === 'body') && c.why.startsWith("StackAdapt's param.js")) {
+        selector = c.tag;
+      } else {
+        const cls = this.mainClass(c.classes) ?? c.classes.find((x) => !x.startsWith('gwd-play') && !x.startsWith('gwd-pause')) ?? null;
+        if (cls && all(`.${CSS.escape(cls)}`).every((el) => clickable.has(label(el)))) selector = `.${cls}`;
+        else if (c.id && all(`#${CSS.escape(c.id)}`).length === 1) selector = `#${c.id}`;
+      }
+      if (!selector) {
+        this.manualNote('cursor', `${c.target} has no class or id of its own to give cursor: pointer; set it in GWD.`);
+        continue;
+      }
+      if (!chosen.has(selector)) chosen.set(selector, selector === 'gwd-genericad' || selector === 'body' ? `${selector} (StackAdapt's param.js makes the whole ad clickable)` : selector);
+    }
+    const block = [...this.css.styleBlocks].sort((a, b) => b.close - b.open - (a.close - a.open))[0];
+    const parts: FixPart[] = [];
+    for (const [at, [selector, note]] of [...chosen].entries()) {
+      let edits: Edit[];
+      if (selector.startsWith('.')) {
+        edits = this.addToBase(new Map([[selector.slice(1), ['cursor: pointer;']]]));
+      } else {
+        const rule = this.css.rules.find((r) => r.media === null && r.selector.trim() === selector);
+        if (rule) edits = [insertDecl(this.html, rule, 'cursor: pointer;', this.deleted)];
+        else if (block) edits = [insertRule(this.html, block, selector, ['cursor: pointer;'], true)];
+        else continue;
+      }
+      parts.push({ name: selector, edits, notes: [{ at, text: note }] });
+    }
+    this.add('cursor', 'Show the pointer cursor on clickable elements', parts.flatMap((p) => p.notes.map((n) => n.text)).join(', '), parts.flatMap((p) => p.edits), parts);
+  }
+
+  /** References whose file the package has under another letter case, rewritten in this HTML to its exact name. */
+  files() {
+    const refs = (this.input.report.files ?? []).filter((r) => r.state === 'case' && r.at && r.fix && r.where === 'this HTML' && !r.script);
+    const edits = new Map<number, Edit>();
+    for (const r of refs) edits.set(r.at!.start, { start: r.at!.start, end: r.at!.end, text: r.fix! });
+    const names = [...new Set(refs.map((r) => `${r.ref} → ${r.fix}`))];
+    this.add('files', "Use the files' exact names (letter case)", names.join(', '), [...edits.values()]);
   }
 
   /**
@@ -757,7 +881,7 @@ class Planner {
       const ranged = this.inRange(block);
       if (unseen.length || ranged) {
         const why = unseen.length ? `a page it may run on never showed in ${unseen.join(', ')}` : 'it also runs inside a size range, between the sizes the previews show';
-        this.manualNote('keyframes', `${name}: ${why}, so deleting ${props.join(', ')} was not checked; do it in GWD.`);
+        this.manualNote('keyframes', `${name}: ${why}, so deleting ${props.join(', ')} was not checked; do it in GWD.`, this.removals(block, props));
         continue;
       }
       if (!frames.length) {
@@ -797,8 +921,8 @@ class Planner {
         }
         gone.push(p);
       }
-      if (differ.length) this.manualNote('keyframes', `${name}: deleting ${differ.join(', ')} would change how it looks, because those values differ from the element's own style.`);
-      for (const [why, ps] of kept) this.manualNote('keyframes', `${name}: ${why}, which the value it holds now overrides, so deleting ${ps.join(', ')} could change how it looks; delete it in GWD only if that is wanted.`);
+      if (differ.length) this.manualNote('keyframes', `${name}: deleting ${differ.join(', ')} would change how it looks, because those values differ from the element's own style.`, this.removals(block, differ));
+      for (const [why, ps] of kept) this.manualNote('keyframes', `${name}: ${why}, which the value it holds now overrides, so deleting ${ps.join(', ')} could change how it looks; delete it in GWD only if that is wanted.`, this.removals(block, ps));
       if (!gone.length) continue;
       if (onHidden) hidden++;
       drop(block, gone);
@@ -843,7 +967,7 @@ class Planner {
       const paintOnly = transition ? paintOnlyTransition(v.fixed) : PAINT_ONLY.has(v.prop);
       if (!paintOnly || v.showsText !== false) {
         const what = !paintOnly ? 'size, place or animate what it styles, which can move text' : v.showsText ? 'change how its text looks' : 'change how what it styles looks, which may be text';
-        this.manualNote('cssValues', `${invalid}; write ${v.fixed} in GWD. Once valid it would ${what}, so it is not changed here.`);
+        this.manualNote('cssValues', `${invalid}; write ${v.fixed} in GWD. Once valid it would ${what}, so it is not changed here.`, [{ start: v.start, end: v.end, text: v.fixed }]);
         continue;
       }
       safe.edits.push({ start: v.start, end: v.end, text: v.fixed });
@@ -871,9 +995,9 @@ class Planner {
       if (!sa.body) {
         this.manualNote('stackAdapt', `param.js: the HTML has no body to load it in; add ${stackAdaptTag('param.js')} at the end of the ad in GWD's code view.`);
       } else if (!sa.tapAreas) {
-        this.manualNote('stackAdapt', `param.js: no element has the class dynamicClick, so it would make every part of the ad open the landing page, its controls too; if that is right, add ${stackAdaptTag('param.js')} as the body's last tag in GWD's code view, else give the tap areas that class first.`);
+        this.manualNote('stackAdapt', `param.js: no element has the class dynamicClick, so it would make every part of the ad open the landing page, its controls too; if that is right, add ${stackAdaptTag('param.js')} as the body's last tag in GWD's code view, else give the tap areas that class first.`, insert(sa.body, 'param.js'));
       } else if (sa.ownExits.length) {
-        this.manualNote('stackAdapt', `param.js: the ad opens pages itself (${sa.ownExits.join(', ')}), so one click could open two; keep one way, and for param.js add ${stackAdaptTag('param.js')} as the body's last tag in GWD's code view.`);
+        this.manualNote('stackAdapt', `param.js: the ad opens pages itself (${sa.ownExits.join(', ')}), so one click could open two; keep one way, and for param.js add ${stackAdaptTag('param.js')} as the body's last tag in GWD's code view.`, insert(sa.body, 'param.js'));
       } else {
         this.add('stackAdapt', "Load StackAdapt's param.js", `As the body's last tag, after its ${taps} (class dynamicClick), where StackAdapt's templates load it. It opens the landing page when one is clicked.`, insert(sa.body, 'param.js'));
       }
@@ -902,8 +1026,10 @@ export function planFixes(input: PlanInput): FixPlan {
   p.marginBlock();
   p.lineHeight();
   p.textFade();
+  p.cursor();
+  p.files();
   p.keyframes();
   p.stackAdapt();
   p.cssValues(); // last: it skips declarations the other fixes rewrite
-  return { fixes: p.fixes, manual: p.manual, clears: p.clears };
+  return { fixes: p.fixes, manual: p.manual, clears: p.clears, anyway: p.anyway };
 }

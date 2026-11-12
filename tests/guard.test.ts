@@ -37,6 +37,8 @@ describe('guardPlan', () => {
     expect(fix.detail).toBe('.gwd-p-a: 18px, .gwd-p-c: 18px');
     expect(fix.edits.map((e) => e.text)).toEqual(['[gwd-p-a]', '[gwd-p-c]']);
     expect(plan.manual).toEqual([{ check: 'lineHeight', detail: '.gwd-p-t: its line-height would change the spacing at 310x365, which no preview shows; set it in GWD.' }]);
+    // What it took out stays there to apply anyway, for someone who accepts the risk.
+    expect(plan.anyway).toEqual([{ check: 'lineHeight', detail: plan.manual[0].detail, edits: [mark('gwd-p-t')] }]);
   });
 
   it('tries the classes that lay the text out first, at the size it moved in alone', async () => {

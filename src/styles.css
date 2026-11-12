@@ -122,10 +122,11 @@ dialog.report .actions { display: flex; justify-content: flex-end; gap: 8px; mar
 .pill.pass { background: var(--pass-bg); color: var(--pass-fg); }
 .pill.fail { background: var(--fail-bg); color: var(--fail-fg); }
 .pill.info { background: var(--info-bg); color: var(--info-fg); }
+.pill.advise { background: var(--note-bg); color: var(--note-fg); }
 
 .checks { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
 .checks > li { border-bottom: 1px solid var(--line); }
-.checks details > summary { list-style: none; display: grid; grid-template-columns: 88px 1fr auto; gap: 12px; align-items: center; padding: 10px 2px; cursor: pointer; }
+.checks details > summary { list-style: none; display: grid; grid-template-columns: 128px 1fr auto; gap: 12px; align-items: center; padding: 10px 2px; cursor: pointer; }
 .checks details > summary::-webkit-details-marker { display: none; }
 .checks summary .pill { justify-self: start; }
 .checks .title { font-weight: 600; }
@@ -174,6 +175,10 @@ details.edits .stat { font-weight: 400; font-variant-numeric: tabular-nums; }
 .manual h4 .count { color: var(--muted); font-size: 13px; font-weight: 400; }
 .manual ul { list-style: none; margin: 0; padding: 0; font-size: 13.5px; }
 .manual ul li { padding: 6px 0; border-top: 1px dashed var(--line); overflow-wrap: anywhere; }
+.manual h4 .anyway-all { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 400; color: var(--muted); cursor: pointer; }
+.manual .anyway { margin-top: 4px; font-size: 13px; }
+.manual .anyway label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--note-fg); cursor: pointer; }
+.manual .anyway details.edits { margin-top: 2px; }
 .manual ul li:first-child { border-top: 0; }
 .manual .target { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: var(--code-bg); border-radius: 5px; padding: 1px 6px; }
 .manual .sep { display: none; }
@@ -186,6 +191,7 @@ details.edits .stat { font-weight: 400; font-variant-numeric: tabular-nums; }
 .banner.ok { background: var(--pass-bg); color: var(--pass-fg); }
 .banner.warn { background: var(--note-bg); color: var(--note-fg); }
 .banner.err { background: var(--fail-bg); color: var(--fail-fg); }
+.banner.scope { margin-bottom: 16px; }
 
 table.copy { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 table.copy th, table.copy td { text-align: left; padding: 7px 8px; border-top: 1px solid var(--line); vertical-align: top; }
@@ -208,7 +214,7 @@ footer.foot { color: var(--muted); font-size: 13px; margin-top: 28px; }
 footer.foot a { color: inherit; }
 
 @media (max-width: 640px) {
-  .checks details > summary { grid-template-columns: 74px 1fr; }
-  .checks .count { grid-column: 2; text-align: left; }
+  .checks details > summary { grid-template-columns: 1fr; gap: 4px; }
+  .checks .count { grid-column: 1; text-align: left; }
   .checks .body { padding-left: 2px; }
 }

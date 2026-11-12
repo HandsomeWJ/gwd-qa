@@ -3,7 +3,7 @@
 // text and line spacing as it is. Whatever would change one is taken out of the plan and left to you,
 // with a note: a class at a time where a fix has a part per class, else the whole fix.
 
-import { applyEdits, mergeEdits } from '../css/edit';
+import { applyEdits, mergeEdits, type Edit } from '../css/edit';
 import type { LayoutDiff } from '../audit/layout';
 import type { CheckId } from '../audit/types';
 import { withoutPart, type FixPlan, type PlannedFix } from './plan';
@@ -17,8 +17,14 @@ const where = (d: LayoutDiff) => `${d.size}${d.state ? ` ${d.state}` : d.preview
 const sameSpot = (a: LayoutDiff, b: LayoutDiff) => a.size === b.size && a.index === b.index && a.state === b.state;
 const changes = (d: LayoutDiff) => `${d.spacing ? 'change the line spacing of' : 'move'} ${d.target} at ${where(d)}`;
 
-function note(plan: FixPlan, check: CheckId, detail: string) {
+/** A note for a person, with the edits taken out, which they can still apply if they accept the risk. */
+function note(plan: FixPlan, check: CheckId, detail: string, edits: Edit[]) {
   if (!plan.manual.some((m) => m.detail === detail)) plan.manual.push({ check, detail });
+  if (!edits.length) return;
+  plan.anyway ??= [];
+  const known = plan.anyway.find((a) => a.detail === detail);
+  if (known) known.edits.push(...edits);
+  else plan.anyway.push({ check, detail, edits: [...edits] });
 }
 
 /** Takes out of the plan whatever the layout check finds moving text, with a note for each. */
@@ -31,7 +37,7 @@ export async function guardPlan(plan: FixPlan, html: string, check: LayoutCheck)
     // What could not be laid out was not checked: no fix is offered on the planner's word alone.
     const why = err instanceof Error ? err.message : String(err);
     for (const f of plan.fixes) {
-      note(plan, f.check, `${f.title} (${f.detail}): it could not be laid out without scripts in the sizes no preview shows (${why}), so it was not checked there; check the ad again, or do it in GWD.`);
+      note(plan, f.check, `${f.title} (${f.detail}): it could not be laid out without scripts in the sizes no preview shows (${why}), so it was not checked there; check the ad again, or do it in GWD.`, f.edits);
     }
     plan.fixes.length = 0;
   }
@@ -63,7 +69,7 @@ async function guardParts(plan: FixPlan, start: PlannedFix | undefined, html: st
     }
     note(plan, fix.check, fix.check === 'lineHeight'
       ? `${culprit}: its line-height would change the spacing at ${where(d)}; set it in GWD.`
-      : `${culprit}: "${fix.title}" would ${changes(d)}; do it in GWD.`);
+      : `${culprit}: "${fix.title}" would ${changes(d)}; do it in GWD.`, fix.parts!.find((p) => p.name === culprit)?.edits ?? []);
     fix = withoutPart(fix, culprit);
     diffs = fix ? await check(withFixes([fix])) : [];
   }
@@ -80,7 +86,7 @@ async function guardOthers(plan: FixPlan, html: string, check: LayoutCheck, with
     if (!together.length) return;
     const drop = (f: PlannedFix, d: LayoutDiff) => {
       plan.fixes.splice(plan.fixes.indexOf(f), 1);
-      note(plan, f.check, `"${f.title}" (${f.detail}) would ${changes(d)}; do it in GWD.`);
+      note(plan, f.check, `"${f.title}" (${f.detail}) would ${changes(d)}; do it in GWD.`, f.edits);
     };
     let alone = false;
     for (const f of others) {

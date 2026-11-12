@@ -5,7 +5,8 @@ import { parseCss } from './css/parse';
 import { LayoutNet, layoutSizes, type LayoutDiff } from './audit/layout';
 import { findStates, type States } from './audit/states';
 import { comparePositions, observe, positions, waitForAd, type AdFrame } from './audit/observe';
-import { renderFindings } from './audit/render';
+import { weightFindings } from './audit/package';
+import { clickFindings, renderFindings } from './audit/render';
 import { staticAudit, type StaticReport } from './audit/static';
 import type { Finding } from './audit/types';
 import { guardPlan } from './fix/guard';
@@ -173,9 +174,9 @@ export class Session {
     this.assertStarted();
     const css = parseCss(this.html);
     const report = staticAudit(this.html, css, undefined, this.pkg);
-    const seen = await observe(this.frames, css, this.states()); // shows each page in turn, pausing animations
-    const findings = [...report.findings, ...renderFindings(seen.boxes)];
-    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, media: seen.media, report, safety: seen.safety, showers: this.states().showers, setters: this.states().setters, incomplete: seen.incomplete });
+    const seen = await observe(this.frames, css, this.states(), report.clicks); // shows each page in turn, pausing animations
+    const findings = [...report.findings, ...renderFindings(seen.boxes), ...clickFindings(seen.clicks), ...this.weigh()];
+    const plan = planFixes({ html: this.html, css, boxes: seen.boxes, clicks: seen.clicks, media: seen.media, report, safety: seen.safety, showers: this.states().showers, setters: this.states().setters, incomplete: seen.incomplete });
     // Laid out while the frames restart: no fix is offered that moves text in a size no frame shows.
     const net = this.layoutNet();
     const html = this.html;
@@ -188,7 +189,9 @@ export class Session {
     if (unknown.length && lineHeight) {
       const which = `${unknown.slice(0, 2).join('; ')}${unknown.length > 2 ? `; and ${unknown.length - 2} more` : ''}`;
       plan.fixes.splice(plan.fixes.indexOf(lineHeight), 1);
-      plan.manual.push({ check: 'lineHeight', detail: `A script changes a font or line-height on an element this check cannot find (${which}), so how text is spaced then was not laid out, and no line-height is added here (${lineHeight.detail}); set them in GWD.` });
+      const detail = `A script changes a font or line-height on an element this check cannot find (${which}), so how text is spaced then was not laid out, and no line-height is added here (${lineHeight.detail}); set them in GWD.`;
+      plan.manual.push({ check: 'lineHeight', detail });
+      (plan.anyway ??= []).push({ check: 'lineHeight', detail, edits: lineHeight.edits });
     }
     const layout = { sizes: net.sizes.length, unseen: net.sizes.filter((s) => !s.previewed).length, state: net.state, ms };
     return { report, findings, plan, safetyChecked: seen.safetyChecked, pages: seen.pages, skipped: seen.skipped, layout };
@@ -228,6 +231,13 @@ export class Session {
     this.lastApply = to.lastApply;
     await updateFile(this.id, this.pkg.htmlPath, encoder.encode(this.html));
     await this.reloadAll();
+  }
+
+  /** The package weight check: the zip for upload as it downloads now, with the fixes applied so far. */
+  private weigh(): Finding[] {
+    if (this.pkg.kind === 'html') return weightFindings(0, [], true);
+    const files = [...this.files()].filter(([path]) => !isGwdBackup(path)).map(([path, data]): [string, number] => [path, data.length]);
+    return weightFindings(this.zip(true).size, files, false);
   }
 
   /** The zip with the fixes applied; `forUpload` leaves out GWD's backup copies. */

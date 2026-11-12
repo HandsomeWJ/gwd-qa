@@ -1,6 +1,6 @@
 // The checks that need the ad rendered, read from what observe() saw in every frame and on every page.
 
-import type { Box, Finding } from './types';
+import type { Box, ClickBox, Finding } from './types';
 
 const TEXT_TAGS = new Set(['p', 'span', 'button']);
 
@@ -39,6 +39,25 @@ export function renderFindings(boxes: Box[]): Finding[] {
       }
     } else if (b.declared.marginBlockStart !== '0px' || b.declared.marginBlockEnd !== 'auto') {
       out.push({ check: 'marginBlock', level: 'fail', ...where, message: 'Missing margin-block: 0px auto.' });
+    }
+  }
+  return out;
+}
+
+const DEFAULT_CURSOR = new Set(['auto', 'default']);
+
+/** The pointer cursor check, from the clickable elements every frame saw on every page. */
+export function clickFindings(clicks: ClickBox[]): Finding[] {
+  const out: Finding[] = [];
+  for (const c of clicks) {
+    if (c.inert || c.cursor === 'pointer') continue;
+    const where = { size: c.frame, ...(c.page ? { page: c.page } : {}), target: c.target };
+    if (DEFAULT_CURSOR.has(c.cursor)) {
+      const shows = c.cursor === 'default' ? 'the arrow' : "the browser's default cursor (an arrow, or a text cursor over text)";
+      const hint = c.own ? `Its own CSS sets cursor: ${c.own}; set cursor: pointer in GWD.` : undefined;
+      out.push({ check: 'cursor', level: 'fail', ...where, message: `Clickable through ${c.why}, but it shows ${shows}, not the pointer.`, ...(hint ? { hint } : {}) });
+    } else {
+      out.push({ check: 'cursor', level: 'note', ...where, message: `Clickable through ${c.why}; it shows cursor: ${c.cursor}, taken as a custom cursor of its own.` });
     }
   }
   return out;

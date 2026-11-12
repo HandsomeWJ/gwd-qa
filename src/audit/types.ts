@@ -4,34 +4,42 @@ export type CheckId =
   | 'buttonPadding'
   | 'buttonColor'
   | 'marginBlock'
+  | 'cursor'
   | 'environment'
   | 'copy'
   | 'position'
   | 'textFade'
   | 'keyframes'
   | 'cssValues'
-  | 'stackAdapt';
+  | 'stackAdapt'
+  | 'files'
+  | 'weight';
 
 export interface CheckInfo {
   id: CheckId;
   title: string;
   passWhen: string;
+  /** A recommendation, not a blocking error: what it finds never counts as failing (the QA checklist, 2026-11-13). */
+  advisory?: boolean;
 }
 
-// The QA checklist, in its original order.
+// The QA checklist, in its original order, then the items the display checklist of 2026-11-13 added.
 export const CHECKS: CheckInfo[] = [
-  { id: 'type', title: 'Type size', passWhen: 'Rendered text is at least 8px in every size, except disclaimers.' },
+  { id: 'type', title: 'Type size', passWhen: 'Rendered text is at least 8px in every size, except disclaimers. A recommendation, not a blocking error.', advisory: true },
   { id: 'lineHeight', title: 'line-height', passWhen: 'Every <p>, <span> and <button> declares a line-height in every size.' },
   { id: 'buttonPadding', title: 'Button padding', passWhen: 'Every <button> has padding: 0px.' },
   { id: 'buttonColor', title: 'Button color', passWhen: 'Every <button> declares an explicit color.' },
   { id: 'marginBlock', title: 'margin-block', passWhen: 'Every <p> and <span> declares margin-block: 0px auto.' },
+  { id: 'cursor', title: 'Pointer cursor', passWhen: 'Every clickable element shows cursor: pointer, unless it uses a custom cursor of its own.' },
   { id: 'environment', title: 'Non-Google Ad', passWhen: 'The file was converted with File → Ad Environment → Non Google Ad → Convert.' },
   { id: 'copy', title: 'Copy', passWhen: 'No typos or grammar errors, in the base text or any size. Read the list yourself.' },
-  { id: 'position', title: 'Position animation', passWhen: 'Keyframes move elements with transform: translate3d, never top or left.' },
-  { id: 'textFade', title: 'Text fade-in', passWhen: 'Text that fades in starts at opacity 0.01, not 0 or 0.001.' },
+  { id: 'position', title: 'Position animation', passWhen: 'Keyframes move elements with transform: translate3d rather than top or left. A recommendation, not a blocking error.', advisory: true },
+  { id: 'textFade', title: 'Text fade-in', passWhen: 'Text that fades in starts at opacity 0.01, not 0 or 0.1. CTAs and text effects are exempt.' },
   { id: 'keyframes', title: 'Keyframes', passWhen: 'Keyframes hold only properties that change between them.' },
   { id: 'cssValues', title: 'CSS values', passWhen: 'Every CSS value is valid, including styles that events and scripts set (opacity: 0.3, not 0,3).' },
   { id: 'stackAdapt', title: 'StackAdapt scripts', passWhen: "The ad loads StackAdapt's iframe-ct.js and param.js once each, param.js after every tap area (class dynamicClick)." },
+  { id: 'files', title: 'Package files', passWhen: 'Every file the ad loads is in the package, at the exact path it uses, letter case included.' },
+  { id: 'weight', title: 'Package weight', passWhen: "The zip for upload, without GWD's backup copies, is under 4 MB." },
 ];
 
 export interface Finding {
@@ -147,4 +155,22 @@ export interface CopyItem {
   target: string;
   size: string; // 'base' or a served size
   text: string;
+}
+
+/** A clickable element, as one frame saw it on one page: what the pointer cursor check reads. */
+export interface ClickBox {
+  frame: string;
+  page: string;
+  target: string; // label(el)
+  id: string;
+  tag: string;
+  classes: string[];
+  /** What makes it clickable, such as "a GWD action event". */
+  why: string;
+  /** The cursor it shows under the mouse: a :hover rule's when one gives it a cursor. */
+  cursor: string;
+  /** The cursor its own CSS declares (its style attribute, or a rule that applies in this frame); '' when it declares none. */
+  own: string;
+  /** pointer-events: none, so no click reaches it. */
+  inert: boolean;
 }

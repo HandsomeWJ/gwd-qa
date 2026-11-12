@@ -306,5 +306,6 @@ test('leaves a class to you where a page it sits on never showed in a size', asy
   expect(detail).toBe('');
   // margin-block is left to you there too
   expect(manual).toContain('.gwd-p-t may sit on a page that never showed in 300x250, so it was not checked there; add margin-block: 0px auto in GWD.');
-  expect(banner).toBe('');
+  // The one fix applied is the pointer cursor for the whole ad (it loads param.js and has no tap area), which moves nothing.
+  expect(banner).toMatch(/^Applied 1 fix\. All \d+ texts are exactly where they were/);
 });

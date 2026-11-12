@@ -5,7 +5,7 @@ import type { CssValidator } from '../src/audit/cssvalues';
 import type { HiddenSubtree, OffCanvas, SafetyMismatch } from '../src/audit/observe';
 import type { Setters, Showers } from '../src/audit/states';
 import { staticAudit } from '../src/audit/static';
-import type { Box, Inheritor } from '../src/audit/types';
+import type { Box, ClickBox, Inheritor } from '../src/audit/types';
 import { planFixes, withoutPart } from '../src/fix/plan';
 import { box } from './boxes';
 import { fixture } from './fixture';
@@ -511,6 +511,14 @@ describe('keyframes and fades', () => {
     ]);
   });
 
+  it("writes out each note's deletion, for someone who accepts that it may change how the ad looks", () => {
+    const both = plan(html, [], frames, [differs('300x600'), differs('300x250')]);
+    const anyway = both.p.anyway ?? [];
+    expect(anyway.map((a) => [a.check, a.detail])).toEqual(both.p.manual.map((m) => [m.check, m.detail]));
+    // Together they delete exactly what the fix deletes where the values match.
+    expect(applyEdits(html, mergeEdits(anyway.flatMap((a) => a.edits)))).toBe(plan(html, [], frames).applied('keyframes'));
+  });
+
   it('judges each block only in the sizes it runs in', () => {
     // A value that differs in 300x600, where the base block runs, keeps that block alone.
     const one = plan(html, [], frames, [differs('300x600')]);
@@ -744,10 +752,65 @@ describe('GWD groups', () => {
     expect(applied('lineHeight')).toContain('    @media (width: 300px) and (height: 600px) {\n      [data-gwd-group="Perks"] .gwd-span-two.gwd-grp-k2 {\n        line-height: 15px;\n      }\n    }');
   });
 
-  it('starts the group texts and what holds them at 0.01', () => {
+  it("starts the group texts and what holds them at 0.01, but not the CTA's group, which is exempt", () => {
     const out = plan(html, [], {}).applied('textFade');
-    expect(out).toContain('    .gwd-div-cta {\n      position: absolute;\n      opacity: 0.01;');
+    expect(out).toContain('    .gwd-div-cta {\n      position: absolute;\n      opacity: 0;');
     expect(out).toContain('      line-height: 16px;\n      opacity: 0.01;');
     expect(out).toContain('    .gwd-image-dot {\n      position: absolute;\n      opacity: 0;');
+  });
+});
+
+describe('pointer cursor', () => {
+  const html = fixture('mini-ad.html');
+  const css = parseCss(html);
+  const report = staticAudit(html, css);
+  const click = (over: Partial<ClickBox>): ClickBox => ({ frame: '300x250', page: '', target: 'gwd-genericad#gwd-ad', id: 'gwd-ad', tag: 'gwd-genericad', classes: [], why: "StackAdapt's param.js, which opens the landing page from every element when none has the class dynamicClick", cursor: 'auto', own: '', inert: false, ...over });
+  const run = (clicks: ClickBox[], src = html) => {
+    const c = parseCss(src);
+    const p = planFixes({ html: src, css: c, boxes: [], clicks, media: new Map(), report: staticAudit(src, c), safety: [] });
+    const fix = p.fixes.find((f) => f.check === 'cursor');
+    return { p, fix, out: applyEdits(src, mergeEdits(fix?.edits ?? [])) };
+  };
+
+  it("puts it on the ad's root where param.js makes the whole ad clickable", () => {
+    expect(report.clicks.wholeAd).toBe(true);
+    const { fix, out } = run([click({})]);
+    expect(fix?.detail).toBe("gwd-genericad (StackAdapt's param.js makes the whole ad clickable)");
+    expect(out).toMatch(/\n {4}gwd-genericad \{\n {6}cursor: pointer;\n {4}\}\n/);
+    expect(out.replace(/\n {4}gwd-genericad \{\n {6}cursor: pointer;\n {4}\}/, '')).toBe(html);
+  });
+
+  it("covers StackAdapt's tap areas with one .dynamicClick rule, and others through a class only clickable elements have", () => {
+    const { fix, out } = run([
+      click({ target: 'gwd-taparea#SA_clicktag_1', id: 'SA_clicktag_1', tag: 'gwd-taparea', classes: ['dynamicClick', 'gwd-taparea-a'], why: 'the class dynamicClick' }),
+      click({ target: 'button#SA_cta_2', id: 'SA_cta_2', tag: 'button', classes: ['gwd-button-cta'], why: 'a GWD action event' }),
+    ]);
+    expect(fix?.detail).toBe('.dynamicClick, .gwd-button-cta');
+    expect(out).toMatch(/\.dynamicClick \{\n {6}cursor: pointer;\n {4}\}/);
+    expect(out).toMatch(/\.gwd-button-cta \{[^}]*cursor: pointer;\n {4}\}/);
+  });
+
+  it('uses the id where other elements share the class, and leaves a cursor its own CSS sets to you', () => {
+    // a text that is not clickable shares the ticker button's class
+    const shared = html.replace('<p class="gwd-p-swap" id="SA_headline_11">', '<p class="gwd-p-swap gwd-button-tick" id="SA_headline_11">');
+    const { fix, p } = run([
+      click({ target: 'button#SA_cta_14', id: 'SA_cta_14', tag: 'button', classes: ['gwd-button-tick'], why: 'a GWD click event' }),
+      click({ target: 'button#SA_cta_2', id: 'SA_cta_2', tag: 'button', classes: ['gwd-button-cta'], why: 'a GWD click event', own: 'default', cursor: 'default' }),
+      click({ target: 'div#SA_x', id: 'SA_x', tag: 'div', classes: [], cursor: 'auto', inert: true }),
+    ], shared);
+    expect(fix?.detail).toBe('#SA_cta_14');
+    expect(p.manual).toContainEqual({ check: 'cursor', detail: 'button#SA_cta_2 sets cursor: default in its own CSS, which a new rule may not override; set cursor: pointer in GWD.' });
+    expect(run([click({ cursor: 'pointer' }), click({ cursor: 'grab' })]).fix).toBeUndefined();
+  });
+});
+
+describe('text fades that start visibly', () => {
+  it('leaves them to you with a note, and changes nothing', () => {
+    const html = fixture('mini-ad.html');
+    const css = parseCss(html);
+    const report = { ...staticAudit(html, css), fadeDecls: [], fadeVisible: [{ target: 'kf-rise', value: '0.1' }] };
+    const p = planFixes({ html, css, boxes: [], media: new Map(), report, safety: [] });
+    expect(p.fixes.find((f) => f.check === 'textFade')).toBeUndefined();
+    expect(p.manual).toContainEqual({ check: 'textFade', detail: 'kf-rise fades text in from opacity 0.1, so 0.01 would make it start fainter; set 0.01 in GWD if that is right.' });
   });
 });

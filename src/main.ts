@@ -36,6 +36,7 @@ app.innerHTML = `
       </div>
       ${RECORD_URL ? '<button type="button" class="link" data-report data-free>Report a bug</button>' : ''}
     </header>
+    <div class="banner warn scope" role="note"><strong>Display ads only for now.</strong> Interactive video (VPAID) ads are not supported yet: their own checklist items (VPAID Bridge, SA_video settings, Vpaidtag.xml) are not checked, and the fixes here are not made for them.</div>
     <div id="status"></div>
     <div class="drop" id="drop">
       <strong>Drop a GWD ad here: its zip, its folder, or just its HTML</strong>
@@ -311,7 +312,7 @@ const cleared = (f: Finding) => result!.plan.fixes.some((x) => x.check === 'keyf
   && (result!.plan.clears ?? []).some((c) => c.check === f.check && c.target === f.target && c.prop === f.prop);
 
 // The checks read from the ad as it renders in the frames (src/audit/render.ts), on each page.
-const RENDERED = new Set<CheckId>(['type', 'lineHeight', 'buttonPadding', 'buttonColor', 'marginBlock']);
+const RENDERED = new Set<CheckId>(['type', 'lineHeight', 'buttonPadding', 'buttonColor', 'marginBlock', 'cursor']);
 
 /**
  * What the rendered checks never saw, such as "1 page and 1 size": pages that never showed in a
@@ -327,8 +328,9 @@ function unchecked(): string {
  * Pass only when the check saw everything it checks. A note where it could not decide, or a page or
  * size it never saw, leaves that to the user: Review.
  */
-function verdict(check: CheckId): 'fail' | 'review' | 'pass' {
-  if (failing(check).length) return 'fail';
+function verdict(check: CheckId): 'fail' | 'advise' | 'review' | 'pass' {
+  // The QA checklist calls some items recommendations: what they find never counts as failing.
+  if (failing(check).length) return CHECKS.find((c) => c.id === check)?.advisory ? 'advise' : 'fail';
   if (result!.findings.some((f) => f.check === check && f.unknown)) return 'review';
   return RENDERED.has(check) && unchecked() ? 'review' : 'pass';
 }
@@ -367,6 +369,10 @@ function renderSummary() {
   const s = session!;
   const failed = CHECKS.filter((c) => c.id !== 'copy' && verdict(c.id) === 'fail').length;
   const review = CHECKS.filter((c) => c.id !== 'copy' && verdict(c.id) === 'review').length;
+  const advised = CHECKS.filter((c) => c.id !== 'copy' && verdict(c.id) === 'advise').length;
+  const files = [...s.pkg.files.keys()];
+  const published = s.pkg.kind !== 'html' && !s.backups.length && !files.some((p) => /(^|\/)gwd_workspace\.json$/i.test(p));
+  const video = files.some((p) => /vpaid/i.test(p)) || /vpaid/i.test(s.html);
   const unseen = unchecked();
   const lone = s.pkg.kind === 'html';
   const fileKind = lone ? 'HTML' : 'zip';
@@ -376,9 +382,10 @@ function renderSummary() {
   box.innerHTML = `
     <div class="bar">
       <div class="meta">
-        <strong>${esc(s.pkg.zipName)}</strong>${lone ? '' : ` · ${esc(s.pkg.htmlPath)}`} · ${plural(s.sizes.length, 'size')} · checked in ${ENGINE.name}<br>
+        <strong>${esc(s.pkg.zipName)}</strong>${lone ? '' : ` · ${esc(s.pkg.htmlPath)} · ${published ? 'published package' : 'working package'}`} · ${plural(s.sizes.length, 'size')} · checked in ${ENGINE.name}<br>
         ${failed ? `<span class="pill fail">${plural(failed, 'check')} failing</span>` : ''}
         ${review ? `<span class="pill info">${plural(review, 'check')} to review</span>` : ''}
+        ${advised ? `<span class="pill advise">${plural(advised, 'recommendation')}</span>` : ''}
         ${unseen ? `<span class="pill info">${unseen} not checked</span>` : ''}
         ${failed || review || unseen ? '' : '<span class="pill pass">Every check passes</span>'}
         ${s.changed ? '<span class="pill info">Fixed, not yet downloaded</span>' : ''}
@@ -391,6 +398,7 @@ function renderSummary() {
       </div>
     </div>
     ${s.backups.length ? `<p class="sub upload-note">Download for upload leaves out GWD's backup copies: ${esc(backupFolders(s).join(', '))} (${plural(s.backups.length, 'file')}).</p>` : ''}
+    ${video ? '<div class="banner warn standin">This looks like an interactive video (VPAID) ad, which this site does not support yet: its own checklist items were not checked, and the results and fixes here may not suit it.</div>' : ''}
     ${note ? `<div class="banner warn standin">${esc(note)}</div>` : ''}
     ${s.changed ? diffBox(`Review the changes to ${s.pkg.htmlPath.split('/').pop()}`, s.originalHtml, s.html) : ''}`;
 }
@@ -432,7 +440,7 @@ function renderChecklist() {
     const notes = r.findings.filter((f) => f.check === c.id && f.level === 'note');
     const fixable = r.plan.fixes.some((f) => f.check === c.id) || fails.some(cleared);
     const targets = new Set(fails.map((f) => f.target)).size;
-    const pill = { fail: '<span class="pill fail">Fail</span>', review: '<span class="pill info">Review</span>', pass: '<span class="pill pass">Pass</span>' }[verdict(c.id)];
+    const pill = { fail: '<span class="pill fail">Fail</span>', advise: '<span class="pill advise">Recommendation</span>', review: '<span class="pill info">Review</span>', pass: '<span class="pill pass">Pass</span>' }[verdict(c.id)];
     const extra = [
       exempted.length ? `${plural(new Set(exempted.map((f) => f.target)).size, 'disclaimer')} exempt` : '',
       !fails.length && notes.length ? plural(notes.length, 'note') : '',
@@ -534,13 +542,31 @@ function renderFixes() {
     ...r.plan.manual.map((m) => ({ check: m.check, note: m.detail })),
     ...(failing('position').some((f) => !cleared(f)) ? [{ check: 'position' as const, note: 'Keyframes move elements with top or left; re-animate that movement with transform: translate3d in GWD.' }] : []),
   ];
+  const html = session!.html;
+  // A note's fix, written out, for someone who accepts that it may change how the ad looks: its index
+  // in plan.anyway, and the edits view, or null where it has none or its edits cannot go in together.
+  const anyway = r.plan.anyway ?? [];
+  const risky = new Map<string, { k: number; diff: string }>();
+  anyway.forEach((a, k) => {
+    try {
+      risky.set(a.detail, { k, diff: diffBox('Show the edits', html, applyEdits(html, mergeEdits(a.edits))) });
+    } catch {
+      // edits that overlap each other: offered to no one
+    }
+  });
+  const anywayHtml = (note: string, check: CheckId) => {
+    const a = risky.get(note);
+    return a ? `<div class="anyway"><label><input type="checkbox" data-anyway="${a.k}" data-anyway-check="${check}"> Fix anyway</label>${a.diff}</div>` : '';
+  };
   // Grouped under their checklist items, in the checklist's order.
   const groups = CHECKS.filter((c) => decisions.some((d) => d.check === c.id)).map((c) => {
     const notes = decisions.filter((d) => d.check === c.id);
-    return `<li><h4><button type="button" class="link" data-action="open-check" data-check="${c.id}">${esc(c.title)}</button><span class="count">${plural(notes.length, 'item')}</span></h4>
-      <ul>${notes.map((d) => `<li>${decisionHtml(d.note, d.check)}</li>`).join('')}</ul></li>`;
+    const fixable = notes.filter((d) => risky.has(d.note)).length;
+    const all = fixable > 1 ? `<label class="anyway-all"><input type="checkbox" data-anyway-all="${c.id}"> Fix all ${fixable} anyway</label>` : '';
+    return `<li><h4><button type="button" class="link" data-action="open-check" data-check="${c.id}">${esc(c.title)}</button><span class="count">${plural(notes.length, 'item')}</span>${all}</h4>
+      <ul>${notes.map((d) => `<li>${decisionHtml(d.note, d.check)}${anywayHtml(d.note, d.check)}</li>`).join('')}</ul></li>`;
   });
-  const html = session!.html;
+  const applyButton = '<button class="primary" data-action="apply">Apply selected fixes</button>';
   const list = fixes.map((f: PlannedFix, i: number) => `
     <li>
       <input type="checkbox" id="fix-${i}" data-fix="${i}" checked>
@@ -553,9 +579,9 @@ function renderFixes() {
     <p class="sub">These keep the ad looking exactly as it does: no fix moves text or changes how it looks, and one that would is listed under Needs your decision instead. Each fix is laid out without scripts at ${plural(r.layout.sizes, 'size')} first${r.layout.unseen ? `, ${r.layout.unseen} of them between the previews` : ''}${r.layout.state ? `, at rest and ${esc(r.layout.state)}` : ''}, to prove that. Text positions in every size are compared before and after.</p>
     ${session!.lastApply ? applyBanner(session!.lastApply) : ''}
     ${fixes.length
-      ? `<ul class="fixlist">${list}</ul><button class="primary" data-action="apply">Apply selected fixes</button>`
+      ? `<ul class="fixlist">${list}</ul>${applyButton}`
       : `<p>${session!.changed ? 'Nothing left to fix automatically.' : 'Nothing to fix automatically.'}</p>`}
-    ${groups.length ? `<h3 class="decide">Needs your decision</h3><p class="decide-sub">Fixing these here would move text or change the design, so they are left to you. Open an item for its checklist row.</p><ul class="manual">${groups.join('')}</ul>` : ''}`;
+    ${groups.length ? `<h3 class="decide">Needs your decision</h3><p class="decide-sub">Fixing these here could move text or change the design, so they are left to you. Open an item for its checklist row.${risky.size ? ` Where the fix can be written, tick Fix anyway to apply it with the fixes${fixes.length ? ' above' : ''} if you accept that risk, as when it is a false alarm. The check after applying lists every text that moved and line spacing that changed, but not images or shapes, so look at the preview too; Undo fixes puts everything back.` : ''}</p><ul class="manual">${groups.join('')}</ul>${!fixes.length && risky.size ? applyButton : ''}` : ''}`;
 }
 
 /**
@@ -586,6 +612,11 @@ function renderCopy() {
 
 async function applySelected() {
   const chosen = [...app.querySelectorAll<HTMLInputElement>('input[data-fix]:checked')].map((i) => result!.plan.fixes[Number(i.dataset.fix)]);
+  // The notes ticked to fix anyway, whose risk the user accepts.
+  for (const box of app.querySelectorAll<HTMLInputElement>('input[data-anyway]:checked')) {
+    const a = result!.plan.anyway?.[Number(box.dataset.anyway)];
+    if (a) chosen.push({ check: a.check, title: 'Fixed anyway', detail: a.detail, edits: a.edits });
+  }
   if (!chosen.length) return;
   return changeHtml('Applying fixes and comparing text positions…', (s) => s.apply(chosen));
 }
@@ -688,6 +719,18 @@ drop.addEventListener('click', (e) => {
 app.addEventListener('change', (e) => {
   const box = e.target as HTMLInputElement;
   if (box.id === 'allow-net') setThirdParty(box.checked);
+  // "Fix all anyway" ticks or clears every item of its checklist item, and follows them.
+  if (box.dataset.anywayAll !== undefined) {
+    for (const item of app.querySelectorAll<HTMLInputElement>(`input[data-anyway-check="${CSS.escape(box.dataset.anywayAll)}"]`)) item.checked = box.checked;
+  }
+  if (box.dataset.anywayCheck !== undefined) {
+    const all = app.querySelector<HTMLInputElement>(`input[data-anyway-all="${CSS.escape(box.dataset.anywayCheck)}"]`);
+    const items = [...app.querySelectorAll<HTMLInputElement>(`input[data-anyway-check="${CSS.escape(box.dataset.anywayCheck)}"]`)];
+    if (all) {
+      all.checked = items.every((i) => i.checked);
+      all.indeterminate = !all.checked && items.some((i) => i.checked);
+    }
+  }
   if (box.dataset.disclaimer !== undefined && session && result) {
     const target = box.dataset.disclaimer;
     if (box.checked === namedDisclaimer(target)) disclaimerChoices.delete(target);

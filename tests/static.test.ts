@@ -109,12 +109,13 @@ describe('GWD groups', () => {
     expect(fades).toEqual([
       'gwd-gen-in_gwd-keyframes',
       'div#SA_group_1', // filled with the group's text when the ad runs
-      'div#SA_group_2',
       'span.gwd-span-one.gwd-grp-k2',
     ]);
-    // not the image beside them, on the page or in the group
+    // not the image beside them, on the page or in the group, nor the CTA's group (div#SA_group_2,
+    // class gwd-div-cta): CTAs are exempt from the 0.01 start (QA checklist, 2026-11-13)
     expect(report.fadeDecls.map((d) => html.slice(d.start - 60, d.start).trim().split('\n')[0])).not.toContain('.gwd-image-dot {');
-    expect(report.fadeDecls).toHaveLength(4);
+    expect(report.fadeDecls.map((d) => html.slice(d.start - 60, d.start).trim().split('\n')[0])).not.toContain('.gwd-div-cta {');
+    expect(report.fadeDecls).toHaveLength(3);
   });
 
   it("lists a group's copy where the group is used", () => {
@@ -141,5 +142,54 @@ describe('GWD groups', () => {
       ['div#SA_group_2', true],
       ['gwd-image#SA_dot_1', false],
     ]);
+  });
+});
+
+describe('text fade-in, as the QA checklist of 2026-11-13 has it', () => {
+  const ad = `<!DOCTYPE html>
+<html>
+<head>
+  <meta name="environment" content="gwd-genericad">
+  <style type="text/css">
+    .gwd-p-a { opacity: 0.1; }
+    .gwd-p-b { opacity: 0.1; }
+    .gwd-p-c { opacity: 0; }
+    .gwd-p-d { opacity: 0; }
+    @keyframes rise {
+      0% { opacity: 0.1; }
+      100% { opacity: 1; }
+    }
+    @keyframes fx {
+      0% { opacity: 0; }
+      100% { opacity: 1; }
+    }
+    .gwd-play-animation .gwd-p-a { animation: 1s linear 0s 1 normal forwards rise; }
+    .gwd-play-animation .gwd-p-e { animation: 1s linear 0s 1 normal forwards fx; }
+  </style>
+</head>
+<body>
+  <gwd-genericad id="gwd-ad">
+    <p class="gwd-p-a" id="SA_headline_1">Fades in from 0.1</p>
+    <p class="gwd-p-b" id="SA_note_1">Faint on purpose</p>
+    <p class="gwd-p-c" id="SA_cta_text_1">Shop now</p>
+    <p class="gwd-p-d" gwd-text-effect="">Effect</p>
+    <p class="gwd-p-e" id="SA_ctaLabel_2">Learn more</p>
+  </gwd-genericad>
+</body>
+</html>
+`;
+  const report = staticAudit(ad);
+  const fades = report.findings.filter((f) => f.check === 'textFade');
+
+  it('leaves CTAs and text effects alone, whatever they start at', () => {
+    expect(fades.map((f) => f.target)).toEqual(['rise', 'p#SA_headline_1']);
+    expect(report.fadeDecls).toEqual([]);
+  });
+
+  it('flags a fade in from 0.1, never changing it, and leaves text that is only faint', () => {
+    expect(fades.every((f) => f.level === 'fail' && f.hint === 'Starting at 0.01 instead makes the text fainter at the start, so change it in GWD if that is right.')).toBe(true);
+    expect(fades[0].message).toBe('Fades text in from opacity 0.1 (p#SA_headline_1); the checklist wants 0.01.');
+    expect(fades[1].message).toBe('.gwd-p-a starts it at opacity 0.1, and a keyframes animation fades it in; the checklist wants 0.01.');
+    expect(report.fadeVisible.map(({ target, value, decl }) => [target, value, decl?.prop])).toEqual([['rise', '0.1', 'opacity'], ['p#SA_headline_1', '0.1', 'opacity']]);
   });
 });
