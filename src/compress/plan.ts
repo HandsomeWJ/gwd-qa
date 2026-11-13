@@ -61,8 +61,8 @@ export const MIN_BYTES = 8_000; // smaller images are not worth the risk
 // Below these, a re-encode is offered ticked: the mean is levels of 255, the 99th percentile the
 // largest channel difference all but 1% of pixels stay within. A 256-color PNG of a photo-like
 // mascot at 2.2 and 14 looked the same as its original at its size on screen (2026-11-13).
-const QUIET_MEAN = 3;
-const QUIET_P99 = 28;
+export const QUIET_MEAN = 3;
+export const QUIET_P99 = 28;
 
 const px = (n: number) => Math.ceil(n - 0.01);
 
@@ -98,6 +98,42 @@ export function unusedFiles(input: Pick<SavingsInput, 'files' | 'upload' | 'html
     .map((path) => ({ path, bytes: input.files.get(path)?.length ?? 0 }))
     .filter((f) => f.bytes > 0)
     .sort((a, b) => b.bytes - a.bytes);
+}
+
+// Files a browser cannot use in an ad: GWD's own working files and design sources.
+export const NEVER_LOADED = /(^|\/)(gwd_workspace\.json|[^/]*_groups_archive[^/]*)$|\.(psd|psb|ai|sketch|fig|xd|indd|zip|rar|7z)$/i;
+const MEDIA = /\.(png|jpe?g|gif|webp|avif|svg|bmp|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|woff2?|ttf|otf)$/i;
+const TEXT = /\.(html?|m?js|css|json|xml|svg|txt)$/i;
+// What a script that puts a file name together must write: the extension, apart from any whole name.
+const EXTENSION = /\.(png|jpe?g|gif|webp|avif|svg|bmp|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|woff2?|ttf|otf)(?![\w-])/i;
+
+/**
+ * Files the ad cannot load, so leaving them out of the zip for upload changes nothing: GWD's working
+ * files and design sources; and media files no preview loaded or measured and nothing names, whose
+ * name, with or without its extension, is written in none of the ad's text files, as long as none of
+ * the ad's own scripts could put a file name together (an extension in its code apart from whole names).
+ */
+export function unloadableFiles(input: Pick<SavingsInput, 'files' | 'upload' | 'htmlPath' | 'refs' | 'loaded' | 'uses'>): { path: string; bytes: number; why: string }[] {
+  const unused = unusedFiles(input).filter((f) => !input.uses.has(f.path));
+  const never = unused.filter((f) => NEVER_LOADED.test(f.path)).map((f) => ({ ...f, why: "GWD's working file, which no ad loads" }));
+  const media = unused.filter((f) => !NEVER_LOADED.test(f.path) && MEDIA.test(f.path));
+  if (!media.length) return never;
+  const decoder = new TextDecoder();
+  const texts = input.upload.filter((p) => TEXT.test(p) && !NEVER_LOADED.test(p) && input.files.has(p)).map((p) => [p, decoder.decode(input.files.get(p)!).toLowerCase()] as const);
+  const forms = (name: string) => [...new Set([name, name.replace(/ /g, '%20'), encodeURIComponent(name).toLowerCase()])];
+  const names = [...new Set([...input.files.keys()].flatMap((p) => forms(p.split('/').pop()!.toLowerCase())))].sort((a, b) => b.length - a.length);
+  const scripts = texts.flatMap(([p, t]) => {
+    if (/\.m?js$/i.test(p)) return GWD_RUNTIME.test(p.split('/').pop()!) ? [] : [t];
+    return /\.html?$/i.test(p) ? [...t.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]) : [];
+  });
+  if (scripts.some((code) => EXTENSION.test(names.reduce((rest, n) => rest.split(n).join(' '), code)))) return never;
+  const written = (path: string) => {
+    const name = path.split('/').pop()!.toLowerCase();
+    const stem = name.replace(/\.[^.]+$/, '');
+    return texts.some(([, t]) => [...forms(name), ...forms(stem)].some((f) => f.length > 0 && t.includes(f)));
+  };
+  const spare = media.filter((f) => !written(f.path)).map((f) => ({ ...f, why: 'nothing in the ad names or loads it' }));
+  return [...never, ...spare].sort((a, b) => b.bytes - a.bytes);
 }
 
 export async function findSavings(input: SavingsInput, options: SavingsOptions, run: Run, progress?: (done: number, total: number) => void): Promise<Savings> {

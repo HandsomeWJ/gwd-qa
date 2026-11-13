@@ -680,7 +680,7 @@ function weightHtml(): string {
       <label>PNG colors ${select('colors', [['256', '256, smaller'], ['0', 'every color']], o.colors)}</label>
       <button type="button" data-action="find-savings">${savings ? 'Find again' : 'Find savings'}</button>
     </div>`;
-  const intro = `<h3 class="decide">Package weight</h3>${auto ? weightResult(auto) : `<p class="decide-sub">${over ? 'The zip for upload is over the 4 MB limit. ' : ''}Fix package weight makes the images as small as it takes and no smaller, in this browser: first what nobody can see (each image resized to twice its largest size on screen, saved again without visible loss, and GWD's working files left out of the zip for upload), then, only while the zip is still over, stronger compression, the images that save most first. Undo fixes puts everything back.</p>
+  const intro = `<h3 class="decide">Package weight</h3>${auto ? weightResult(auto) : `<p class="decide-sub">${over ? 'The zip for upload is over the 4 MB limit. ' : ''}Fix package weight makes the zip for upload smaller without changing how the ad looks, in this browser: each image resized to twice its largest size on screen and saved again without visible loss, and files the ad cannot load left out of the zip for upload (GWD's working files, and images nothing in the ad names or loads). Then, only while the zip is still over, stronger compression for the images it leaves looking the same, pixel for pixel, the ones that save most first. Undo fixes puts everything back.</p>
     ${over ? '<div class="weight-actions"><button class="primary" data-action="fix-weight">Fix package weight</button><div class="weight-progress" id="weight-progress" role="status" hidden></div></div>' : ''}`}`;
   if (!savings) return `${intro}<details class="choose"><summary>Or choose images yourself</summary>${controls}</details>`;
   const r = savings.result;
@@ -732,18 +732,18 @@ function weightResult(auto: NonNullable<typeof lastAuto>): string {
     ? [`<strong>Nothing it could make smaller</strong>: the zip for upload stays ${mb(auto.before)}.`, 'Make the largest files smaller in an editor (a video most often).']
     : under
       ? [`<strong>Zip for upload: ${mb(auto.before)} → ${mb(auto.after)}</strong>, under the 4 MB limit.`, did]
-      : [`<strong>Zip for upload: ${mb(auto.before)} → ${mb(auto.after)}</strong>, still over the 4 MB limit.`, `${did}. Compressed as far as it goes: make the largest files smaller in an editor (a video most often), or choose images yourself below at a lower quality.`];
+      : [`<strong>Zip for upload: ${mb(auto.before)} → ${mb(auto.after)}</strong>, still over the 4 MB limit.`, `${did}. That is as far as it goes without a change anyone can see: make the largest files smaller in an editor (a video most often), or choose images yourself below, comparing each before and after.`];
   const card = `<div class="weight-progress weight-done ${under ? 'ok' : 'warn'}" role="status"><span class="progress">${line}<div class="meter" aria-hidden="true"><span></span></div><span class="progress-meta">${meta}</span></span></div>`;
   const button = `<button type="button" class="primary" disabled data-disabled="true">${under ? 'Package weight fixed' : 'Fix package weight'}</button>`;
   const rows = [
     ...r.picks.map((p) => `<tr><td>${name(p.path)}</td><td>${mb(p.before.bytes)}<span class="dims">${p.before.width} × ${p.before.height}</span></td><td>${mb(p.after.bytes)}<span class="dims">${p.after.width} × ${p.after.height}</span></td><td>${esc(p.how)}</td></tr>`),
-    ...r.omit.map((f) => `<tr><td>${name(f.path)}</td><td>${mb(f.bytes)}</td><td>none</td><td>left out of the zip for upload: no ad loads it</td></tr>`),
+    ...r.omit.map((f) => `<tr><td>${name(f.path)}</td><td>${mb(f.bytes)}</td><td>none</td><td>left out of the zip for upload: ${esc(f.why)}</td></tr>`),
   ];
   const table = rows.length ? `<div class="scroll-x"><table class="weight-result"><thead><tr><th>File</th><th>Before</th><th>After</th><th>What changed</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '';
   return `<div class="weight-actions">${button}${card}</div>${table}`;
 }
 
-const STEP_NAMES = ['what nobody can see', 'a little more', 'more', 'smaller on screen', 'the strongest'];
+const STEP_NAMES = ['what nobody can see', 'a little more, where it looks the same', 'more, where it looks the same'];
 
 /** The progress card of Fix package weight: its stage, a bar, the image it is on, and the zip as it shrinks. */
 function weightProgress(stage: 'measure' | 'compress' | 'apply', before: number, p?: AutoProgress) {

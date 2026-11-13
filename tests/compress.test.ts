@@ -5,7 +5,7 @@ import type { ImageUse } from '../src/compress/measure';
 import { encodeIndexedPng, encodeRgbaPng, pngInfo } from '../src/compress/png';
 import { difference, toPalette } from '../src/compress/pixels';
 import { autoShrink, TARGET } from '../src/compress/auto';
-import { findSavings, needed, unusedFiles, type Run } from '../src/compress/plan';
+import { findSavings, needed, unloadableFiles, unusedFiles, type Run } from '../src/compress/plan';
 import type { FileRef } from '../src/audit/package';
 
 /** The pixels of a PNG this module wrote: unfiltered rows, as its encoders write them. */
@@ -118,6 +118,34 @@ describe('what to make smaller', () => {
     expect(unused.map((u) => u.path)).toEqual(['Ad/notes.psd']);
   });
 
+  it('leaves out media nothing names or loads, unless its name is written somewhere or a script could put one together', () => {
+    const enc = (text: string) => new TextEncoder().encode(text);
+    const unloadable = (html: string, extra: [string, Uint8Array][] = []) => {
+      const files = new Map<string, Uint8Array>([
+        ['Ad/Responsive.html', enc(html)],
+        ['Ad/assets/hero.png', new Uint8Array(10)],
+        ['Ad/assets/spare.jpg', new Uint8Array(30)],
+        ['Ad/assets/product_1.png', new Uint8Array(20)],
+        ['Ad/assets/Big Photo.png', new Uint8Array(40)],
+        ['Ad/assets/notes.txt', new Uint8Array(5)],
+        ['Ad/gwd_workspace.json', enc('{"assets":["spare.jpg","Big Photo.png"]}')],
+        ...extra,
+      ]);
+      const refs = [{ path: 'Ad/assets/hero.png', state: 'ok' }] as FileRef[];
+      return unloadableFiles({ files, upload: [...files.keys()], htmlPath: 'Ad/Responsive.html', refs, loaded: new Set(), uses: new Map() }).map((f) => f.path).sort();
+    };
+    const html = '<gwd-image source="assets/hero.png"></gwd-image><div data-gwd-grp-id="product_1"></div><script>gwd.go = function () { return 1; };</script>';
+    // spare.jpg and Big Photo.png are written only in GWD's workspace file; product_1 is written as an id; notes.txt is not media
+    expect(unloadable(html)).toEqual(['Ad/assets/Big Photo.png', 'Ad/assets/spare.jpg', 'Ad/gwd_workspace.json']);
+    // A script of the ad's own that puts a name together keeps every one of them, in the HTML or in its own file
+    expect(unloadable(html.replace('return 1;', "return 'assets/item_' + n + '.png';"))).toEqual(['Ad/gwd_workspace.json']);
+    expect(unloadable(html, [['Ad/carousel.js', enc("img.src = name + '.jpg';")]])).toEqual(['Ad/gwd_workspace.json']);
+    // Whole names in a script, and GWD's own runtime, put nothing together
+    expect(unloadable(html.replace('return 1;', "return 'assets/hero.png';"), [['Ad/gwdpage_min.js', enc("x = y + '.png';")]])).toEqual(['Ad/assets/Big Photo.png', 'Ad/assets/spare.jpg', 'Ad/gwd_workspace.json']);
+    // A name written with %20 is written
+    expect(unloadable(`${html}<p style="background: url(assets/Big%20Photo.png)"></p>`)).toEqual(['Ad/assets/spare.jpg', 'Ad/gwd_workspace.json']);
+  });
+
   it('resizes an image that shows smaller than it is, and keeps one a script names at its size', async () => {
     const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, 0x03, 0xe8, 0x07, 0xd0, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xda, 0, 2, ...new Uint8Array(20_000), 0xff, 0xd9]);
     const files = new Map([['Ad/Responsive.html', new Uint8Array(1)], ['Ad/big.jpg', jpeg], ['Ad/named.jpg', jpeg]]);
@@ -187,10 +215,20 @@ describe('fixing the package weight for the user', () => {
     expect(r.after).toBeGreaterThan(3_400_000);
   });
 
-  it('says so when even its strongest step leaves the zip over', async () => {
-    const files = new Map([['Ad/Responsive.html', new Uint8Array(10_000)], ['Ad/a.jpg', jpegOf(600, 300, 20_000_000)]]);
-    const r = await autoShrink(input(files, new Map([['Ad/a.jpg', [use(600, 300)]]])), sum(files), fake);
+  it('never goes below twice the size on screen, and says so when the zip stays over', async () => {
+    const files = new Map([['Ad/Responsive.html', new Uint8Array(10_000)], ['Ad/a.jpg', jpegOf(2000, 1000, 20_000_000)]]);
+    const r = await autoShrink(input(files, new Map([['Ad/a.jpg', [use(800, 400)]]])), sum(files), fake);
     expect(r.reached).toBe(false);
-    expect(r.picks.map((p) => p.level)).toEqual([4]);
+    // quality 75 is its strongest step, at 1600 × 800, twice the 800 × 400 it shows at
+    expect(r.picks.map((p) => [p.level, p.how])).toEqual([[2, 'resized to 1600 × 800, quality 75']]);
+  });
+
+  it('keeps a stronger step only where the image still looks the same', async () => {
+    // Quality 85 and 75 move this image's pixels further than nobody sees
+    const loud: Run = async (job) => ({ ...(await fake(job)), ...(job.type === 'image/jpeg' && job.quality < 0.92 ? { mean: 6, p99: 40 } : {}) });
+    const files = new Map([['Ad/Responsive.html', new Uint8Array(10_000)], ['Ad/a.jpg', jpegOf(600, 300, 5_000_000)]]);
+    const r = await autoShrink(input(files, new Map([['Ad/a.jpg', [use(600, 300)]]])), sum(files), loud);
+    expect(r.picks.map((p) => [p.level, p.how])).toEqual([[0, 'quality 92']]);
+    expect(r.reached).toBe(false);
   });
 });

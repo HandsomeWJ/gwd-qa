@@ -80,7 +80,7 @@ test('Fix package weight compresses as far as it takes in one press, moving no t
   await expect(row(page, 'weight').locator('summary .pill')).toHaveText('Pass');
   const seen = await page.evaluate(() => (window as unknown as { progressSeen: string[] }).progressSeen);
   expect(seen.some((t) => t.includes('Measuring how large each image shows'))).toBe(true);
-  expect(seen.some((t) => t.includes('Step 1 of up to 5: what nobody can see') && t.includes('Image 1 of 1: noise.png'))).toBe(true);
+  expect(seen.some((t) => t.includes('Step 1 of up to 3: what nobody can see') && t.includes('Image 1 of 1: noise.png'))).toBe(true);
   expect(seen.some((t) => /Zip for upload: 5\.\d\d MB → 0\.\d\d MB so far/.test(t))).toBe(true);
   expect(seen.some((t) => t.includes('checking that no text moved'))).toBe(true);
   // What it did stays on the page: the zip before and after, and each file's.

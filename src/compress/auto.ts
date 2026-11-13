@@ -1,12 +1,14 @@
-// The package weight fix done for the user: the least change that brings the zip for upload under
-// 4 MB. Every image first gets what nobody can see (resized to twice its largest size on screen,
-// JPEGs saved again at quality 92, PNGs without loss) and files no ad can load leave the upload zip.
-// Then, only while the zip is still over, stronger steps, one level at a time, the images that save
-// most first, and at each level only as many as it takes. Each step re-encodes the original image,
-// never an earlier step's output.
+// The package weight fix done for the user, changing nothing anyone can see: every image gets what
+// nobody can see (resized to twice its largest size on screen, JPEGs saved again at quality 92, PNGs
+// without loss), and files the ad cannot load leave the upload zip. Then, only while the zip is still
+// over, stronger compression one level at a time, the images that save most first and only as many as
+// it takes, each kept only where its pixels stay as close to the original as nobody sees (the bar the
+// manual list ticks by). Never smaller than twice the size on screen: below that, an image looks soft
+// on most screens (owner, 2026-11-13: "after compressing the image looks very bad"). Each step
+// re-encodes the original image, never an earlier step's output.
 
 import { jpegInfo } from './jpeg';
-import { IMAGE, MIN_BYTES, needed, unusedFiles, type Run, type SavingsInput } from './plan';
+import { IMAGE, MIN_BYTES, QUIET_MEAN, QUIET_P99, needed, unloadableFiles, type Run, type SavingsInput } from './plan';
 import { pngInfo } from './png';
 
 /** Under the 4,000,000-byte limit, with room for the zip's own headers. */
@@ -18,26 +20,18 @@ interface Level {
   colors: number; // PNG palette size, 0 for every color
 }
 
-// Level 0 is what nobody sees; each later one gives up a little more.
+// Level 0 is what nobody sees; a later one is kept only for an image it leaves looking the same.
 const LEVELS: Record<'image/jpeg' | 'image/png', Level[]> = {
   'image/jpeg': [
     { dpr: 2, quality: 0.92, colors: 0 },
     { dpr: 2, quality: 0.85, colors: 0 },
     { dpr: 2, quality: 0.75, colors: 0 },
-    { dpr: 1.5, quality: 0.7, colors: 0 },
-    { dpr: 1, quality: 0.6, colors: 0 },
   ],
   'image/png': [
     { dpr: 2, quality: 0, colors: 0 },
     { dpr: 2, quality: 0, colors: 256 },
-    { dpr: 1.5, quality: 0, colors: 256 },
-    { dpr: 1, quality: 0, colors: 256 },
-    { dpr: 1, quality: 0, colors: 128 },
   ],
 };
-
-// Files a browser cannot use in an ad: GWD's own working files and design sources.
-const NEVER_LOADED = /(^|\/)(gwd_workspace\.json|[^/]*_groups_archive[^/]*)$|\.(psd|psb|ai|sketch|fig|xd|indd|zip|rar|7z)$/i;
 
 export interface AutoPick {
   path: string;
@@ -63,8 +57,8 @@ export interface AutoProgress {
 
 export interface AutoResult {
   picks: AutoPick[];
-  /** Files left out of the zip for upload: ones no ad can load. */
-  omit: { path: string; bytes: number }[];
+  /** Files left out of the zip for upload: ones the ad cannot load, and why. */
+  omit: { path: string; bytes: number; why: string }[];
   before: number;
   /** The zip for upload with all of it: exact, as images are stored in it as they are. */
   after: number;
@@ -79,8 +73,6 @@ interface Image {
   height: number;
   /** Share of its pixels its largest use on screen needs at 1 screen pixel per CSS pixel; null to keep its size. */
   share: number | null;
-  /** A color profile other than sRGB: converting it is a step, never level 0. */
-  profiled: boolean;
   current: (AutoPick & { key: string }) | null;
 }
 
@@ -93,17 +85,18 @@ export async function autoShrink(input: SavingsInput, uploadBytes: number, run: 
     const jpeg = jpegInfo(data);
     const png = jpeg ? null : pngInfo(data);
     const info = jpeg ?? png;
-    if (!info || png?.animated || (jpeg && jpeg.components === 4)) continue;
+    // Converting another color profile to sRGB can shift colors a little: those stay as they are.
+    if (!info || png?.animated || (jpeg && jpeg.components === 4) || info.profile === 'other') continue;
     const need = scripted.has(path) ? null : needed(input.uses.get(path) ?? [], info.width, info.height, 1);
-    images.push({ path, type: jpeg ? 'image/jpeg' : 'image/png', data, width: info.width, height: info.height, share: need?.share ?? null, profiled: info.profile === 'other', current: null });
+    images.push({ path, type: jpeg ? 'image/jpeg' : 'image/png', data, width: info.width, height: info.height, share: need?.share ?? null, current: null });
   }
-  const omit = unusedFiles(input).filter((f) => NEVER_LOADED.test(f.path));
+  const omit = unloadableFiles(input);
   let total = uploadBytes - omit.reduce((n, f) => n + f.bytes, 0);
 
   const steps = LEVELS['image/jpeg'].length;
   for (let level = 0; level < steps && (level === 0 || total > TARGET); level++) {
     const cands: { img: Image; pick: Image['current'] & {}; gain: number }[] = [];
-    const todo = images.filter((img) => !(level === 0 && img.profiled));
+    const todo = images.filter((img) => LEVELS[img.type][level]);
     for (const [i, img] of todo.entries()) {
       progress?.({ step: level, steps, done: i, total: todo.length, path: img.path, size: total });
       const lv = LEVELS[img.type][level];
@@ -121,6 +114,7 @@ export async function autoShrink(input: SavingsInput, uploadBytes: number, run: 
       const bytes = out.data.byteLength;
       const now = img.current?.after.bytes ?? img.data.length;
       if (bytes >= now * 0.97) continue;
+      if (level > 0 && out.lossy && (out.mean > QUIET_MEAN || out.p99 > QUIET_P99)) continue;
       const how = [resize ? `resized to ${out.width} × ${out.height}` : '', img.type === 'image/jpeg' ? `quality ${Math.round(lv.quality * 100)}` : lv.colors ? `${lv.colors} colors` : 'stored without loss'].filter(Boolean).join(', ');
       const pick = { path: img.path, type: img.type, before: { bytes: img.data.length, width: img.width, height: img.height }, after: { bytes, width: out.width, height: out.height, data: new Uint8Array(out.data) }, level, how, mean: out.mean, p99: out.p99, key };
       if (level === 0) {
